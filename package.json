@@ -1,0 +1,22 @@
+{
+  "name": "office-hud",
+  "version": "0.1.0",
+  "description": "Your own agent office — live HUD over an openalice-fleet hive",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run -w server dev\" \"npm run -w web dev\"",
+    "build": "npm run -w web build",
+    "start": "node server/index.js",
+    "make:app": "node scripts/make-app.js"
+  },
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "bin": {
+    "office": "./bin/office.js"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

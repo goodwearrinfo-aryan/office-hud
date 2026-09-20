@@ -1,0 +1,66 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background: #0b0e14;
+  color: #e7eaf0;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #232a38 transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #232a38; border-radius: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+.panel {
+  @apply bg-hud-panel border border-hud-edge rounded-xl;
+}
+
+/* ---- live pulse ---- */
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.live-dot { animation: pulseDot 2s ease-in-out infinite; }
+
+@keyframes monPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ---- office scene ---- */
+.office-scene .desk { cursor: pointer; transition: filter 0.15s ease; }
+.office-scene .desk:hover { filter: brightness(1.35); }
+
+.mon-busy   { fill: #34d399; filter: drop-shadow(0 0 6px rgba(52, 211, 153, 0.9)); animation: monPulse 1.6s ease-in-out infinite; }
+.mon-idle   { fill: #f5a623; filter: drop-shadow(0 0 5px rgba(245, 166, 35, 0.6)); }
+.mon-breaker{ fill: #f87171; filter: drop-shadow(0 0 7px rgba(248, 113, 113, 0.9)); animation: monPulse 0.9s ease-in-out infinite; }
+.mon-offline{ fill: #475569; }
+
+.badge-dot { font-variant-numeric: tabular-nums; }
+
+/* ---- drawer ---- */
+@keyframes slideIn {
+  from { transform: translateX(40px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+.drawer { animation: slideIn 0.18s ease-out; }
+
+/* ---- tiny markdown ---- */
+.md h1 { font-size: 15px; font-weight: 700; margin: 14px 0 6px; color: #e7eaf0; }
+.md h2 { font-size: 13.5px; font-weight: 700; margin: 12px 0 5px; color: #e7eaf0; }
+.md h3 { font-size: 12.5px; font-weight: 600; margin: 10px 0 4px; color: #cdd3e0; }
+.md p  { font-size: 12.5px; line-height: 1.55; margin: 5px 0; color: #b9c0d0; }
+.md li { font-size: 12.5px; line-height: 1.5; margin: 2px 0 2px 16px; list-style: disc; color: #b9c0d0; }
+.md strong { color: #e7eaf0; font-weight: 600; }
+.md em { color: #cdd3e0; }
+.md code { background: #1a2030; color: #9ecbff; border-radius: 4px; padding: 1px 5px; font-size: 11.5px; font-family: 'SF Mono', ui-monospace, Menlo, monospace; }
