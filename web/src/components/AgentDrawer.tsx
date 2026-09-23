@@ -2,36 +2,39 @@ import { useState } from 'react';
 import { useLive, type Agent, type AgentDetail } from '../api';
 import Markdown from './Markdown';
 
-type Tab = 'profile' | 'memory' | 'inbox' | 'outbox';
+type Tab = 'profile' | 'live' | 'memory' | 'inbox' | 'outbox';
 
-function statusColor(d?: string) {
-  return d === 'busy' ? '#34d399' : d === 'idle' ? '#f5a623' : d === 'breaker' ? '#f87171' : '#475569';
+function statusColor(display?: string) {
+  return display === 'busy' ? '#34d399' : display === 'idle' ? '#f5a623' : display === 'breaker' ? '#f87171' : '#475569';
 }
 
-function MessageRow({ m }: { m: AgentDetail['inbox'][number] }) {
+function ageLabel(seconds: number | null) {
+  if (seconds == null) return 'no heartbeat';
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3600)}h ago`;
+}
+
+function MessageRow({ message }: { message: AgentDetail['inbox'][number] }) {
   const [open, setOpen] = useState(false);
   return (
     <button onClick={() => setOpen(!open)} className="w-full text-left panel p-3 hover:border-hud-amber/50 transition-colors">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-hud-text truncate">{m.subject || m.act || 'message'}</span>
-        <span className="text-[10px] font-mono text-hud-dim shrink-0">{m.from} → {m.to}</span>
+        <span className="text-xs font-medium text-hud-text truncate">{message.subject || message.act || 'message'}</span>
+        <span className="text-[10px] font-mono text-hud-dim shrink-0">{message.from} → {message.to}</span>
       </div>
-      {open && m.body && (
-        <div className="mt-2 pt-2 border-t border-hud-edge text-xs text-hud-dim whitespace-pre-wrap leading-relaxed max-h-72 overflow-auto">
-          {m.body}
-        </div>
-      )}
+      {open && message.body && <div className="mt-2 pt-2 border-t border-hud-edge text-xs text-hud-dim whitespace-pre-wrap leading-relaxed max-h-72 overflow-auto">{message.body}</div>}
     </button>
   );
 }
 
 export default function AgentDrawer({ agentId, summary, onClose }: { agentId: string; summary: Agent | undefined; onClose: () => void }) {
-  const { data } = useLive<AgentDetail>(`/api/agents/${agentId}`);
+  const { data } = useLive<AgentDetail>(`/api/agents/${encodeURIComponent(agentId)}`);
   const [tab, setTab] = useState<Tab>('profile');
-
-  const a = summary ?? (data?.agent as Agent | undefined);
-  const tabs: { id: Tab; label: string; count?: number }[] = [
+  const agent = summary ?? data?.agent;
+  const tabs: Array<{ id: Tab; label: string; count?: number }> = [
     { id: 'profile', label: 'Profile' },
+    { id: 'live', label: 'Live', count: (data?.sessions.length ?? 0) + (data?.currentTasks.length ?? 0) },
     { id: 'memory', label: 'Memory' },
     { id: 'inbox', label: 'Inbox', count: data?.inbox.length ?? 0 },
     { id: 'outbox', label: 'Outbox', count: data?.outbox.length ?? 0 },
@@ -40,73 +43,97 @@ export default function AgentDrawer({ agentId, summary, onClose }: { agentId: st
   return (
     <div className="fixed inset-0 z-50" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60" />
-      <div
-        className="drawer absolute right-0 top-0 bottom-0 w-[440px] bg-hud-panel border-l border-hud-edge flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* header */}
+      <div className="drawer absolute right-0 top-0 bottom-0 w-[440px] bg-hud-panel border-l border-hud-edge flex flex-col" onClick={event => event.stopPropagation()}>
         <div className="p-4 border-b border-hud-edge flex items-start justify-between">
           <div>
             <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full live-dot" style={{ background: statusColor(a?.display) }} />
-              <h2 className="text-lg font-semibold">{a?.name ?? agentId}</h2>
-              {a?.isGod && <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-hud-amber/15 text-hud-amber">GOD</span>}
+              <span className="w-2.5 h-2.5 rounded-full live-dot" style={{ background: statusColor(agent?.display) }} />
+              <h2 className="text-lg font-semibold">{agent?.name ?? agentId}</h2>
+              {agent?.isGod && <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-hud-amber/15 text-hud-amber">GOD</span>}
             </div>
-            <div className="text-xs text-hud-dim mt-0.5">{a?.role}</div>
+            <div className="text-xs text-hud-dim mt-0.5">{agent?.role}</div>
           </div>
           <button onClick={onClose} className="text-hud-dim hover:text-hud-text text-lg px-2">×</button>
         </div>
 
-        {/* stat strip */}
         <div className="grid grid-cols-4 gap-px bg-hud-edge text-center text-xs">
           {[
-            ['status', a?.display ?? '—'],
-            ['backlog', String(a?.inboxBacklog ?? 0)],
-            ['cost', `$${(a?.usd ?? 0).toFixed(2)}`],
-            ['tokens', String(a?.tokens ?? 0)],
-          ].map(([k, v]) => (
-            <div key={k} className="bg-hud-panel py-2">
-              <div className="font-mono text-hud-text">{v}</div>
-              <div className="text-[10px] text-hud-dim">{k}</div>
+            ['status', agent?.display ?? '—'],
+            ['backlog', String(agent?.inboxBacklog ?? 0)],
+            ['cost', `$${(agent?.usd ?? 0).toFixed(2)}`],
+            ['heartbeat', ageLabel(agent?.heartbeatAgeSec ?? null)],
+          ].map(([key, value]) => (
+            <div key={key} className="bg-hud-panel py-2 px-1">
+              <div className="font-mono text-hud-text truncate">{value}</div>
+              <div className="text-[10px] text-hud-dim">{key}</div>
             </div>
           ))}
         </div>
 
-        {/* tabs */}
-        <div className="flex gap-1 px-3 pt-3">
-          {tabs.map((t) => (
+        <div className="flex gap-1 px-3 pt-3 overflow-x-auto">
+          {tabs.map(item => (
             <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                tab === t.id ? 'bg-hud-edge text-hud-text' : 'text-hud-dim hover:text-hud-text'
-              }`}
+              key={item.id}
+              onClick={() => setTab(item.id)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${tab === item.id ? 'bg-hud-edge text-hud-text' : 'text-hud-dim hover:text-hud-text'}`}
             >
-              {t.label}{t.count ? ` · ${t.count}` : ''}
+              {item.label}{item.count ? ` · ${item.count}` : ''}
             </button>
           ))}
         </div>
 
-        {/* content */}
         <div className="flex-1 overflow-auto p-4">
           {!data ? (
-            <div className="text-hud-dim text-sm">loading…</div>
+            <div className="text-hud-dim text-sm">Loading…</div>
           ) : tab === 'profile' ? (
             <div className="space-y-4">
-              {data.identity ? <Markdown source={data.identity} /> : <div className="text-hud-dim text-sm">no identity.md</div>}
+              {data.identity ? <Markdown source={data.identity} /> : <div className="text-hud-dim text-sm">No identity.md</div>}
               <div className="panel p-3 font-mono text-[11px] text-hud-dim break-all">
-                cwd: {a?.cwd ?? '—'}
-                {!a?.cwdValid && <span className="text-hud-red"> (missing on disk)</span>}
+                cwd: {agent?.cwd ?? '—'}
+                {!agent?.cwdValid && <span className="text-hud-red"> (missing on disk)</span>}
+              </div>
+            </div>
+          ) : tab === 'live' ? (
+            <div className="space-y-4">
+              <div>
+                <h3 className="font-mono text-xs text-hud-amber mb-2">SESSIONS</h3>
+                <div className="space-y-2">
+                  {data.sessions.map(session => (
+                    <div key={session.session_id} className="panel-surface p-3 text-xs font-mono">
+                      <div className="flex justify-between gap-2"><span>{session.session_id}</span><span className={session.fresh ? 'text-hud-green' : 'text-hud-red'}>{session.status}</span></div>
+                      <div className="text-hud-dim mt-1">PID {session.process_id} · heartbeat {ageLabel(session.heartbeat_age_sec)}</div>
+                    </div>
+                  ))}
+                  {data.sessions.length === 0 && <div className="text-hud-dim text-sm">No sessions</div>}
+                </div>
+              </div>
+              <div>
+                <h3 className="font-mono text-xs text-hud-amber mb-2">CURRENT TASKS</h3>
+                <div className="space-y-2">
+                  {data.currentTasks.map(task => <div key={task.task_id} className="panel-surface p-3"><div className="text-xs text-hud-text">{task.title}</div><div className="text-[10px] font-mono text-hud-dim mt-1">{task.task_id}</div></div>)}
+                  {data.currentTasks.length === 0 && <div className="text-hud-dim text-sm">No claimed tasks</div>}
+                </div>
+              </div>
+              <div>
+                <h3 className="font-mono text-xs text-hud-amber mb-2">RECENT EVENTS</h3>
+                <div className="space-y-2">
+                  {data.recentEvents.map((event, index) => (
+                    <div key={`${event.timestamp}-${event.task_id}-${index}`} className="panel-surface p-3">
+                      <div className="flex justify-between gap-2 text-[10px] font-mono"><span className="text-hud-blue">{event.type}</span><span className="text-hud-dim">{event.timestamp ? new Date(event.timestamp).toLocaleString() : '—'}</span></div>
+                      {event.task_id && <div className="text-[10px] font-mono text-hud-amber mt-1">{event.task_id}</div>}
+                      {event.result && <div className="text-xs text-hud-dim mt-1 break-words">{event.result.length > 280 ? `${event.result.slice(0, 280)}…` : event.result}</div>}
+                    </div>
+                  ))}
+                  {data.recentEvents.length === 0 && <div className="text-hud-dim text-sm">No recent events</div>}
+                </div>
               </div>
             </div>
           ) : tab === 'memory' ? (
-            data.memory ? <Markdown source={data.memory} /> : <div className="text-hud-dim text-sm">no memory yet</div>
+            data.memory ? <Markdown source={data.memory} /> : <div className="text-hud-dim text-sm">No memory yet</div>
           ) : (
             <div className="space-y-2">
-              {(tab === 'inbox' ? data.inbox : data.outbox).length === 0 && (
-                <div className="text-hud-dim text-sm">empty</div>
-              )}
-              {(tab === 'inbox' ? data.inbox : data.outbox).map((m, i) => <MessageRow key={m._file ?? i} m={m} />)}
+              {(tab === 'inbox' ? data.inbox : data.outbox).length === 0 && <div className="text-hud-dim text-sm">Empty</div>}
+              {(tab === 'inbox' ? data.inbox : data.outbox).map((message, index) => <MessageRow key={message._file ?? index} message={message} />)}
             </div>
           )}
         </div>

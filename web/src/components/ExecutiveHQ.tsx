@@ -1,114 +1,118 @@
-import { useMemo } from 'react';
-import { useLive, relTime, type Agent, type LedgerEvent, type Summary } from '../api';
+import { useLive, type HarnessHealth, type OfficeManagerStatus, type QueueSummary, type SessionRecord, type Summary } from '../api';
 
-function Kpi({ label, value, accent }: { label: string; value: string; accent?: string }) {
-  return (
-    <div className="panel p-4">
-      <div className="text-2xl font-semibold" style={accent ? { color: accent } : undefined}>{value}</div>
-      <div className="text-[11px] text-hud-dim mt-1 font-mono">{label}</div>
-    </div>
-  );
-}
-
-function Sparkline({ events }: { events: LedgerEvent[] }) {
-  // events/hour over last 24h
-  const points = useMemo(() => {
-    const buckets = new Array(24).fill(0);
-    const now = Date.now();
-    for (const e of events) {
-      const ts = (e.ts ?? 0) as number;
-      const ms = ts > 1e12 ? ts : ts * 1000;
-      const hoursAgo = Math.floor((now - ms) / 3_600_000);
-      if (hoursAgo >= 0 && hoursAgo < 24) buckets[23 - hoursAgo]++;
-    }
-    return buckets;
-  }, [events]);
-
-  const max = Math.max(...points, 1);
-  const w = 100 / (points.length - 1);
-  const path = points.map((v, i) => `${i === 0 ? 'M' : 'L'}${(i * w).toFixed(2)},${(40 - (v / max) * 36).toFixed(2)}`).join(' ');
-
-  return (
-    <svg viewBox="0 0 100 40" className="w-full h-24" preserveAspectRatio="none">
-      <path d={path} fill="none" stroke="#f5a623" strokeWidth="1.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-      <path d={`${path} L100,40 L0,40 Z`} fill="rgba(245,166,35,0.08)" stroke="none" />
-    </svg>
-  );
+function timeAgo(value: string | null) {
+  if (!value) return 'never';
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return value;
+  const seconds = Math.max(0, Math.floor((Date.now() - time) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
 }
 
 export default function ExecutiveHQ() {
   const { data: summary } = useLive<Summary>('/api/summary');
-  const { data: ledger } = useLive<{ events: LedgerEvent[] }>('/api/ledger?limit=2000');
-
-  const agents: Agent[] = summary?.agents ?? [];
-  const events = ledger?.events ?? [];
-
-  const active = agents.filter((a) => !a.archived).length;
-  const archived = agents.filter((a) => a.archived).length;
-  const backlog = agents.reduce((n, a) => n + (a.inboxBacklog ?? 0), 0);
-  const cost = agents.reduce((n, a) => n + (a.usd ?? 0), 0);
-  const breakers = agents.filter((a) => a.breaker && a.breaker !== 'healthy' && !a.archived).length;
-
-  const dayAgo = Date.now() - 86_400_000;
-  const eventsToday = events.filter((e) => ((e.ts as number) > 1e12 ? (e.ts as number) : (e.ts as number) * 1000) > dayAgo).length;
+  const { data: queue } = useLive<QueueSummary>('/api/queue');
+  const { data: sessionsData } = useLive<{ sessions: SessionRecord[] }>('/api/sessions');
+  const { data: officeManager } = useLive<OfficeManagerStatus>('/api/office-manager');
+  const { data: harness } = useLive<HarnessHealth>('/api/harness/health');
+  const agents = summary?.agents ?? [];
+  const sessions = sessionsData?.sessions ?? [];
+  const liveAgents = agents.filter(agent => agent.display === 'busy' || agent.display === 'idle');
+  const healthySessions = sessions.filter(session => session.fresh).length;
+  const totalCost = agents.reduce((sum, agent) => sum + (agent.usd ?? 0), 0);
+  const topAgents = [...agents].sort((a, b) => (b.usd ?? 0) - (a.usd ?? 0)).slice(0, 8);
+  const maxCost = Math.max(...topAgents.map(agent => agent.usd ?? 0), 0.01);
+  const completionMax = Math.max(...(queue?.completionsByHour.map(item => item.count) ?? [0]), 1);
+  const alerts = [
+    queue?.staleInProgress ? `${queue.staleInProgress} stale task claims` : null,
+    queue?.failedLastHour ? `${queue.failedLastHour} failed LLM completions this hour` : null,
+    harness && !harness.ok ? `Free harness offline: ${harness.error ?? 'health check failed'}` : null,
+    officeManager && !officeManager.running ? 'Office Manager has no live session' : null,
+  ].filter(Boolean) as string[];
 
   return (
-    <div className="space-y-4 overflow-auto">
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
-        <Kpi label="AGENTS ACTIVE" value={String(active)} accent="#34d399" />
-        <Kpi label="ARCHIVED" value={String(archived)} />
-        <Kpi label="INBOX BACKLOG" value={String(backlog)} accent={backlog ? '#f5a623' : undefined} />
-        <Kpi label="EVENTS · 24H" value={String(eventsToday)} />
-        <Kpi label="TOTAL COST" value={`$${cost.toFixed(2)}`} />
-        <Kpi label="BREAKERS" value={breakers ? String(breakers) : '0'} accent={breakers ? '#f87171' : '#34d399'} />
-      </div>
-
-      <div className="panel p-4">
-        <div className="flex items-center justify-between mb-2">
-          <span className="font-mono text-xs tracking-widest text-hud-dim">FLEET ACTIVITY · EVENTS/HOUR · LAST 24H</span>
-          <span className="text-[11px] font-mono text-hud-dim">{events.length} total events</span>
+    <div className="h-full overflow-auto p-4">
+      <h2 className="font-mono text-hud-amber text-lg mb-4">F5 · EXECUTIVE HQ</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mb-6">
+        <div className="panel p-4">
+          <div className="text-xs text-hud-dim">LIVE AGENTS</div>
+          <div className="text-3xl font-mono font-bold text-hud-text">{liveAgents.length}</div>
+          <div className="text-xs text-hud-dim">{agents.filter(agent => agent.display === 'busy').length} busy · {queue?.inProgress ?? 0} tasks in progress</div>
         </div>
-        <Sparkline events={events} />
+        <div className="panel p-4">
+          <div className="text-xs text-hud-dim">TASK QUEUE</div>
+          <div className="text-3xl font-mono font-bold text-hud-blue">{queue?.queued ?? 0}</div>
+          <div className="text-xs text-hud-dim">{queue?.inProgress ?? 0} in progress · {queue?.complete ?? 0} complete</div>
+        </div>
+        <div className="panel p-4">
+          <div className="text-xs text-hud-dim">SESSIONS</div>
+          <div className={`text-3xl font-mono font-bold ${healthySessions ? 'text-hud-green' : 'text-hud-red'}`}>{healthySessions}</div>
+          <div className="text-xs text-hud-dim">{sessions.length - healthySessions} stale · 5m threshold</div>
+        </div>
+        <div className="panel p-4">
+          <div className="text-xs text-hud-dim">OFFICE MANAGER</div>
+          <div className={`text-2xl font-mono font-bold ${officeManager?.running ? 'text-hud-green' : 'text-hud-red'}`}>{officeManager?.running ? 'RUNNING' : 'OFFLINE'}</div>
+          <div className="text-xs text-hud-dim">last activity {timeAgo(officeManager?.lastActivity ?? null)}</div>
+        </div>
+        <div className="panel p-4">
+          <div className="text-xs text-hud-dim">FREE HARNESS</div>
+          <div className={`text-2xl font-mono font-bold ${harness?.ok ? 'text-hud-green' : 'text-hud-red'}`}>{harness?.status ?? 'CHECKING'}</div>
+          <div className="text-xs text-hud-dim truncate">{harness?.provider ?? '—'} · {harness?.model ?? '—'}</div>
+        </div>
+        <div className="panel p-4">
+          <div className="text-xs text-hud-dim">TOTAL COST</div>
+          <div className="text-3xl font-mono font-bold text-hud-amber">${totalCost.toFixed(2)}</div>
+          <div className="text-xs text-hud-dim">${queue?.completionsLastHour ?? 0} completions this hour</div>
+        </div>
       </div>
 
-      <div className="panel overflow-hidden">
-        <div className="px-4 py-3 border-b border-hud-edge font-mono text-xs tracking-widest text-hud-dim">ROSTER</div>
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="text-left text-hud-dim border-b border-hud-edge">
-              <th className="px-4 py-2 font-mono font-normal">agent</th>
-              <th className="px-4 py-2 font-mono font-normal">status</th>
-              <th className="px-4 py-2 font-mono font-normal">breaker</th>
-              <th className="px-4 py-2 font-mono font-normal">backlog</th>
-              <th className="px-4 py-2 font-mono font-normal">tokens</th>
-              <th className="px-4 py-2 font-mono font-normal">cost</th>
-              <th className="px-4 py-2 font-mono font-normal">last seen</th>
-            </tr>
-          </thead>
-          <tbody>
-            {agents.map((a) => (
-              <tr key={a.id} className="border-b border-hud-edge/50 hover:bg-white/[0.02]">
-                <td className="px-4 py-2 font-medium">
-                  {a.name}{a.isGod ? <span className="ml-2 text-[9px] text-hud-amber font-mono">GOD</span> : null}
-                </td>
-                <td className="px-4 py-2">
-                  <span className="inline-flex items-center gap-1.5">
-                    <i
-                      className="w-1.5 h-1.5 rounded-full inline-block"
-                      style={{ background: a.display === 'busy' ? '#34d399' : a.display === 'idle' ? '#f5a623' : a.display === 'breaker' ? '#f87171' : '#475569' }}
-                    />
-                    {a.display}
-                  </span>
-                </td>
-                <td className="px-4 py-2 font-mono text-hud-dim">{a.archived ? '—' : a.breaker}</td>
-                <td className="px-4 py-2 font-mono">{a.inboxBacklog || ''}</td>
-                <td className="px-4 py-2 font-mono">{a.tokens || ''}</td>
-                <td className="px-4 py-2 font-mono">{a.usd ? `$${a.usd.toFixed(2)}` : ''}</td>
-                <td className="px-4 py-2 font-mono text-hud-dim">{relTime(a.lastSeen)}</td>
-              </tr>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div className="panel p-4">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-mono text-hud-amber text-sm">COMPLETIONS · LAST 12 HOURS</h3>
+            <span className="text-[10px] font-mono text-hud-dim">{queue?.failedLastHour ?? 0} failed this hour</span>
+          </div>
+          <div className="h-40 flex items-end gap-2">
+            {(queue?.completionsByHour ?? []).map(item => (
+              <div key={item.hour} className="flex-1 min-w-0 flex flex-col items-center gap-1">
+                <span className="text-[9px] font-mono text-hud-dim">{item.count}</span>
+                <div className="w-full bg-hud-blue/70 rounded-t" style={{ height: `${Math.max(4, item.count / completionMax * 110)}px` }} />
+                <span className="text-[8px] font-mono text-hud-dim truncate w-full text-center">{new Date(item.hour).toLocaleTimeString([], { hour: 'numeric' })}</span>
+              </div>
             ))}
-          </tbody>
-        </table>
+            {!queue && <div className="w-full text-center text-hud-dim text-sm">Loading queue history…</div>}
+          </div>
+        </div>
+
+        <div className="panel p-4">
+          <h3 className="font-mono text-hud-amber text-sm mb-3">SYSTEM ALERTS</h3>
+          <div className="space-y-2">
+            {alerts.length > 0 ? alerts.map(alert => (
+              <div key={alert} className="panel-surface p-3 text-sm text-hud-amber flex items-start gap-2">
+                <span className="text-hud-red mt-1.5 w-1.5 h-1.5 rounded-full shrink-0" />
+                <span>{alert}</span>
+              </div>
+            )) : (
+              <div className="panel-surface p-3 text-sm text-hud-green">No active alerts</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="panel p-4 mt-4">
+        <h3 className="font-mono text-hud-amber text-sm mb-3">TOP AGENTS BY COST</h3>
+        <div className="space-y-2">
+          {topAgents.map(agent => (
+            <div key={agent.id} className="grid grid-cols-[150px_1fr_80px] items-center gap-3">
+              <span className="font-mono text-xs truncate">{agent.name}</span>
+              <div className="h-2 rounded bg-hud-edge overflow-hidden"><div className="h-full bg-hud-amber" style={{ width: `${(agent.usd ?? 0) / maxCost * 100}%` }} /></div>
+              <span className="text-right font-mono text-xs text-hud-amber">${(agent.usd ?? 0).toFixed(2)}</span>
+            </div>
+          ))}
+          {topAgents.length === 0 && <div className="text-hud-dim text-xs text-center py-4">No agents registered</div>}
+        </div>
       </div>
     </div>
   );

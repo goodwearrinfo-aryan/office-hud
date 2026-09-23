@@ -1,7 +1,5 @@
+import { useMemo, useState } from 'react';
 import type { Agent } from '../api';
-
-// The hero: an SVG office floor. God sits in the corner office; workers at pods.
-// Click any desk -> drawer. Monitor color = live status.
 
 interface Props {
   agents: Agent[];
@@ -9,138 +7,145 @@ interface Props {
   selectedId?: string | null;
 }
 
-const WORKER_SLOTS = [
-  { x: 90, y: 300 }, { x: 260, y: 300 }, { x: 430, y: 300 }, { x: 600, y: 300 },
-  { x: 175, y: 465 }, { x: 345, y: 465 }, { x: 515, y: 465 },
-];
+const STATUS_COLORS: Record<Agent['display'], string> = {
+  busy: '#34d399',
+  idle: '#f5a623',
+  breaker: '#f87171',
+  offline: '#475569',
+};
 
-function WorkerDesk({ a, x, y, onSelect }: { a: Agent; x: number; y: number; onSelect: (id: string) => void }) {
+function groupAgents(agents: Agent[]) {
+  const groups = new Map<string, Agent[]>();
+  for (const agent of agents) {
+    let label = 'Other';
+    if (agent.isGod || ['office-manager', 'mainbot'].includes(agent.id)) label = 'Leadership';
+    else if (/^F\d+$/i.test(agent.id)) label = 'Floor Managers';
+    else if (/^pm-/i.test(agent.id)) label = 'PM Desk';
+    else if (/^specialist-/i.test(agent.id)) label = 'Specialists';
+    else if (/^worker-/i.test(agent.id)) label = 'Workers';
+    groups.set(label, [...(groups.get(label) || []), agent]);
+  }
+  const order = ['Leadership', 'Floor Managers', 'PM Desk', 'Specialists', 'Workers', 'Other'];
+  return order.filter(label => groups.has(label)).map(label => ({ label, agents: groups.get(label) || [] }));
+}
+
+function ageLabel(seconds: number | null) {
+  if (seconds == null) return 'offline';
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3600)}h ago`;
+}
+
+function ModelBadge({ agent }: { agent: Agent }) {
+  if (!agent.provider && !agent.model) return null;
   return (
-    <g className="desk" transform={`translate(${x},${y})`} onClick={() => onSelect(a.id)}>
-      <title>{`${a.name} — ${a.display}${a.inboxBacklog ? ` · ${a.inboxBacklog} unread` : ''}`}</title>
-      {/* shadow */}
-      <ellipse cx={65} cy={92} rx={72} ry={12} fill="rgba(0,0,0,0.35)" />
-      {/* desk */}
-      <rect x={0} y={0} width={130} height={56} rx={10} fill="#222839" stroke="#36405a" strokeWidth={1.5} />
-      <rect x={0} y={0} width={130} height={7} rx={3.5} fill="#2d3550" />
-      {/* monitor */}
-      <rect x={52} y={10} width={26} height={16} rx={3} className={`mon-${a.display}`} />
-      <rect x={63} y={26} width={4} height={8} fill="#36405a" />
-      {/* keyboard */}
-      <rect x={48} y={40} width={36} height={8} rx={2} fill="#2f3a55" />
-      {/* coffee */}
-      <circle cx={16} cy={18} r={4} fill="#1a2030" stroke="#36507a" strokeWidth={1} />
-      {/* chair */}
-      <circle cx={65} cy={86} r={13} fill="#1d2434" stroke="#2c3650" strokeWidth={1.5} />
-      <rect x={58} y={74} width={14} height={4} rx={2} fill="#2c3650" />
-      {/* inbox backlog badge */}
-      {a.inboxBacklog > 0 && (
-        <g>
-          <rect x={104} y={4} width={20} height={13} rx={6.5} fill="#1a2030" stroke="#f5a623" strokeWidth={1} />
-          <text x={114} y={14} textAnchor="middle" fontSize={9} fill="#f5a623" fontFamily="SF Mono, monospace" className="badge-dot">
-            {a.inboxBacklog > 9 ? '9+' : a.inboxBacklog}
-          </text>
-        </g>
-      )}
-      {/* nameplate */}
-      <text x={65} y={118} textAnchor="middle" fontSize={12} fill={a.archived ? '#566073' : '#8b93a7'} fontFamily="SF Mono, monospace">
-        {a.name}
-      </text>
-    </g>
+    <span className="text-[9px] font-mono text-hud-dim px-1.5 py-0.5 rounded bg-hud-edge truncate max-w-full">
+      {agent.provider || 'auto'}:{(agent.model || 'auto').split('/').pop()}
+    </span>
   );
 }
 
-function GodOffice({ a, onSelect }: { a?: Agent; onSelect: (id: string) => void }) {
-  const display = a?.display ?? 'offline';
+function AgentPod({ agent, selected, onSelect }: { agent: Agent; selected: boolean; onSelect: () => void }) {
+  const color = STATUS_COLORS[agent.display];
   return (
-    <g className="desk" onClick={() => a && onSelect(a.id)}>
-      <title>{a ? `${a.name} — ${a.role}` : 'corner office'}</title>
-      {/* corner office zone */}
-      <rect x={640} y={48} width={290} height={200} rx={14} fill="#161b28" stroke="#2c3550" strokeDasharray="6 5" strokeWidth={1.5} />
-      <text x={650} y={68} fontSize={10} fill="#3d4a6e" fontFamily="SF Mono, monospace" letterSpacing={2}>CORNER OFFICE</text>
-      {/* shadow */}
-      <ellipse cx={760} cy={212} rx={110} ry={14} fill="rgba(0,0,0,0.4)" />
-      {/* big desk */}
-      <rect x={680} y={110} width={180} height={64} rx={10} fill="#262e45" stroke="#414b66" strokeWidth={1.5} />
-      <rect x={680} y={110} width={180} height={8} rx={4} fill="#333d5c" />
-      {/* dual monitors */}
-      <rect x={742} y={120} width={26} height={16} rx={3} className={`mon-${display}`} />
-      <rect x={772} y={120} width={26} height={16} rx={3} className={`mon-${display}`} style={{ animationDelay: '0.4s' }} />
-      <rect x={768} y={136} width={5} height={10} fill="#414b66" />
-      {/* mug */}
-      <rect x={700} y={148} width={10} height={9} rx={2} fill="#1a2030" stroke="#f5a623" strokeWidth={1} />
-      {/* chair */}
-      <circle cx={770} cy={196} r={15} fill="#1d2434" stroke="#2c3650" strokeWidth={1.5} />
-      <rect x={761} y={180} width={18} height={5} rx={2.5} fill="#2c3650" />
-      {/* nameplate */}
-      <text x={770} y={236} textAnchor="middle" fontSize={13} fill="#e7eaf0" fontFamily="SF Mono, monospace" fontWeight={600}>
-        {a?.name ?? '—'}
-      </text>
-      <text x={770} y={250} textAnchor="middle" fontSize={9} fill="#f5a623" fontFamily="SF Mono, monospace" letterSpacing={1.5}>
-        GOD · RUNS THE FLOOR
-      </text>
-    </g>
-  );
-}
-
-export default function OfficeScene({ agents, onSelect }: Props) {
-  const god = agents.find((a) => a.isGod);
-  const workers = agents.filter((a) => !a.isGod);
-
-  return (
-    <div className="panel overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-hud-edge">
-        <div className="font-mono text-xs tracking-widest text-hud-dim">FLOOR F3 · THE OFFICE</div>
-        <div className="flex items-center gap-4 text-[10px] font-mono text-hud-dim">
-          <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full inline-block" style={{ background: '#34d399' }} /> busy</span>
-          <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full inline-block" style={{ background: '#f5a623' }} /> idle</span>
-          <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full inline-block" style={{ background: '#f87171' }} /> breaker</span>
-          <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full inline-block" style={{ background: '#475569' }} /> offline</span>
+    <button
+      onClick={onSelect}
+      className={`text-left rounded-lg border p-3 transition-colors ${selected ? 'border-hud-amber bg-hud-amber/10' : 'border-hud-edge bg-hud-panel hover:border-hud-dim'}`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="font-mono text-xs text-hud-text truncate">{agent.name}</div>
+          <div className="text-[9px] text-hud-dim truncate">{agent.id}</div>
+        </div>
+        <div className="w-10 h-7 rounded bg-black/30 border border-hud-edge p-1 shrink-0">
+          <div className="w-full h-full rounded-sm" style={{ background: color, boxShadow: `0 0 8px ${color}99` }} />
         </div>
       </div>
-      <svg viewBox="0 0 960 640" className="office-scene w-full" style={{ maxHeight: '62vh' }}>
-        <defs>
-          <pattern id="carpet" width="34" height="34" patternUnits="userSpaceOnUse">
-            <rect width="34" height="34" fill="#10141e" />
-            <path d="M0 17 H34 M17 0 V34" stroke="#161c2a" strokeWidth="1" />
-          </pattern>
-        </defs>
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="text-[9px] font-mono uppercase" style={{ color }}>{agent.display}</span>
+        <ModelBadge agent={agent} />
+      </div>
+      {agent.currentTaskTitle && <div className="mt-2 text-[10px] text-hud-dim truncate">{agent.currentTaskTitle}</div>}
+    </button>
+  );
+}
 
-        {/* room */}
-        <rect x={20} y={20} width={920} height={600} rx={24} fill="url(#carpet)" stroke="#232a38" strokeWidth={2} />
+export default function OfficeScene({ agents, onSelect, selectedId }: Props) {
+  const [activeOnly, setActiveOnly] = useState(false);
+  const god = agents.find(agent => agent.isGod);
+  const workers = agents.filter(agent => !agent.isGod);
+  const visibleWorkers = activeOnly ? workers.filter(agent => agent.display === 'busy' || agent.display === 'idle') : workers;
+  const groups = useMemo(() => groupAgents(visibleWorkers), [visibleWorkers]);
+  const liveCount = workers.filter(agent => agent.display === 'busy' || agent.display === 'idle').length;
 
-        {/* whiteboard */}
-        <rect x={70} y={60} width={180} height={100} rx={6} fill="#141a28" stroke="#2c3650" strokeWidth={1.5} />
-        <text x={80} y={82} fontSize={11} fill="#5b6a8f" fontFamily="SF Mono, monospace">SPRINT BOARD</text>
-        <line x1={80} y1={98} x2={230} y2={98} stroke="#2c3650" />
-        <rect x={80} y={108} width={40} height={10} rx={2} fill="#34405e" />
-        <rect x={80} y={122} width={70} height={10} rx={2} fill="#2c3650" />
-        <rect x={80} y={136} width={55} height={10} rx={2} fill="#2c3650" />
+  return (
+    <div className="h-full overflow-auto panel">
+      <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2.5 border-b border-hud-edge bg-hud-panel">
+        <div>
+          <div className="font-mono text-xs tracking-widest text-hud-dim">FLOOR F3 · THE OFFICE</div>
+          <div className="text-[10px] text-hud-dim mt-0.5">{liveCount} live · {workers.length} workers</div>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex gap-3 text-[10px] font-mono text-hud-dim">
+            {Object.entries(STATUS_COLORS).map(([status, color]) => (
+              <span key={status} className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full inline-block" style={{ background: color }} />{status}</span>
+            ))}
+          </div>
+          <label className="flex items-center gap-2 text-[10px] font-mono text-hud-dim">
+            <input type="checkbox" checked={activeOnly} onChange={event => setActiveOnly(event.target.checked)} />
+            active only
+          </label>
+        </div>
+      </div>
 
-        {/* plant */}
-        <rect x={290} y={128} width={22} height={16} rx={3} fill="#1f2838" stroke="#36507a" strokeWidth={1} />
-        <circle cx={301} cy={120} r={9} fill="#234030" />
-        <circle cx={307} cy={112} r={7} fill="#2a5140" />
+      <div className="p-4 space-y-5">
+        {god && (
+          <section>
+            <div className="font-mono text-[10px] tracking-widest text-hud-dim mb-2">CORNER OFFICE</div>
+            <div className="max-w-sm">
+              <AgentPod agent={god} selected={selectedId === god.id} onSelect={() => onSelect(god.id)} />
+            </div>
+          </section>
+        )}
 
-        {/* wall clock */}
-        <circle cx={420} cy={105} r={14} fill="#141a28" stroke="#2c3650" strokeWidth={1.5} />
-        <line x1={420} y1={105} x2={420} y2={95} stroke="#5b6a8f" strokeWidth={1.5} />
-        <line x1={420} y1={105} x2={428} y2={108} stroke="#5b6a8f" strokeWidth={1.5} />
+        {groups.map(group => (
+          <section key={group.label}>
+            <div className="flex items-center justify-between mb-2">
+              <span className="font-mono text-[10px] tracking-widest text-hud-dim">{group.label.toUpperCase()}</span>
+              <span className="text-[10px] font-mono text-hud-dim">{group.agents.length}</span>
+            </div>
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(165px,1fr))] gap-2">
+              {group.agents.map(agent => (
+                <AgentPod key={agent.id} agent={agent} selected={selectedId === agent.id} onSelect={() => onSelect(agent.id)} />
+              ))}
+            </div>
+          </section>
+        ))}
 
-        {/* the god */}
-        <GodOffice a={god} onSelect={onSelect} />
+        {groups.length === 0 && <div className="py-8 text-center text-hud-dim text-sm">No live agents</div>}
 
-        {/* worker pods */}
-        {workers.map((a, i) => {
-          const slot = WORKER_SLOTS[i % WORKER_SLOTS.length];
-          return <WorkerDesk key={a.id} a={a} x={slot.x} y={slot.y} onSelect={onSelect} />;
-        })}
-
-        {/* floor label */}
-        <text x={40} y={606} fontSize={11} fill="#2c3650" fontFamily="SF Mono, monospace" letterSpacing={3}>
-          OFFICE // HUD
-        </text>
-      </svg>
+        <section className="pt-2">
+          <div className="font-mono text-[10px] tracking-widest text-hud-dim mb-2">AGENT LIST</div>
+          <div className="table-container rounded-lg border border-hud-edge">
+            <table className="table">
+              <thead>
+                <tr><th>Agent</th><th>Status</th><th>Task</th><th>Heartbeat</th><th>Provider</th></tr>
+              </thead>
+              <tbody>
+                {(activeOnly ? workers.filter(agent => agent.display === 'busy' || agent.display === 'idle') : workers).map(agent => (
+                  <tr key={agent.id} className="cursor-pointer" onClick={() => onSelect(agent.id)}>
+                    <td className="text-hud-text">{agent.name}</td>
+                    <td style={{ color: STATUS_COLORS[agent.display] }}>{agent.display}</td>
+                    <td className="max-w-[300px] truncate">{agent.currentTaskTitle || agent.currentTaskId || '—'}</td>
+                    <td>{ageLabel(agent.heartbeatAgeSec)}</td>
+                    <td>{agent.provider || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }

@@ -1,69 +1,77 @@
-import { useMemo, useState } from 'react';
-import { useLive, shortTime, type LedgerEvent } from '../api';
+import { useState } from 'react';
+import { useLive, type FleetEvent } from '../api';
 
-const KIND_STYLE: Record<string, { color: string; label?: string }> = {
-  spawn: { color: '#34d399' },
-  message: { color: '#60a5fa' },
-  archive: { color: '#8b93a7' },
-  'app-start': { color: '#c084fc' },
-  cwd_invalid: { color: '#f87171' },
-  drop: { color: '#f5a623' },
-  role: { color: '#2dd4bf' },
-};
+const EVENT_TYPES = [
+  ['', 'All Events'],
+  ['heartbeat', 'Heartbeat'],
+  ['task_started', 'Task Started'],
+  ['task_completed', 'Task Completed'],
+  ['task_failed', 'Task Failed'],
+  ['agent_stale', 'Agent Stale'],
+  ['session_started', 'Session Started'],
+  ['message_sent', 'Message Sent'],
+];
 
-function detail(e: LedgerEvent): string {
-  const { ts, kind, ...rest } = e;
-  const s = JSON.stringify(rest);
-  return s.length > 180 ? s.slice(0, 180) + '…' : s;
+function eventTone(type: string) {
+  if (type === 'task_completed') return 'text-hud-green';
+  if (type === 'task_failed' || type === 'agent_stale') return 'text-hud-red';
+  if (type === 'heartbeat') return 'text-hud-dim';
+  if (type === 'task_started' || type === 'session_started') return 'text-hud-blue';
+  return 'text-hud-amber';
+}
+
+function eventTime(timestamp?: string) {
+  if (!timestamp) return '—';
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? timestamp : date.toLocaleString();
 }
 
 export default function LedgerTimeline() {
-  const { data } = useLive<{ events: LedgerEvent[] }>('/api/ledger');
-  const [filter, setFilter] = useState<string>('all');
-
-  const kinds = useMemo(() => {
-    const set = new Map<string, number>();
-    (data?.events ?? []).forEach((e) => set.set(e.kind ?? '?', (set.get(e.kind ?? '?') ?? 0) + 1));
-    return [...set.entries()].sort((a, b) => b[1] - a[1]);
-  }, [data]);
-
-  const events = (data?.events ?? []).filter((e) => filter === 'all' || e.kind === filter);
+  const [source, setSource] = useState<'log' | 'events'>('events');
+  const [kind, setKind] = useState('');
+  const query = new URLSearchParams({ source, limit: '200' });
+  if (kind) query.set('kind', kind);
+  const { data, error } = useLive<{ source: string; events: FleetEvent[] }>(`/api/ledger?${query.toString()}`);
+  const events = data?.events ?? [];
 
   return (
-    <div className="panel flex-1 flex flex-col min-h-0">
-      <div className="px-4 py-3 border-b border-hud-edge flex items-center gap-2 flex-wrap">
-        <span className="font-mono text-xs tracking-widest text-hud-dim mr-2">F2 · LEDGER</span>
-        <button
-          onClick={() => setFilter('all')}
-          className={`px-2.5 py-1 rounded-lg text-[11px] font-mono ${filter === 'all' ? 'bg-hud-edge text-hud-text' : 'text-hud-dim hover:text-hud-text'}`}
-        >
-          all · {data?.events.length ?? 0}
-        </button>
-        {kinds.map(([k, n]) => (
-          <button
-            key={k}
-            onClick={() => setFilter(k)}
-            className={`px-2.5 py-1 rounded-lg text-[11px] font-mono ${filter === k ? 'bg-hud-edge text-hud-text' : 'text-hud-dim hover:text-hud-text'}`}
-            style={{ borderLeft: `2px solid ${KIND_STYLE[k]?.color ?? '#444'}` }}
-          >
-            {k} · {n}
-          </button>
-        ))}
+    <div className="h-full overflow-auto p-4">
+      <div className="flex items-center justify-between mb-4 gap-4">
+        <h2 className="font-mono text-hud-amber text-lg">F2 · LEDGER TIMELINE</h2>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded-lg border border-hud-edge overflow-hidden">
+            {(['events', 'log'] as const).map(value => (
+              <button
+                key={value}
+                onClick={() => setSource(value)}
+                className={`px-3 py-1.5 text-xs font-mono ${source === value ? 'bg-hud-edge text-hud-text' : 'text-hud-dim hover:text-hud-text'}`}
+              >
+                {value === 'events' ? 'events.log' : 'log.jsonl'}
+              </button>
+            ))}
+          </div>
+          <select className="input w-44 text-xs" value={kind} onChange={event => setKind(event.target.value)}>
+            {EVENT_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+        </div>
       </div>
-      <div className="flex-1 overflow-auto">
-        {events.length === 0 && <div className="p-6 text-hud-dim text-sm">no events</div>}
-        {events.map((e, i) => (
-          <div key={i} className="flex items-start gap-3 px-4 py-2 border-b border-hud-edge/50 hover:bg-white/[0.02]">
-            <span className="text-[11px] font-mono text-hud-dim w-14 shrink-0 pt-0.5">{shortTime(e.ts as number)}</span>
-            <span
-              className="text-[10px] font-mono px-1.5 rounded shrink-0 mt-0.5"
-              style={{ color: KIND_STYLE[e.kind ?? '']?.color ?? '#8b93a7', background: 'rgba(255,255,255,0.04)' }}
-            >
-              {e.kind ?? '?'}
-            </span>
-            <span className="text-[11px] font-mono text-hud-dim break-all leading-relaxed">{detail(e)}</span>
+      <div className="space-y-2">
+        {events.map((event, index) => (
+          <div key={`${event.timestamp ?? 'event'}-${event.task_id ?? ''}-${event.agent_id ?? ''}-${index}`} className="panel p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`font-mono text-xs ${eventTone(event.type)}`}>{event.type || 'event'}</span>
+                <span className="text-xs text-hud-text truncate">{event.agent_id || event.session_id || 'system'}</span>
+                {event.task_id && <span className="text-[10px] font-mono text-hud-blue truncate">{event.task_id}</span>}
+              </div>
+              <span className="text-[10px] font-mono text-hud-dim shrink-0">{eventTime(event.timestamp)}</span>
+            </div>
+            {event.result && <div className="mt-2 text-xs text-hud-dim truncate">{event.result}</div>}
           </div>
         ))}
+        {events.length === 0 && (
+          <div className="panel py-8 text-center text-hud-dim text-sm">{error ? `Failed to load events: ${error}` : 'No events found'}</div>
+        )}
       </div>
     </div>
   );
