@@ -9,6 +9,7 @@ const os = require('os');
 const PORT = Number(process.env.PORT || 4747);
 const HOST = process.env.HOST || '127.0.0.1';
 const HIVE = process.env.OFFICE_HUD_HIVE || path.join(os.homedir(), 'openalice-fleet', 'hive');
+const HIVE_LABEL = process.env.OFFICE_HUD_LABEL || 'Fleet hive';
 const FLEET_ROOT = path.dirname(HIVE);
 const TRADING_BOT = process.env.TRADING_BOT_PATH || path.join(os.homedir(), 'trading-bot');
 const FREE_HARNESS_URL = process.env.FREE_HARNESS_URL || 'http://127.0.0.1:8080';
@@ -124,7 +125,7 @@ function listMessages(dir, limit = 50) {
 
 function hiveStatus() {
   const exists = fs.existsSync(HIVE);
-  return { hive: HIVE, present: exists };
+  return { hive: HIVE, label: HIVE_LABEL, present: exists };
 }
 
 function getFleet() {

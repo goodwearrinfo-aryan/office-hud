@@ -110,7 +110,7 @@ export default function App() {
         </div>
         <div className="flex-1 flex items-center justify-center gap-4 text-xs text-hud-dim">
           <span className="font-mono text-hud-dim max-w-xs truncate">
-            {summary?.hive?.replace(/^\/Users\/[^/]+\//, '~/') ?? 'no hive'}
+            {summary?.label ?? 'no hive'} · {summary?.hive?.replace(/^\/Users\/[^/]+\//, '~/') ?? '—'}
           </span>
           <span className="font-mono tabular-nums">{clock}</span>
           <span className="flex items-center gap-1.5">

@@ -33,6 +33,7 @@ export interface Agent {
 
 export interface Summary {
   hive: string;
+  label: string;
   present: boolean;
   godId: string | null;
   agents: Agent[];
