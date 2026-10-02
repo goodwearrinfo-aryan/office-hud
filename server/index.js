@@ -1,26 +1,162 @@
-// office-hud server — read-only window into an openalice-fleet hive.
-// Serves REST + SSE (live fs.watch) and the built web app. Never writes to the hive.
+// office-hud server — operations window into an openalice-fleet hive.
+// Serves REST + SSE and routes confirmed local commands into JEV.
 
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const net = require('net');
+const crypto = require('crypto');
+const { execFileSync } = require('child_process');
+const { LiveHub } = require('./lib/live_hub');
+const { AlertEngine } = require('./lib/alerts');
+const { AutonomyController } = require('./lib/autonomy');
+const replay = require('./lib/replay');
+
+let liveHub = null;
+let alertEngine = null;
+let autonomy = null;
 
 const PORT = Number(process.env.PORT || 4747);
 const HOST = process.env.HOST || '127.0.0.1';
 const HIVE = process.env.OFFICE_HUD_HIVE || path.join(os.homedir(), 'openalice-fleet', 'hive');
+process.env.OPENALICE_HIVE = HIVE;
+let hiveFileLock = null;
+try { hiveFileLock = require(path.join(HIVE, 'lib', 'file_lock.js')).withFileLock; } catch {}
 const HIVE_LABEL = process.env.OFFICE_HUD_LABEL || 'Fleet hive';
 const FLEET_ROOT = path.dirname(HIVE);
+
+// The hardened local-only gate lives in its own module, not inline here. A
+// socket-address check is not sufficient: Tailscale Serve terminates the tailnet
+// connection on this host and then opens a NEW loopback connection to the app, so
+// a remote device and a local browser both arrive as 127.0.0.1. An earlier
+// version checked only the socket, and every gated route below was reachable
+// from any device on the tailnet with no auth. Keeping the decision in a module
+// no in-flight rewrite touches is deliberate: that inline check was reverted five
+// times in one session, and once reached production wide open.
+const { isLocalRequest } = require('./lib/local_only');
+const { TerminalManager } = require('./lib/terminal/manager');
+
+const terminalManager = new TerminalManager({ hive: HIVE });
+const POLYMARKET_ROOT = '/Users/a/polymarket';
+const POLYMARKET_RESEARCH = path.join(POLYMARKET_ROOT, 'research');
+const POLYMARKET_STATE_PATH = path.join(POLYMARKET_RESEARCH, 'engine_state.json');
+const POLYMARKET_EXCLUSIONS_PATH = path.join(POLYMARKET_RESEARCH, 'market_exclusions.json');
+const POLYMARKET_BACKUP_DIR = path.join(POLYMARKET_ROOT, 'backups');
+const POLYMARKET_LAUNCHD_LABEL = 'com.aryan.pm-engine';
+const POLYMARKET_LAUNCHD_INSTALLED_PLIST = '/Users/a/Library/LaunchAgents/com.aryan.pm-engine.plist';
+const POLYMARKET_LAUNCHD_TARGET = `gui/${typeof process.getuid === 'function' ? process.getuid() : 501}/${POLYMARKET_LAUNCHD_LABEL}`;
 const TRADING_BOT = process.env.TRADING_BOT_PATH || path.join(os.homedir(), 'trading-bot');
+const PAPER_BENCHMARK = process.env.PAPER_BENCHMARK_PATH || path.join(os.homedir(), 'trading', 'paper-benchmark');
 const FREE_HARNESS_URL = process.env.FREE_HARNESS_URL || 'http://127.0.0.1:8080';
+const SERVICE_PORTS = [
+  { name: 'Free harness', port: 8080, role: 'OpenAI API' },
+  { name: 'WebSocket', port: 8081, role: 'event stream' },
+  { name: 'Bridge', port: 19593, role: 'Anthropic bridge' },
+  { name: 'Dashboard', port: 3002, role: 'public dashboards' },
+  { name: 'Office HUD', port: PORT, role: 'operations console' },
+  { name: 'Ollama', port: 11434, role: 'local model runtime' },
+  { name: 'Trading bot', port: 8765, role: 'paper/testnet' },
+  { name: 'LLM gate', port: 8091, role: 'unsupervised' },
+  { name: 'Cloudflared', port: 20241, role: 'tunnel metrics' },
+];
+// Browser-facing services, reachable through this one origin. The request path
+// never contributes a host and verbs are restricted to GET/HEAD, so this cannot
+// be turned into a general-purpose proxy onto arbitrary local ports.
+const PORTAL_SERVICES = new Map([
+  ['dash', { port: 3002, label: 'Trading Lab', role: 'dashboards + JSON feeds', browser: true }],
+  ['bot', { port: 8765, label: 'Bot API', role: 'paper/testnet state', browser: true }],
+  ['ollama', { port: 11434, label: 'Ollama', role: 'local model runtime', browser: true }],
+  ['tunnel', { port: 20241, label: 'Cloudflared', role: 'tunnel metrics', browser: false }],
+  ['harness', { port: 8080, label: 'Free harness', role: 'OpenAI-compatible API', browser: false }],
+]);
 const SESSION_STALE_MS = 5 * 60 * 1000;
 const EVENT_TAIL_BYTES = 512 * 1024;
 const JSON_CACHE_MS = 1000;
+const jarvisCommandTimestamps = [];
+
+// Explicitly allowlisted POST routes. Jarvis commands only enqueue work.
+const SAFE_POST = new Set([
+  '/api/llm/costs/reset/daily',
+  '/api/llm/costs/reset/monthly',
+  '/api/llm/circuit-breakers/reset',
+  '/api/llm/test',
+  '/api/polymarket/start',
+  '/api/polymarket/stop',
+  '/api/polymarket/markets/exclude',
+  '/api/polymarket/markets/include',
+  '/api/polymarket/trades/clear',
+  '/api/recovery/manual',
+  '/api/recovery/start',
+  '/api/recovery/stop',
+  '/api/recovery/manual/:agentId',
+  '/api/jarvis/command',
+]);
+// Alert acknowledgement and autonomy decisions are operator state on the HUD
+// itself, not hive writes. Each handler still requires a local caller.
+const SAFE_POST_PREFIXES = [
+  '/api/alerts/',
+  '/api/autonomy/',
+  // Terminal control runs arbitrary commands, so it is the strongest thing on
+  // this list, and it is listed as a prefix purely so the global read-only gate
+  // lets the request reach its own handler. That handler applies the hardened
+  // Tailscale-aware local check AND the command allowlist, so widening this
+  // prefix grants nothing on its own -- but keep it under review: any new route
+  // beginning /api/terminals/ inherits the reach of this entry.
+  '/api/terminals/',
+];
 
 const app = express();
+app.disable('x-powered-by');
+
+// A page on any origin can reach 127.0.0.1, and browsers will send whatever
+// Host header the page's URL implies. Reject requests whose Host is not a
+// loopback name, which is what stops DNS rebinding from reaching the API.
+const ALLOWED_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0']);
+const serverName = os.hostname().split('.')[0];
+if (serverName) ALLOWED_HOSTS.add(serverName);
+
+/** Strip the port without mangling a bare IPv6 literal. */
+function hostOnly(hostHeader) {
+  const value = String(hostHeader).trim();
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(value);
+  if (bracketed) return bracketed[1].toLowerCase();
+  // More than one colon and no brackets means the whole thing is the address.
+  if ((value.match(/:/g) || []).length > 1) return value.toLowerCase();
+  return value.split(':')[0].toLowerCase();
+}
+
+// Extra exact hostnames this service is reached by, e.g. the Tailscale FQDN
+// that the serve proxy rewrites to. Matched exactly on purpose: a suffix rule
+// like "startsWith(serverName)" would reopen DNS rebinding, since an attacker
+// can obtain a valid certificate for as-mac-mini.evil.com and point it at
+// 127.0.0.1.
+const EXTRA_ALLOWED_HOSTS = new Set(
+  String(process.env.OFFICE_HUD_ALLOWED_HOSTS || "")
+    .split(",")
+    .map((value) => hostOnly(value))
+    .filter(Boolean),
+);
+
+function hostIsAllowed(hostHeader) {
+  if (!hostHeader) return false;
+  const host = hostOnly(hostHeader);
+  return ALLOWED_HOSTS.has(host) || EXTRA_ALLOWED_HOSTS.has(host);
+}
+
+app.use((req, res, next) => {
+  if (hostIsAllowed(req.headers.host)) return next();
+  return sendError(res, 421, 'bad_host', `Host ${req.headers.host} is not allowed`);
+});
+
 app.use(express.json());
 app.use('/api', (req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD') return next();
+  const p = req.originalUrl.split('?')[0];
+  if (req.method === 'POST'
+    && (SAFE_POST.has(p)
+      || p.startsWith('/api/recovery/manual/')
+      || SAFE_POST_PREFIXES.some((prefix) => p.startsWith(prefix)))) return next();
   return res.status(405).json({ error: 'Office HUD API is read-only' });
 });
 
@@ -36,13 +172,34 @@ function readJson(file, fallback) {
 
 const jsonCache = new Map();
 
+/**
+ * Cache keyed on the file's mtime and size rather than a time-to-live. A stat
+ * is microseconds; re-parsing a multi-megabyte tasks.json is milliseconds, so
+ * this is both fresher than a TTL and far cheaper on a busy hive. A TTL cache
+ * would also let a write land inside the window and be served stale.
+ */
 function readJsonCached(file, fallback) {
-  const now = Date.now();
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    jsonCache.delete(file);
+    return fallback;
+  }
   const cached = jsonCache.get(file);
-  if (cached && now - cached.at < JSON_CACHE_MS) return cached.value;
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    cached.at = Date.now();
+    return cached.value;
+  }
   const value = readJson(file, fallback);
-  jsonCache.set(file, { at: now, value });
+  jsonCache.set(file, { at: Date.now(), mtimeMs: stat.mtimeMs, size: stat.size, value });
   return value;
+}
+
+function clampLimit(value, fallback, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(Math.floor(parsed), max);
 }
 
 function readText(file) {
@@ -140,8 +297,621 @@ function getTasks() {
   return readJsonCached(path.join(HIVE, 'tasks.json'), { tasks: [] });
 }
 
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function requestError(message, statusCode) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
+
+function sendError(res, status, code, message, details) {
+  const error = { code, message };
+  if (details !== undefined) error.details = details;
+  return res.status(status).json({ ok: false, error });
+}
+
+function isIdentifier(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value);
+}
+
+const HIVE_LOCK_STALE_MS = 30000;
+
+function withHiveFileLock(lockPath, callback) {
+  if (typeof hiveFileLock !== 'function') throw requestError('Hive file lock is unavailable', 503);
+  // hive/lib/file_lock.js spins on a blocking Atomics.wait with no timeout, so a
+  // lock left behind by a killed writer would freeze the whole event loop. Refuse
+  // early instead of queueing behind a live holder.
+  try {
+    const stat = fs.statSync(lockPath);
+    if (Date.now() - stat.mtimeMs < HIVE_LOCK_STALE_MS) {
+      throw requestError('Hive is locked by another writer — retry shortly', 503);
+    }
+  } catch (error) {
+    if (error && error.statusCode) throw error;
+    // ENOENT (or any stat failure) means the lock is free.
+  }
+  return hiveFileLock(lockPath, callback);
+}
+
+function atomicWriteFile(file, contents) {
+  const temporaryPath = `${file}.tmp.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
+  try {
+    fs.writeFileSync(temporaryPath, contents, { encoding: 'utf8', flag: 'wx' });
+    fs.renameSync(temporaryPath, file);
+  } finally {
+    try { fs.unlinkSync(temporaryPath); } catch {}
+  }
+}
+
+function atomicWriteJson(file, value) {
+  atomicWriteFile(file, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function jarvisTaskSummary(task) {
+  return {
+    task_id: task.task_id,
+    title: task.title,
+    objective: task.objective || '',
+    source: task.source || null,
+    requested_by: task.requested_by || null,
+    actor: task.actor || 'office-hud-local',
+    route: task.route || null,
+    routing: task.routing || null,
+    status: String(task.status || 'UNKNOWN').toUpperCase(),
+    priority: task.priority || 'normal',
+    assigned_agent: task.assigned_agent || null,
+    claimed_by: task.claimed_by || null,
+    created_at: task.created_at || null,
+    updated_at: task.updated_at || task.created_at || null,
+    completed_at: task.completed_at || null,
+    result: task.result || null,
+    risk: task.risk || 'normal',
+  };
+}
+
+function getJarvisTasks(limit = 50) {
+  const boundedLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+  return (getTasks().tasks || [])
+    .filter(task => task.source === 'jarvis' || task.requested_by === 'jarvis')
+    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    .slice(0, boundedLimit)
+    .map(jarvisTaskSummary);
+}
+
+function getJarvisAudit(limit = 50) {
+  const boundedLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
+  return getRecentEvents(5000, 'jarvis_command').slice(0, boundedLimit).map(event => ({
+    task_id: event.task_id || null,
+    actor: event.actor || 'office-hud-local',
+    target: event.target || null,
+    requested_target: event.requested_target || null,
+    routing: event.routing || null,
+    priority: event.priority || null,
+    risk: event.risk || 'normal',
+    prompt_length: event.prompt_length || 0,
+    prompt_hash: event.prompt_hash || null,
+    timestamp: event.timestamp || null,
+  }));
+}
+
+function isDangerousJarvisPrompt(prompt) {
+  return /\b(delete|remove|destroy|drop|kill|shutdown|stop|restart|reset|clear|purge|erase|overwrite|disable|enable|transfer|withdraw|deposit|buy|sell|force|password|secret|credential|private\s*key|live\s*trad(?:e|ing))\b/i.test(prompt)
+    || /\b(rm|git\s+reset|place\s+(?:an?\s+)?order)\b/i.test(prompt);
+}
+
+function routeJarvisCommand(prompt, requestedTarget) {
+  const promptMatched = /\bpolymarket\b|market|\bpm\b/i.test(prompt);
+  const targetMatched = !!requestedTarget && /^pm-/i.test(requestedTarget);
+  if (!promptMatched && !targetMatched) {
+    return { assignedAgent: requestedTarget, routing: null };
+  }
+  const target = requestedTarget ? requestedTarget.toLowerCase() : null;
+  let resolvedTarget = target;
+  let selector = 'explicit_target';
+  if (!['pm-data', 'pm-signal', 'pm-risk'].includes(target)) {
+    if (/\b(risk|loss|exposure|drawdown|position|portfolio|clear|stop|kill|trade|order)\b/i.test(prompt)) {
+      resolvedTarget = 'pm-risk';
+      selector = 'risk_intent';
+    } else if (/\b(signal|predict|prediction|forecast|probability|odds|outcome|buy|sell|entry|exit)\b/i.test(prompt)) {
+      resolvedTarget = 'pm-signal';
+      selector = 'signal_intent';
+    } else {
+      resolvedTarget = 'pm-data';
+      selector = 'market_data_intent';
+    }
+  }
+  return {
+    assignedAgent: resolvedTarget,
+    routing: {
+      domain: 'polymarket',
+      prompt_matched: promptMatched,
+      target_matched: targetMatched,
+      requested_target: requestedTarget || null,
+      resolved_target: resolvedTarget,
+      selector,
+    },
+  };
+}
+
+function emitJarvisEvent(event) {
+  try {
+    const { emitEvent } = require(path.join(HIVE, 'lib', 'event_bus.js'));
+    emitEvent(event);
+  } catch {
+    try {
+      fs.appendFileSync(path.join(HIVE, 'events.log'), `${JSON.stringify(event)}\n`);
+    } catch {
+      throw requestError('Unable to emit Jarvis event', 503);
+    }
+  }
+}
+
+function enqueueJarvisCommand({ prompt, target, priority, confirmed, typeConfirmation }) {
+  if (typeof prompt !== 'string') throw requestError('prompt must be a string between 3 and 2000 characters', 400);
+  const normalizedPrompt = prompt.trim();
+  if (normalizedPrompt.length < 3 || normalizedPrompt.length > 2000) {
+    throw requestError('prompt must be between 3 and 2000 characters', 400);
+  }
+  const normalizedPriority = priority === undefined ? 'high' : typeof priority === 'string' ? priority.trim().toLowerCase() : '';
+  if (!['critical', 'high', 'normal', 'low'].includes(normalizedPriority)) {
+    throw requestError('priority must be critical, high, normal, or low', 400);
+  }
+  let normalizedTarget = null;
+  if (target !== undefined && target !== null) {
+    if (typeof target !== 'string') throw requestError('target must be a valid agent or floor identifier', 400);
+    if (target.trim()) {
+      normalizedTarget = target.trim();
+      if (!isIdentifier(normalizedTarget)) throw requestError('target must be a valid agent or floor identifier', 400);
+    }
+  }
+  if (confirmed !== true) throw requestError('explicit confirmation is required', 428);
+  const dangerous = isDangerousJarvisPrompt(normalizedPrompt);
+  if (dangerous && typeConfirmation !== 'EXECUTE') {
+    throw requestError('type-to-confirm value EXECUTE is required for this command', 428);
+  }
+  const tasksPath = path.join(HIVE, 'tasks.json');
+  if (!fs.existsSync(tasksPath)) throw requestError('JEV task queue is unavailable', 503);
+  const now = new Date().toISOString();
+  const taskId = `jarvis-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  const routed = routeJarvisCommand(normalizedPrompt, normalizedTarget);
+  const task = {
+    task_id: taskId,
+    title: `[Jarvis] ${normalizedPrompt.slice(0, 100)}`,
+    objective: normalizedPrompt,
+    priority: normalizedPriority,
+    status: 'QUEUED',
+    assigned_agent: routed.assignedAgent,
+    source: 'jarvis',
+    requested_by: 'jarvis',
+    actor: 'office-hud-local',
+    route: 'JEV',
+    routing: routed.routing,
+    risk: dangerous ? 'destructive' : 'normal',
+    created_at: now,
+    updated_at: now,
+    attempts: 0,
+  };
+  withHiveFileLock(path.join(HIVE, '.task_lock'), () => {
+    const data = readJson(tasksPath, null);
+    if (!isPlainObject(data) || !Array.isArray(data.tasks)) throw requestError('JEV task queue is invalid', 503);
+    data.tasks.push(task);
+    atomicWriteJson(tasksPath, data);
+  });
+  emitJarvisEvent({
+    type: 'jarvis_command',
+    task_id: taskId,
+    source: 'jarvis',
+    route: 'JEV',
+    actor: 'office-hud-local',
+    target: routed.assignedAgent,
+    requested_target: normalizedTarget,
+    routing: routed.routing,
+    priority: normalizedPriority,
+    risk: task.risk,
+    prompt_length: normalizedPrompt.length,
+    prompt_hash: crypto.createHash('sha256').update(normalizedPrompt).digest('hex'),
+    timestamp: now,
+  });
+  return jarvisTaskSummary(task);
+}
+
+function normalizeMarketId(value) {
+  if (typeof value !== 'string') throw requestError('market_id must be a 0x-prefixed 64-character hexadecimal market id', 400);
+  const marketId = value.trim().toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(marketId)) {
+    throw requestError('market_id must be a 0x-prefixed 64-character hexadecimal market id', 400);
+  }
+  return marketId;
+}
+
+function normalizeExclusionReason(value) {
+  if (value === undefined) return 'Excluded via Office HUD';
+  if (typeof value !== 'string') throw requestError('reason must be a string between 1 and 500 characters', 400);
+  const reason = value.trim();
+  if (!reason || reason.length > 500 || /[\u0000-\u001f\u007f]/.test(reason)) {
+    throw requestError('reason must be a string between 1 and 500 characters', 400);
+  }
+  return reason;
+}
+
+function validateExclusion(entry, index) {
+  if (!isPlainObject(entry)) throw requestError(`market exclusion ${index + 1} must be an object`, 409);
+  const allowedKeys = new Set(['market_id', 'reason', 'excluded_at']);
+  if (Object.keys(entry).some(key => !allowedKeys.has(key))) {
+    throw requestError(`market exclusion ${index + 1} contains unsupported fields`, 409);
+  }
+  const marketId = normalizeMarketId(entry.market_id);
+  if (typeof entry.reason !== 'string') throw requestError(`market exclusion ${index + 1} has an invalid reason`, 409);
+  const reason = normalizeExclusionReason(entry.reason);
+  if (typeof entry.excluded_at !== 'string' || !Number.isFinite(Date.parse(entry.excluded_at))) {
+    throw requestError(`market exclusion ${index + 1} has an invalid excluded_at`, 409);
+  }
+  return { market_id: marketId, reason, excluded_at: entry.excluded_at };
+}
+
+function readMarketExclusions() {
+  if (!fs.existsSync(POLYMARKET_EXCLUSIONS_PATH)) {
+    return { present: false, valid: true, path: POLYMARKET_EXCLUSIONS_PATH, exclusions: [], error: null };
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(POLYMARKET_EXCLUSIONS_PATH, 'utf8'));
+    if (!isPlainObject(data) || !Array.isArray(data.exclusions)) throw new Error('exclusions must be an array');
+    const seen = new Set();
+    const exclusions = data.exclusions.map(validateExclusion);
+    for (const exclusion of exclusions) {
+      if (seen.has(exclusion.market_id)) throw new Error(`duplicate market_id ${exclusion.market_id}`);
+      seen.add(exclusion.market_id);
+    }
+    return { present: true, valid: true, path: POLYMARKET_EXCLUSIONS_PATH, exclusions, error: null };
+  } catch (error) {
+    return { present: true, valid: false, path: POLYMARKET_EXCLUSIONS_PATH, exclusions: [], error: error.message };
+  }
+}
+
+function validateRecordArray(value, name) {
+  if (!Array.isArray(value) || value.some(item => !isPlainObject(item))) {
+    throw requestError(`${name} must be an array of objects`, 409);
+  }
+}
+
+function validateRecordObject(value, name) {
+  if (!isPlainObject(value) || Object.values(value).some(item => !isPlainObject(item))) {
+    throw requestError(`${name} must be an object containing objects`, 409);
+  }
+}
+
+function validateArrayRecordObject(value, name) {
+  if (!isPlainObject(value) || Object.values(value).some(item => !Array.isArray(item))) {
+    throw requestError(`${name} must be an object containing arrays`, 409);
+  }
+}
+
+function validatePolymarketState(state) {
+  if (!isPlainObject(state)) throw requestError('engine state must be a JSON object', 409);
+  validateRecordArray(state.trade_history, 'trade_history');
+  validateRecordArray(state.signal_history, 'signal_history');
+  if (!isPlainObject(state.performance_metrics)) throw requestError('performance_metrics must be an object', 409);
+  if (!isPlainObject(state.execution_engine)) throw requestError('execution_engine must be an object', 409);
+  const execution = state.execution_engine;
+  validateRecordObject(execution.orders, 'execution_engine.orders');
+  validateRecordArray(execution.fills, 'execution_engine.fills');
+  validateRecordObject(execution.positions, 'execution_engine.positions');
+  validateRecordArray(execution.closed_positions, 'execution_engine.closed_positions');
+  validateRecordObject(execution.order_books, 'execution_engine.order_books');
+  validateArrayRecordObject(execution.price_history, 'execution_engine.price_history');
+  validateRecordArray(execution.audit_log, 'execution_engine.audit_log');
+  return state;
+}
+
+function loadPolymarketState() {
+  if (!fs.existsSync(POLYMARKET_STATE_PATH)) return null;
+  let raw;
+  let state;
+  try {
+    raw = fs.readFileSync(POLYMARKET_STATE_PATH, 'utf8');
+    state = JSON.parse(raw);
+  } catch (error) {
+    throw requestError(`engine state is unreadable: ${error.message}`, 500);
+  }
+  return { raw, state: validatePolymarketState(state) };
+}
+
+function summarizePolymarketMarkets(state, exclusions) {
+  if (!state) {
+    return {
+      present: false,
+      state_path: POLYMARKET_STATE_PATH,
+      updated_at: null,
+      summary: { trades: 0, signals: 0, orders: 0, fills: 0, open_positions: 0, closed_positions: 0, markets: 0 },
+      markets: [],
+    };
+  }
+  const rows = new Map();
+  const exclusionsById = new Map(exclusions.map(item => [item.market_id, item]));
+  const rowFor = value => {
+    const marketId = String(value || '').trim();
+    if (!marketId) return null;
+    if (!rows.has(marketId)) {
+      rows.set(marketId, {
+        market_id: marketId,
+        trades: 0,
+        open_trades: 0,
+        closed_trades: 0,
+        signals: 0,
+        orders: 0,
+        fills: 0,
+        open_positions: 0,
+        closed_positions: 0,
+        order_book: false,
+        last_price: null,
+        last_update: null,
+        categories: new Set(),
+      });
+    }
+    return rows.get(marketId);
+  };
+  const tradeSides = {};
+  let openTrades = 0;
+  for (const trade of state.trade_history) {
+    const row = rowFor(trade.market_id);
+    if (!row) continue;
+    row.trades++;
+    if (trade.exit_timestamp == null) row.open_trades++;
+    else row.closed_trades++;
+    if (trade.exit_timestamp == null) openTrades++;
+    const side = String(trade.side || 'UNKNOWN').toUpperCase();
+    tradeSides[side] = (tradeSides[side] || 0) + 1;
+  }
+  const signalDecisions = {};
+  for (const signal of state.signal_history) {
+    const row = rowFor(signal.market_id);
+    if (!row) continue;
+    row.signals++;
+    const decision = String(signal.decision || 'UNKNOWN').toUpperCase();
+    signalDecisions[decision] = (signalDecisions[decision] || 0) + 1;
+    if (signal.market_category) row.categories.add(String(signal.market_category));
+  }
+  const execution = state.execution_engine;
+  const orderStatuses = {};
+  for (const order of Object.values(execution.orders)) {
+    const row = rowFor(order.market_id);
+    if (!row) continue;
+    row.orders++;
+    const status = String(order.status || 'UNKNOWN').toUpperCase();
+    orderStatuses[status] = (orderStatuses[status] || 0) + 1;
+  }
+  for (const fill of execution.fills) {
+    const row = rowFor(fill.market_id);
+    if (row) row.fills++;
+  }
+  for (const position of Object.values(execution.positions)) {
+    const row = rowFor(position.market_id);
+    if (row) row.open_positions++;
+  }
+  for (const position of execution.closed_positions) {
+    const row = rowFor(position.market_id);
+    if (row) row.closed_positions++;
+  }
+  for (const [marketId, book] of Object.entries(execution.order_books)) {
+    const row = rowFor(marketId);
+    if (!row) continue;
+    row.order_book = true;
+    row.last_price = book.last_price ?? null;
+    row.last_update = book.last_update ?? null;
+  }
+  const markets = [...rows.values()]
+    .sort((a, b) => a.market_id.localeCompare(b.market_id))
+    .map(row => {
+      const exclusion = exclusionsById.get(row.market_id) || null;
+      return {
+        market_id: row.market_id,
+        trades: row.trades,
+        open_trades: row.open_trades,
+        closed_trades: row.closed_trades,
+        signals: row.signals,
+        orders: row.orders,
+        fills: row.fills,
+        open_positions: row.open_positions,
+        closed_positions: row.closed_positions,
+        order_book: row.order_book,
+        last_price: row.last_price,
+        last_update: row.last_update,
+        categories: [...row.categories].sort(),
+        excluded: exclusions.valid ? !!exclusion : null,
+        exclusion,
+      };
+    });
+  return {
+    present: true,
+    state_path: POLYMARKET_STATE_PATH,
+    updated_at: state.timestamp || null,
+    summary: {
+      trades: state.trade_history.length,
+      open_trades: openTrades,
+      closed_trades: state.trade_history.length - openTrades,
+      trade_sides: tradeSides,
+      signals: state.signal_history.length,
+      signal_decisions: signalDecisions,
+      orders: Object.keys(execution.orders).length,
+      order_statuses: orderStatuses,
+      fills: execution.fills.length,
+      open_positions: Object.keys(execution.positions).length,
+      closed_positions: execution.closed_positions.length,
+      markets: markets.length,
+      performance_metrics: state.performance_metrics,
+      portfolio: {
+        cash: execution.cash ?? null,
+        starting_cash: execution.starting_cash ?? null,
+        daily_pnl: execution.daily_pnl ?? null,
+        current_drawdown: execution.current_drawdown ?? null,
+      },
+    },
+    markets,
+  };
+}
+
+function mutateMarketExclusion(action, body) {
+  if (!isPlainObject(body) || body.confirmed !== true) throw requestError('explicit confirmation is required', 428);
+  const marketId = normalizeMarketId(body.market_id);
+  const reason = action === 'exclude' ? normalizeExclusionReason(body.reason) : null;
+  return withHiveFileLock(path.join(POLYMARKET_RESEARCH, '.market_exclusions.lock'), () => {
+    const current = readMarketExclusions();
+    if (!current.valid) throw requestError(`market exclusions file is invalid: ${current.error}`, 409);
+    const index = current.exclusions.findIndex(item => item.market_id === marketId);
+    let changed = false;
+    if (action === 'exclude' && index < 0) {
+      current.exclusions.push({ market_id: marketId, reason, excluded_at: new Date().toISOString() });
+      changed = true;
+    } else if (action === 'include' && index >= 0) {
+      current.exclusions.splice(index, 1);
+      changed = true;
+    }
+    if (changed) atomicWriteJson(POLYMARKET_EXCLUSIONS_PATH, { exclusions: current.exclusions });
+    return {
+      action,
+      changed,
+      market_id: marketId,
+      exclusion: current.exclusions.find(item => item.market_id === marketId) || null,
+      exclusions: { path: current.path, count: current.exclusions.length, items: current.exclusions },
+    };
+  });
+}
+
+function clearLocalPolymarketTrades(body) {
+  if (!isPlainObject(body) || body.confirmed !== true) throw requestError('explicit confirmation is required', 428);
+  if (body.typeConfirmation !== 'EXECUTE') throw requestError('type-to-confirm value EXECUTE is required', 428);
+  return withHiveFileLock(path.join(POLYMARKET_RESEARCH, '.engine_state.clear.lock'), () => {
+    const loaded = loadPolymarketState();
+    if (!loaded) throw requestError('engine state is unavailable', 404);
+    const state = loaded.state;
+    const execution = state.execution_engine;
+    const cleared = {
+      trade_history: { before: state.trade_history.length, after: 0 },
+      'execution_engine.orders': { before: Object.keys(execution.orders).length, after: 0 },
+      'execution_engine.fills': { before: execution.fills.length, after: 0 },
+      'execution_engine.positions': { before: Object.keys(execution.positions).length, after: 0 },
+      'execution_engine.closed_positions': { before: execution.closed_positions.length, after: 0 },
+    };
+    state.trade_history = [];
+    execution.orders = {};
+    execution.fills = [];
+    execution.positions = {};
+    execution.closed_positions = [];
+    fs.mkdirSync(POLYMARKET_BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = path.join(POLYMARKET_BACKUP_DIR, `engine_state.${stamp}.${crypto.randomBytes(3).toString('hex')}.json`);
+    atomicWriteFile(backupPath, loaded.raw);
+    atomicWriteJson(POLYMARKET_STATE_PATH, state);
+    return {
+      scope: 'local-paper-only',
+      backup_path: backupPath,
+      cleared,
+      preserved: {
+        root_keys: Object.keys(state).filter(key => key !== 'trade_history'),
+        execution_engine_keys: Object.keys(execution).filter(key => !['orders', 'fills', 'positions', 'closed_positions'].includes(key)),
+        signal_history_count: state.signal_history.length,
+        performance_metrics_preserved: true,
+        order_books_preserved: Object.keys(execution.order_books).length,
+        price_history_preserved: Object.keys(execution.price_history).length,
+        audit_log_preserved: execution.audit_log.length,
+      },
+    };
+  });
+}
+
 function getSessions() {
   return readJsonCached(path.join(HIVE, 'sessions.json'), { sessions: [] });
+}
+
+// A host publishes hive/terminals.json; other machines publish the same file
+// under hive/remote/<host>/. A host that has gone quiet must stay visible and
+// be flagged, because a sleeping laptop looks identical to a host with no
+// terminals unless the collection time is checked. A half-written file is
+// skipped rather than allowed to take the endpoint down.
+const TERMINAL_STALE_SEC = 300;
+
+function localTerminalDoc() {
+  const read = readJsonCached(path.join(HIVE, 'terminals.json'), null);
+  if (read && typeof read === 'object') return read;
+  return {
+    host: os.hostname().split('.')[0],
+    collected_at: null,
+    agent_sessions: [],
+    processes: [],
+    shell_terminals: [],
+  };
+}
+
+function terminalHosts() {
+  const hosts = [];
+  const local = localTerminalDoc();
+  const localName = String(local.host || os.hostname().split('.')[0]);
+  hosts.push({
+    host: localName,
+    local: true,
+    collected_at: local.collected_at || null,
+    age_sec: local.collected_at ? Math.max(0, Math.round((Date.now() - Date.parse(local.collected_at)) / 1000)) : null,
+    // The local host has no collector of its own to be late, so a missing file
+    // means "nothing published here", not "a host that went quiet". Only a
+    // remote host can be stale, because only a remote host is expected to keep
+    // writing on a schedule.
+    stale: false,
+    doc: local,
+  });
+
+  const remoteDir = path.join(HIVE, 'remote');
+  let entries = [];
+  try {
+    entries = fs.readdirSync(remoteDir, { withFileTypes: true });
+  } catch {
+    return hosts; // no remote tree is a valid state, not an error
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const file = path.join(remoteDir, entry.name, 'terminals.json');
+    let doc = null;
+    try {
+      doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      continue; // corrupt or half-written: skip this host, keep serving
+    }
+    if (!doc || typeof doc !== 'object') continue;
+    const collectedAt = doc.collected_at || null;
+    const ageSec = collectedAt ? Math.max(0, Math.round((Date.now() - Date.parse(collectedAt)) / 1000)) : null;
+    hosts.push({
+      host: String(doc.host || entry.name),
+      local: false,
+      collected_at: collectedAt,
+      age_sec: ageSec,
+      stale: ageSec == null || ageSec > TERMINAL_STALE_SEC,
+      doc,
+    });
+  }
+  return hosts;
+}
+
+function terminalSnapshot() {
+  const hosts = terminalHosts();
+  const terminals = [];
+  const sessions = [];
+  for (const host of hosts) {
+    const doc = host.doc || {};
+    for (const shell of Array.isArray(doc.shell_terminals) ? doc.shell_terminals : []) {
+      terminals.push({ ...shell, host: host.host, host_stale: host.stale, age_sec: host.age_sec });
+    }
+    for (const session of Array.isArray(doc.agent_sessions) ? doc.agent_sessions : []) {
+      sessions.push({ ...session, host: host.host, host_stale: host.stale });
+    }
+  }
+  return {
+    hosts: hosts.map(({ doc, ...rest }) => rest),
+    terminals,
+    sessions,
+    stale_hosts: hosts.filter(h => h.stale).map(h => h.host),
+  };
 }
 
 let eventCache = { at: 0, events: [] };
@@ -156,19 +926,51 @@ function getRecentEvents(limit = 1000, type = null) {
   return filtered.slice(0, limit);
 }
 
+// Heartbeats are ~94% of this log (216k of 231k) and arrive about 1KB/s, so the
+// 512KB general tail holds only the last ~8 minutes of anything and is entirely
+// heartbeats by the time a person looks. Real work events were being flushed out
+// within minutes: F7 had completed tasks and still reported zero recent events.
+// This reads a far larger window and drops heartbeats so "what actually
+// happened" stays reachable. Cost is a bigger read, paid at most once per
+// JSON_CACHE_MS and only when a caller actually asks for work events.
+const WORK_EVENT_TAIL_BYTES = 16 * 1024 * 1024;
+let workEventCache = { at: 0, events: [] };
+
+function getWorkEvents(limit = 200) {
+  const now = Date.now();
+  if (now - workEventCache.at >= JSON_CACHE_MS) {
+    const eventsPath = path.join(HIVE, 'events.log');
+    workEventCache = {
+      at: now,
+      events: parseJsonLines(readTail(eventsPath, WORK_EVENT_TAIL_BYTES))
+        .filter(event => event && event.type && event.type !== 'heartbeat')
+        .reverse(),
+    };
+  }
+  return workEventCache.events.slice(0, limit);
+}
+
 function sessionRows() {
   const now = Date.now();
-  return (getSessions().sessions || []).map(session => {
+  const stamp = (session, extra = {}) => {
     const heartbeat = timestampMs(session.last_heartbeat || session.updated_at || session.started_at);
     const heartbeatAgeSec = heartbeat == null ? null : Math.max(0, Math.floor((now - heartbeat) / 1000));
     const status = String(session.status || 'UNKNOWN').toUpperCase();
     const terminal = ['STOPPED', 'DEAD', 'ERROR', 'STALE'].includes(status);
     return {
       ...session,
+      ...extra,
       heartbeat_age_sec: heartbeatAgeSec,
       fresh: heartbeatAgeSec != null && heartbeatAgeSec <= SESSION_STALE_MS / 1000 && !terminal,
     };
-  }).sort((a, b) => {
+  };
+  // Local sessions plus whatever each remote host published into its own
+  // terminals.json, so the sessions view is not blind to another machine.
+  const remote = terminalSnapshot().sessions;
+  return [
+    ...(getSessions().sessions || []).map(s => stamp(s, { host: s.host || os.hostname().split('.')[0] })),
+    ...remote.map(s => stamp(s)),
+  ].sort((a, b) => {
     if (a.fresh !== b.fresh) return a.fresh ? -1 : 1;
     return (b.heartbeat_age_sec ?? Infinity) - (a.heartbeat_age_sec ?? Infinity);
   });
@@ -177,6 +979,7 @@ function sessionRows() {
 function mergedAgents() {
   const fleet = getFleet();
   const reg = getRegistry();
+  const now = Date.now();
   const fleetById = Object.fromEntries((fleet.agents || []).map(agent => [agent.id, agent]));
   const byId = new Map();
 
@@ -187,31 +990,52 @@ function mergedAgents() {
     if (!byId.has(agent.id)) byId.set(agent.id, agent);
   }
 
+  // Newest session per agent, tracked for BOTH fresh and stale sessions. An
+  // earlier version kept only fresh ones, so a session that had gone stale was
+  // indistinguishable from no session at all and the agent rendered as a bare
+  // `offline` with no explanation. Keeping the record lets the display say
+  // `stale` — the actual state — instead of implying the agent is gone.
+  // sessionRows() sorts fresh-first, so the first record seen for an agent is
+  // the freshest one and is kept.
   const latestSession = new Map();
-  for (const session of sessionRows().filter(session => session.fresh)) {
-    if (!latestSession.has(session.agent_id)) latestSession.set(session.agent_id, session);
+  for (const session of sessionRows()) {
+    const key = String(session.agent_id || '').toLowerCase();
+    if (key && !latestSession.has(key)) latestSession.set(key, session);
   }
 
   const currentTask = new Map();
   for (const task of getTasks().tasks || []) {
-    if (String(task.status).toUpperCase() !== 'IN_PROGRESS' || !task.claimed_by) continue;
-    if (!currentTask.has(task.claimed_by)) currentTask.set(task.claimed_by, task);
+    if (String(task.status).toUpperCase() !== 'IN_PROGRESS') continue;
+    const owner = String(task.claimed_by || task.assigned_agent || '').toLowerCase();
+    const heartbeat = timestampMs(task.heartbeat || task.claimed_at || task.updated_at);
+    if (!owner || heartbeat == null || now - heartbeat > SESSION_STALE_MS) continue;
+    if (!currentTask.has(owner)) currentTask.set(owner, task);
   }
 
-  const displayOrder = { busy: 0, idle: 1, breaker: 2, offline: 3 };
+  // busy is reserved for a claimed, in-flight task. A live session with no task
+  // is `idle`: the process is real, but nothing proves work is happening, and
+  // labelling it busy on a heartbeat alone overstates what the HUD knows.
+  const displayOrder = { busy: 0, idle: 1, stale: 2, breaker: 3, offline: 4 };
 
   return [...byId.values()].map(agent => {
     const archived = !!agent.archived;
     const breaker = agent.breaker || (archived ? 'offline' : 'healthy');
-    const session = latestSession.get(agent.id) || null;
-    const task = currentTask.get(agent.id) || null;
+    const agentKey = String(agent.id || '').toLowerCase();
+    const session = latestSession.get(agentKey) || null;
+    const task = currentTask.get(agentKey) || null;
     const currentTaskId = task?.task_id || session?.current_task_id || null;
-    const fleetBusy = ['busy', 'working'].includes(String(agent.status || '').toLowerCase());
+    const sessionFresh = !!session?.fresh;
+    const hasWork = !!currentTaskId;
+    // `busy` requires a claimed in-flight task. A fresh session with no task is
+    // a live process doing nothing known — that is `idle`, not `busy`. A session
+    // that exists but has aged out is `stale`, which is different again from an
+    // agent that was never seen.
     let display = 'offline';
     if (archived) display = 'offline';
     else if (breaker !== 'healthy') display = 'breaker';
-    else if (currentTaskId || fleetBusy) display = 'busy';
-    else if (session) display = 'idle';
+    else if (hasWork) display = 'busy';
+    else if (sessionFresh) display = 'idle';
+    else if (session) display = 'stale';
     return {
       id: agent.id,
       name: agent.name || agent.id,
@@ -222,8 +1046,28 @@ function mergedAgents() {
       model: agent.model || null,
       cwd: agent.cwd || null,
       cwdValid: agent.cwdValid !== false,
-      status: currentTaskId ? 'working' : (session?.status?.toLowerCase() || agent.status || display),
+      status: currentTaskId ? 'working' : (session?.status?.toLowerCase() || display),
       display,
+      // What backs the label above, so the UI can show its reasoning rather
+      // than asking the reader to trust a colour.
+      evidence: {
+        hasSession: !!session,
+        sessionFresh,
+        hasTask: hasWork,
+        taskStatus: task ? String(task.status).toUpperCase() : null,
+        heartbeatAgeSec: session?.heartbeat_age_sec ?? null,
+        processId: session?.process_id ?? null,
+        // A reported PID is verifiable, and this server already holds
+        // processIsAlive. The blanket false withheld evidence that was sitting in
+        // this very object: the HUD guard reads that as a false negative, since a
+        // live PID can be checked, and every live agent was being displayed as
+        // "not verified". The three states stay distinct, because a live process,
+        // a dead one, and no process reported at all are different facts, and
+        // reporting all three identically is what made this unreadable.
+        processLiveness: !session?.process_id ? 'no-pid'
+          : (processIsAlive(session.process_id) ? 'alive' : 'dead'),
+        processVerified: processIsAlive(session?.process_id ?? null),
+      },
       archived,
       breaker,
       tokens: agent.tokens ?? 0,
@@ -236,9 +1080,9 @@ function mergedAgents() {
       lastSeen: session?.heartbeat_age_sec != null ? Date.now() - session.heartbeat_age_sec * 1000 : (agent.lastSeen || null),
       sessionId: session?.session_id || null,
       sessionStatus: session?.status || null,
-      processId: session?.process_id || null,
+      processId: session?.process_id ?? null,
       heartbeatAgeSec: session?.heartbeat_age_sec ?? null,
-      sessionFresh: !!session,
+      sessionFresh,
       currentTaskId,
       currentTaskTitle: task?.title || null,
     };
@@ -247,6 +1091,66 @@ function mergedAgents() {
     const displayDiff = (displayOrder[a.display] ?? 9) - (displayOrder[b.display] ?? 9);
     return displayDiff || a.id.localeCompare(b.id);
   });
+}
+
+// Floor rollup derived strictly from the agents already computed above. A
+// floor is a grouping of real agents, never an assumed hierarchy: the counts
+// come from the same `display` labels, so a floor can only be as healthy as its
+// members. `lead` is the agent whose role says it leads that floor; when no
+// agent claims the floor there is no lead, and that is reported as null rather
+// than filled in from the UI's own floor list.
+function rollupFloors(agents) {
+  const byFloor = new Map();
+  for (const agent of agents) {
+    const floor = agent.floor || null;
+    if (!floor) continue;
+    if (!byFloor.has(floor)) {
+      byFloor.set(floor, {
+        floor,
+        lead: null,
+        leadIsLive: false,
+        agents: 0, running: 0, working: 0, idle: 0, stale: 0, failed: 0, offline: 0, breaker: 0,
+      });
+    }
+    const row = byFloor.get(floor);
+    row.agents += 1;
+    if (agent.display === 'busy') row.working += 1;
+    else if (agent.display === 'idle') row.idle += 1;
+    else if (agent.display === 'stale') row.stale += 1;
+    else if (agent.display === 'breaker') row.breaker += 1;
+    else if (agent.display === 'offline') row.offline += 1;
+    // A member counts as running when its session is fresh. A process id alone
+    // is not proof — the process table is not polled here.
+    if (agent.evidence?.sessionFresh) row.running += 1;
+    if (!row.lead && /floor\s*lead|floor manager|manager/i.test(String(agent.role || ''))) {
+      row.lead = agent.id;
+      row.leadIsLive = !!agent.evidence?.sessionFresh;
+    }
+  }
+  const floors = [...byFloor.values()].sort((a, b) => {
+    // Only treat a floor as numbered when the label really ends in digits.
+    // Number('') is 0 and Number.isFinite(0) is true, so a name-only floor like
+    // `command` would otherwise be sorted as if it were floor 0.
+    const numOf = (label) => {
+      const digits = label.replace(/^.*?(\d+)$/, '$1');
+      return /^\d+$/.test(digits) ? Number(digits) : null;
+    };
+    const na = numOf(a.floor);
+    const nb = numOf(b.floor);
+    if (na != null && nb != null) return na - nb;
+    if (na != null) return -1;
+    if (nb != null) return 1;
+    return a.floor.localeCompare(b.floor);
+  });
+  for (const row of floors) {
+    row.health = row.working > 0 ? 'working'
+      : row.stale > 0 ? 'stale'
+      : row.breaker > 0 ? 'breaker'
+      : row.offline > 0 && row.offline === row.agents ? 'offline'
+      : row.idle > 0 ? 'idle'
+      : 'unknown';
+  }
+  return floors;
 }
 
 // ---------- trading bot readers ----------
@@ -296,6 +1200,14 @@ function getStrategies() {
   }
 }
 
+function logSizeOf(file) {
+  try {
+    return fs.statSync(file).size;
+  } catch {
+    return 0;
+  }
+}
+
 function getLiveMetrics() {
   // Try to read from trading bot database/logs
   const dbPath = path.join(TRADING_BOT, 'database.db');
@@ -308,7 +1220,20 @@ function getLiveMetrics() {
       const sqlite3 = require('sqlite3').verbose();
       const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY);
       return new Promise((resolve) => {
+        // Without this a wedged callback leaves the request hanging forever.
+        const timer = setTimeout(() => {
+          try { db.close(); } catch { /* already closed */ }
+          resolve({
+            dbExists: true,
+            dbHasTables: false,
+            tableNames: [],
+            logExists: fs.existsSync(logPath),
+            logSize: logSizeOf(logPath),
+            error: 'sqlite read timed out',
+          });
+        }, 5000);
         db.all("SELECT name FROM sqlite_master WHERE type='table'", [], (err, rows) => {
+          clearTimeout(timer);
           db.close();
           if (!err && rows && rows.length > 0) {
             tableNames = rows.map(r => r.name);
@@ -317,7 +1242,7 @@ function getLiveMetrics() {
               dbHasTables: true,
               tableNames,
               logExists: fs.existsSync(logPath),
-              logSize: fs.existsSync(logPath) ? fs.statSync(logPath).size : 0,
+              logSize: logSizeOf(logPath),
             });
           } else {
             resolve({
@@ -325,7 +1250,7 @@ function getLiveMetrics() {
               dbHasTables: false,
               tableNames: [],
               logExists: fs.existsSync(logPath),
-              logSize: fs.existsSync(logPath) ? fs.statSync(logPath).size : 0,
+              logSize: logSizeOf(logPath),
             });
           }
         });
@@ -336,7 +1261,7 @@ function getLiveMetrics() {
         dbHasTables: false,
         tableNames: [],
         logExists: fs.existsSync(logPath),
-        logSize: fs.existsSync(logPath) ? fs.statSync(logPath).size : 0,
+        logSize: logSizeOf(logPath),
       });
     }
   }
@@ -345,11 +1270,118 @@ function getLiveMetrics() {
     dbHasTables: false,
     tableNames: [],
     logExists: fs.existsSync(logPath),
-    logSize: fs.existsSync(logPath) ? fs.statSync(logPath).size : 0,
+    logSize: logSizeOf(logPath),
   });
 }
 
-function getLaunchdStatus() {
+// `launchctl list` prints:  <pid|->  <last-exit-code>  <label>
+// A dash in the pid column means the job is loaded but not currently running,
+// which is the normal state for the many on-demand jobs in this fleet — so it
+// must not be read as a failure.
+//
+// A non-zero exit is also NOT automatically a broken job. In this fleet several
+// jobs exit non-zero *on purpose* to report a condition or to decline to run —
+// `arb-detector` exits 2 on a monthly quota guard, and `pm-watch` exits 1
+// because its own health script found a real problem. Both are working
+// correctly. The distinction that actually predicts breakage is whether launchd
+// is trying to restart the job: an on-demand job that exited and is waiting for
+// its next StartInterval is behaving as configured, whereas a KeepAlive job
+// that is not running is a genuine failure, because launchd would never stop
+// trying. So the caller passes each job's plist intent and that decides
+// 'stopped' vs 'failed'.
+function parseLaunchctlList(output, intentFor = () => 'oneshot') {
+  const services = [];
+  for (const line of String(output).split('\n')) {
+    const match = line.match(/^(\d+|-)\s+(\d+)\s+(\S+)\s*$/);
+    if (!match) continue;
+    const [, pidRaw, exitRaw, label] = match;
+    const running = pidRaw !== '-';
+    const lastExit = Number(exitRaw);
+    const intent = intentFor(label);
+    let status;
+    if (running) {
+      status = 'running';
+    } else if (intent === 'keepalive') {
+      // launchd keeps trying forever, so being down here is never normal.
+      status = 'failed';
+    } else if (lastExit === 0) {
+      status = 'idle';
+    } else {
+      // Exited non-zero and is waiting for its next scheduled run. It reported
+      // something (often deliberately) but nothing is restarting it, so this is
+      // 'stopped' rather than 'failed' — the exit code still carries the reason.
+      status = 'stopped';
+    }
+    services.push({ label, loaded: true, running, pid: running ? Number(pidRaw) : null, lastExit, status, intent });
+  }
+
+  const fleet = services.filter(s => s.label.startsWith('com.aryan.'));
+  const byStatus = { running: 0, idle: 0, stopped: 0, failed: 0 };
+  for (const service of fleet) byStatus[service.status] += 1;
+
+  return { available: true, error: null, services: fleet, counts: { ...byStatus, total: fleet.length } };
+}
+
+// A job is 'keepalive' if launchd is configured to restart it when it dies.
+// Read from the installed plist so the classification reflects the real
+// deployment rather than a guess. Both ~/Library/LaunchAgents and the repo's
+// launchd/ are checked; an unreadable plist degrades to 'oneshot', which is the
+// more forgiving reading and so will not invent failures.
+const PLIST_DIRS = [
+  path.join(os.homedir(), 'Library', 'LaunchAgents'),
+  path.join(FLEET_ROOT, 'launchd'),
+];
+const intentCache = new Map();
+const INTENT_TTL_MS = 30000;
+
+function readJobIntent(label) {
+  const now = Date.now();
+  const cached = intentCache.get(label);
+  if (cached && now - cached.at < INTENT_TTL_MS) return cached.intent;
+
+  let intent = 'oneshot';
+  for (const dir of PLIST_DIRS) {
+    const file = path.join(dir, `${label}.plist`);
+    if (!fs.existsSync(file)) continue;
+    try {
+      const parsed = JSON.parse(execFileSync(
+        '/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], { encoding: 'utf8', timeout: 5000 },
+      ));
+      const keepAlive = parsed?.KeepAlive;
+      // KeepAlive: true restarts always; a dict means "restart on these
+      // conditions" but the job is still expected to come back on its own.
+      // Either way launchd owns the lifecycle, so it is not an on-demand job.
+      if (keepAlive === true || (keepAlive && typeof keepAlive === 'object')) {
+        intent = 'keepalive';
+        break;
+      }
+      if (parsed?.StartInterval) intent = 'interval';
+    } catch {
+      // An unreadable plist keeps the default rather than guessing 'failed'.
+    }
+    break;
+  }
+
+  intentCache.set(label, { at: now, intent });
+  return intent;
+}
+
+function getFleetLaunchdState() {
+  try {
+    const output = execFileSync('/bin/launchctl', ['list'], { encoding: 'utf8', timeout: 8000 });
+    return parseLaunchctlList(output, readJobIntent);
+  } catch (error) {
+    const detail = error.stderr ? String(error.stderr).trim() : error.message;
+    return {
+      available: false,
+      error: detail || 'launchctl list failed',
+      services: [],
+      counts: { running: 0, idle: 0, stopped: 0, failed: 0, total: 0 },
+    };
+  }
+}
+
+function getFleetPlists() {
   const launchdDir = path.join(FLEET_ROOT, 'launchd');
   try {
     if (!fs.existsSync(launchdDir)) return { services: [] };
@@ -358,8 +1390,7 @@ function getLaunchdStatus() {
         .filter(f => f.endsWith('.plist'))
         .map(f => ({ file: f, path: path.join(launchdDir, f) }))
     };
-  } catch {
-    return { services: [] };
+  } catch {    return { services: [] };
   }
 }
 
@@ -377,6 +1408,93 @@ function getRoster() {
   return readJson(rosterPath, { agents: [] });
 }
 
+/**
+ * Validation evidence for the strategy candidate.
+ *
+ * The forward test is pre-registered, so the interesting number is not the
+ * return but how far the arms are from the inference floor. An arm below the
+ * floor permits no claim at all, and the paper promotion controller holds new
+ * entries until an arm clears it. This is deliberately read-only: the HUD
+ * never writes to the artifacts and never makes the promotion call itself.
+ */
+function getValidationEvidence() {
+  const forward = readJson(path.join(PAPER_BENCHMARK, 'forward-validation.json'), {});
+  const promotion = readJson(path.join(PAPER_BENCHMARK, 'promotion.json'), {});
+  const prereg = readJson(path.join(PAPER_BENCHMARK, 'forward-validation-prereg.json'), {});
+  const status = readJson(path.join(os.homedir(), 'trading', 'openalice', 'ui', 'public', 'paper-benchmark.json'), {});
+  const families = Array.isArray(status.families) ? status.families : [];
+  const family = (name) => families.find((f) => f && f.name === name) || {};
+
+  const floor = (forward.gates && forward.gates.inference_floor_trades) ?? 30;
+  const arms = (Array.isArray(forward.arms) ? forward.arms : []).map((arm) => {
+    const trades = arm.trades || 0;
+    const armGates = arm.gates || {};
+    return {
+      id: arm.id,
+      label: arm.label,
+      error: arm.error,
+      registration: arm.registration,
+      timeframe: arm.timeframe,
+      trades,
+      return_pct: arm.return_pct,
+      profit_factor: arm.profit_factor,
+      max_dd_pct: arm.max_dd_pct,
+      positive_oos_fraction: arm.positive_oos_fraction,
+      ci95_low_pct: arm.bootstrap ? arm.bootstrap.ci95_low_pct : null,
+      ci95_high_pct: arm.bootstrap ? arm.bootstrap.ci95_high_pct : null,
+      floor_required: floor,
+      floor_met: trades >= floor && armGates.inference_floor_reached !== false,
+      trades_to_floor: Math.max(0, floor - trades),
+      progress_pct: floor > 0 ? Math.min(100, Math.round((trades / floor) * 100)) : 0,
+    };
+  });
+
+  const inSample = ['validation/regime_aware_rsi', 'validation/tournament_leaders'].map((name) => {
+    const f = family(name);
+    return {
+      name,
+      status: f.status,
+      age_seconds: f.state ? f.state.age_seconds : null,
+      stale_after_seconds: f.stale_after_seconds ?? null,
+      updated: f.state ? f.state.updated : null,
+    };
+  });
+
+  return {
+    generated_at: forward.generated_at ?? null,
+    window: forward.window ?? {},
+    preregistration: {
+      ...(forward.preregistration || {}),
+      registered_at: prereg.registered_at ?? null,
+      arm_count: Array.isArray(prereg.arms) ? prereg.arms.length : 0,
+    },
+    inference_floor: floor,
+    arms,
+    arms_below_floor: arms.filter((a) => !a.floor_met).length,
+    registrations: (Array.isArray(forward.registrations) ? forward.registrations : []).map((r) => ({
+      registration_id: r.registration_id,
+      interval: r.interval,
+      arms: r.arms,
+      registered_at: r.registered_at,
+      sha256: r.sha256,
+    })),
+    registration_count: forward.registration_count ?? 0,
+    promotion: {
+      state: promotion.state ?? 'unknown',
+      previous_state: promotion.previous_state ?? null,
+      changed: promotion.changed ?? false,
+      entry_allowed: promotion.entry_allowed === true,
+      scope: promotion.scope ?? 'paper_only',
+      live_orders_allowed: promotion.live_orders_allowed === true,
+      decided_at: promotion.generated_at ?? null,
+      evidence_age_seconds: promotion.evidence ? promotion.evidence.forward_age_seconds : null,
+      stale_after_seconds: promotion.evidence ? promotion.evidence.stale_after_seconds : null,
+      reasons: Array.isArray(promotion.reasons) ? promotion.reasons : [],
+    },
+    in_sample_artifacts: inSample,
+  };
+}
+
 function getGraphifyStats() {
   const gfDir = path.join(FLEET_ROOT, 'graphify-out');
   try {
@@ -392,13 +1510,32 @@ function getGraphifyStats() {
   }
 }
 
+const GRAPHIFY_GRAPH = path.join(FLEET_ROOT, 'graphify-out', 'graph.json');
+
 function getGraphifyGraph() {
-  const graphPath = path.join(FLEET_ROOT, 'graphify-out', 'graph.json');
-  try {
-    return readJson(graphPath, { nodes: [], links: [] });
-  } catch {
-    return { nodes: [], links: [] };
+  return readJsonCached(GRAPHIFY_GRAPH, { nodes: [], links: [] });
+}
+
+// Community sizes without shipping the whole graph (~770KB) to floors that only
+// need counts.
+function getGraphifyCommunities(limit = 12) {
+  const graph = getGraphifyGraph();
+  const counts = new Map();
+  for (const node of graph.nodes || []) {
+    const label = node.community_name
+      || (node.community != null ? `Community ${node.community}` : 'Unassigned');
+    counts.set(label, (counts.get(label) || 0) + 1);
   }
+  return {
+    exists: fs.existsSync(GRAPHIFY_GRAPH),
+    nodes: (graph.nodes || []).length,
+    links: (graph.links || []).length,
+    built_at_commit: graph.built_at_commit || null,
+    communities: [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([label, count]) => ({ label, count })),
+  };
 }
 
 function getQueueSummary() {
@@ -409,6 +1546,24 @@ function getQueueSummary() {
     const status = String(task.status || 'UNKNOWN').toUpperCase();
     byStatus[status] = (byStatus[status] || 0) + 1;
   }
+  // A task can be recorded COMPLETE while its own record says the LLM call
+  // failed. hive/lib/verify.py is the gate meant to catch that, but its markers
+  // do not match the executor's wording: it looks for "[LLM call failed" while
+  // the executor path writes a bare "LLM call failed: ..." and
+  // "[executor ended: llm_error]". Those tasks therefore count as successes
+  // everywhere downstream, which is the opposite of what the record contains.
+  // Rather than rewrite the stored status, surface the discrepancy so the HUD
+  // can report it: a completion rate that hides failures is a false number.
+  const COMPLETE = 'COMPLETE';
+  const completedTasks = tasks.filter(task => String(task.status || '').toUpperCase() === COMPLETE);
+  const looksFailed = (task) => {
+    const evidence = task.evidence;
+    const evidenceStatus = isPlainObject(evidence) ? String(evidence.status || '').toLowerCase() : '';
+    if (evidenceStatus === 'llm_error' || evidenceStatus === 'error') return true;
+    const text = `${String(task.result || '')} ${evidenceStatus}`;
+    return /llm call failed|llm_error|all llm providers failed|executor ended: llm_error|executor ended: error/i.test(text);
+  };
+  const completedButFailed = completedTasks.filter(looksFailed);
   const inProgress = tasks.filter(task => String(task.status).toUpperCase() === 'IN_PROGRESS');
   const staleInProgress = inProgress.filter(task => {
     const heartbeat = timestampMs(task.heartbeat || task.claimed_at);
@@ -436,7 +1591,13 @@ function getQueueSummary() {
     inProgress: inProgress.length,
     complete: byStatus.COMPLETE || 0,
     failed: byStatus.FAILED || 0,
+    quarantined: byStatus.QUARANTINED || 0,
     staleInProgress: staleInProgress.length,
+    // Recorded as COMPLETE but the record itself says the model call failed.
+    // `complete` above is the raw count and includes these; subtracting them is
+    // the only way to read a success rate that is not misleading.
+    completedButFailed: completedButFailed.length,
+    verifiedComplete: completedTasks.length - completedButFailed.length,
     byStatus,
     inProgressTasks: inProgress.slice(0, 50).map(task => ({
       task_id: task.task_id,
@@ -483,6 +1644,10 @@ async function getHarnessHealth() {
       status: data.status || (response.ok ? 'ok' : 'degraded'),
       provider: data.provider || 'none',
       model: data.model || 'none',
+      // Providers ahead of the winner that are currently unusable. The harness
+      // picks the first available provider, so this is what distinguishes a
+      // healthy big-model route from a silent fallback to a local one.
+      degradedProviders: Array.isArray(data.degraded_providers) ? data.degraded_providers : [],
       error: null,
       checkedAt,
     };
@@ -499,26 +1664,225 @@ async function getHarnessHealth() {
   }
 }
 
+const SERVICE_PROBE_ATTEMPTS = 2;
+const SERVICE_PROBE_RETRY_MS = 150;
+
+function checkServicePort(service, attempt = 0) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const socket = net.createConnection({ host: '127.0.0.1', port: service.port });
+    let settled = false;
+    const finish = (online, error = null) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (!online && attempt + 1 < SERVICE_PROBE_ATTEMPTS) {
+        setTimeout(() => {
+          checkServicePort(service, attempt + 1).then(resolve);
+        }, SERVICE_PROBE_RETRY_MS);
+        return;
+      }
+      resolve({
+        ...service,
+        status: online ? 'online' : 'offline',
+        latencyMs: Date.now() - startedAt,
+        error,
+        attempts: attempt + 1,
+      });
+    };
+    socket.setTimeout(1000);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false, 'timeout'));
+    socket.once('error', error => finish(false, error.code || error.message));
+  });
+}
+
+async function getServiceHealth() {
+  return {
+    host: os.hostname(),
+    checkedAt: new Date().toISOString(),
+    services: await Promise.all(SERVICE_PORTS.map(checkServicePort)),
+  };
+}
+
+async function proxyFreeHarnessJson(pathname, res, query = {}) {
+  try {
+    const url = new URL(`${FREE_HARNESS_URL}${pathname}`);
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null && String(value).length > 0 && String(value).length <= 128) url.searchParams.set(key, String(value));
+    }
+    const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    res.status(502).json({ error: 'AlphaInsider provider unavailable', detail: error.message });
+  }
+}
+
+function readPolymarketPlist() {
+  try {
+    const parsed = JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', POLYMARKET_LAUNCHD_INSTALLED_PLIST], { encoding: 'utf8' }));
+    if (!isPlainObject(parsed)) return { plist: null, error: 'installed plist must contain a dictionary' };
+    return { plist: parsed, error: null };
+  } catch (error) {
+    return { plist: null, error: error.message };
+  }
+}
+
+function readPolymarketConfig() {
+  const configPath = path.join(HIVE, 'polymarket_config.json');
+  if (!fs.existsSync(configPath)) return { present: false, path: configPath, config: {}, error: null };
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (!isPlainObject(config)) throw new Error('configuration must be an object');
+    if (Object.prototype.hasOwnProperty.call(config, 'paper_only') && typeof config.paper_only !== 'boolean') throw new Error('paper_only must be boolean');
+    if (Object.prototype.hasOwnProperty.call(config, 'engine_path') && typeof config.engine_path !== 'string') throw new Error('engine_path must be a string');
+    return { present: true, path: configPath, config, error: null };
+  } catch (error) {
+    return { present: true, path: configPath, config: {}, error: error.message };
+  }
+}
+
+function getProcessCommand(pid) {
+  if (!Number.isInteger(pid) || pid < 2) return null;
+  try {
+    return execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid < 2) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findEngineProcesses(enginePath) {
+  if (!enginePath) return [];
+  try {
+    const output = execFileSync('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8' });
+    const processes = [];
+    for (const line of output.split('\n')) {
+      if (!line.includes(enginePath) || line.includes('heartbeat.py')) continue;
+      const match = line.trim().match(/^(\d+)\s+(.*)$/);
+      if (!match || !processIsAlive(Number(match[1]))) continue;
+      processes.push({ pid: Number(match[1]), command: match[2] });
+    }
+    return processes;
+  } catch {
+    return [];
+  }
+}
+
+function getPolymarketLaunchdStatus() {
+  try {
+    const output = execFileSync('/bin/launchctl', ['print', POLYMARKET_LAUNCHD_TARGET], { encoding: 'utf8' });
+    const state = output.match(/\n\s*state = ([^\s]+)/)?.[1] || 'unknown';
+    const pid = output.match(/\n\s*pid = (\d+)/)?.[1] || null;
+    const installedPath = output.match(/\n\s*path = ([^\n]+)/)?.[1]?.trim() || null;
+    return { loaded: true, state, pid: pid ? Number(pid) : null, path: installedPath, error: null };
+  } catch (error) {
+    const detail = error.stderr ? String(error.stderr).trim() : error.message;
+    return { loaded: false, state: 'unavailable', pid: null, path: null, error: detail };
+  }
+}
+
+function getPolymarketRuntime() {
+  const checkedAt = new Date().toISOString();
+  const enginePath = path.join(POLYMARKET_RESEARCH, 'profitability_engine_fixed.py');
+  const installedPlist = readPolymarketPlist();
+  const plist = installedPlist.plist;
+  const configResult = readPolymarketConfig();
+  const argumentsList = Array.isArray(plist?.ProgramArguments) ? plist.ProgramArguments : [];
+  const hasPaperArgument = argumentsList.includes('--paper');
+  const hasUnsafeArgument = argumentsList.some(argument => /--(live|real|mainnet|testnet)(?:=|$)/i.test(String(argument)));
+  const plistValid = !!plist
+    && plist.Label === POLYMARKET_LAUNCHD_LABEL
+    && argumentsList.length >= 2
+    && argumentsList.every(argument => typeof argument === 'string')
+    && argumentsList[1] === enginePath
+    && argumentsList.includes('--paper')
+    && plist.WorkingDirectory === POLYMARKET_ROOT
+    && fs.existsSync(enginePath);
+  const configPaperOnly = !configResult.error
+    && (!Object.prototype.hasOwnProperty.call(configResult.config, 'paper_only') || configResult.config.paper_only === true);
+  const paperOnly = plistValid && !configResult.error && configPaperOnly && hasPaperArgument && !hasUnsafeArgument;
+  const launchd = getPolymarketLaunchdStatus();
+  const processes = findEngineProcesses(enginePath);
+  if (processes.length === 0 && launchd.pid && processIsAlive(launchd.pid)) {
+    const command = getProcessCommand(launchd.pid);
+    if (command && command.includes(enginePath)) processes.push({ pid: launchd.pid, command });
+  }
+  const expectedPlistLoaded = launchd.loaded && launchd.path === POLYMARKET_LAUNCHD_INSTALLED_PLIST;
+  return {
+    checked_at: checkedAt,
+    engine_path: enginePath,
+    expected_engine_path: enginePath,
+    expected_plist_path: POLYMARKET_LAUNCHD_INSTALLED_PLIST,
+    paper_only: paperOnly,
+    managed: plistValid && !configResult.error,
+    running: processes.length > 0,
+    pid: processes[0]?.pid || null,
+    process: { pids: processes.map(process => process.pid), commands: processes.map(process => process.command) },
+    launchd: {
+      ...launchd,
+      expected_path: POLYMARKET_LAUNCHD_INSTALLED_PLIST,
+      expected_loaded: expectedPlistLoaded,
+    },
+    config: {
+      present: configResult.present,
+      path: configResult.path,
+      error: configResult.error,
+    },
+    plist: {
+      valid: plistValid,
+      error: installedPlist.error,
+      path: POLYMARKET_LAUNCHD_INSTALLED_PLIST,
+    },
+    execution_allowed: plistValid && !configResult.error && paperOnly && expectedPlistLoaded,
+  };
+}
+
 // ---------- routes ----------
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ...hiveStatus(), ts: Date.now() });
 });
 
+app.get('/api/alphainsider/status', (_req, res) => proxyFreeHarnessJson('/alphainsider/status', res));
+app.get('/api/alphainsider/strategies', (_req, res) => proxyFreeHarnessJson('/alphainsider/strategies', res));
+app.get('/api/alphainsider/positions', (req, res) => proxyFreeHarnessJson('/alphainsider/positions', res, { strategy_id: req.query.strategy_id }));
+
 app.get('/api/summary', (_req, res) => {
-  res.json({ ...hiveStatus(), fleet: getFleet(), godId: getRegistry().godId, agents: mergedAgents() });
+  res.json(buildSnapshot('summary'));
 });
 
 app.get('/api/agents', (_req, res) => {
-  res.json({ agents: mergedAgents() });
+  res.json(buildSnapshot('agents'));
 });
 
-app.get('/api/agents/:id', (req, res) => {
-  const id = String(req.params.id).replace(/[^a-zA-Z0-9_-]/g, '');
+// The drawer reads up to ~100 files per agent (inbox and outbox), so the
+// payload is briefly cached: a push is still live, just not re-derived several
+// times a second on a busy hive.
+const agentDetailCache = new Map();
+const AGENT_DETAIL_TTL_MS = 2000;
+
+function getAgentDetail(id) {
+  const now = Date.now();
+  const cached = agentDetailCache.get(id);
+  if (cached && now - cached.at < AGENT_DETAIL_TTL_MS) return cached.value;
   const agent = mergedAgents().find(item => item.id === id);
-  if (!agent) return res.status(404).json({ error: 'agent not found', id });
+  if (!agent) {
+    agentDetailCache.delete(id);
+    return null;
+  }
   const dir = path.join(HIVE, 'agents', id);
-  res.json({
+  const value = {
     agent,
     identity: readText(path.join(dir, 'identity.md')),
     memory: readText(path.join(dir, 'memory.md')),
@@ -526,68 +1890,422 @@ app.get('/api/agents/:id', (req, res) => {
     outbox: listMessages(path.join(dir, 'outbox')),
     sessions: sessionRows().filter(session => session.agent_id === id),
     currentTasks: (getTasks().tasks || []).filter(task => task.claimed_by === id && String(task.status).toUpperCase() === 'IN_PROGRESS'),
-    recentEvents: getRecentEvents(1000).filter(event => event.agent_id === id).slice(0, 10),
-  });
+    // Heartbeats dominate the tail window ~30:1, so filtering by agent_id
+    // after taking the unfiltered window returned only heartbeats — F7 had
+    // completed real work and still reported none. Read the work-event pool so
+    // "recent events" means something happened.
+    recentEvents: getWorkEvents(2000).filter(event => event.agent_id === id).slice(0, 10),
+  };
+  agentDetailCache.set(id, { at: now, value });
+  return value;
+}
+
+app.get('/api/agents/:id', (req, res) => {
+  const id = String(req.params.id).replace(/[^a-zA-Z0-9_-]/g, '');
+  const detail = getAgentDetail(id);
+  if (!detail) return res.status(404).json({ error: 'agent not found', id });
+  res.json(detail);
 });
 
-app.get('/api/ledger', (req, res) => {
-  const source = req.query.source === 'events' ? 'events' : 'log';
-  const kind = req.query.kind ? String(req.query.kind) : null;
-  const limit = Math.min(Number(req.query.limit) || 500, 2000);
+function getLedger(source, kind, limit) {
+  const bounded = clampLimit(limit, 500, 2000);
   let events = source === 'events'
     ? getRecentEvents(2000)
     : readJsonl(path.join(HIVE, 'log.jsonl'), 2000).reverse();
   if (kind) events = events.filter(event => source === 'events' ? event.type === kind : event.kind === kind);
-  res.json({ source, events: events.slice(0, limit).map(event => ({ ...event, type: event.type || event.kind || 'event' })) });
+  return {
+    source,
+    events: events.slice(0, bounded).map(event => ({ ...event, type: event.type || event.kind || 'event' })),
+  };
+}
+
+app.get('/api/ledger', (req, res) => {
+  res.json(getLedger(
+    req.query.source === 'log' ? 'log' : 'events',
+    req.query.kind ? String(req.query.kind) : null,
+    req.query.limit
+  ));
+});
+
+// Per-floor task counts, so the floor rail does not have to download the whole
+// (multi-megabyte) tasks.json just to render its badges.
+// The status groups the F4 board renders. Kept server-side so the payload can be
+// shaped for the board instead of shipping the whole 3.8MB tasks.json.
+const BOARD_COLUMNS = [
+  { id: 'todo', statuses: ['QUEUED', 'PRESERVED', 'TODO', 'PENDING'] },
+  { id: 'in_progress', statuses: ['IN_PROGRESS'] },
+  { id: 'review', statuses: ['QUARANTINED', 'REVIEW', 'VERIFY', 'BLOCKED', 'FAILED'] },
+  { id: 'done', statuses: ['COMPLETE', 'DONE'] },
+];
+
+const BOARD_TASK_FIELDS = [
+  'task_id', 'title', 'status', 'project_id', 'assigned_agent', 'claimed_by',
+  'created_at', 'started_at', 'completed_at', 'updated_at', 'heartbeat', 'priority',
+];
+
+function taskSortTime(task) {
+  for (const key of ['updated_at', 'heartbeat', 'started_at', 'created_at']) {
+    const parsed = Date.parse(String(task[key] ?? ''));
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+/**
+ * F4 in the shape it draws: at most `perColumn` rows per column, plus the true
+ * count for each so the header badge stays honest.
+ */
+function getTaskBoard(perColumn = 25) {
+  const all = getTasks().tasks || [];
+  const groups = {};
+  const counts = {};
+  const sorted = [...all].sort((a, b) => taskSortTime(b) - taskSortTime(a));
+  const claimed = new Set();
+
+  for (const column of BOARD_COLUMNS) {
+    const wanted = new Set(column.statuses);
+    const rows = [];
+    let count = 0;
+    for (const task of sorted) {
+      if (!wanted.has(String(task.status || '').toUpperCase())) continue;
+      count += 1;
+      if (rows.length >= perColumn) continue;
+      claimed.add(task.task_id);
+      rows.push(Object.fromEntries(BOARD_TASK_FIELDS.filter((field) => task[field] !== undefined).map((field) => [field, task[field]])));
+    }
+    groups[column.id] = rows;
+    counts[column.id] = count;
+  }
+
+  return {
+    groups,
+    counts,
+    total: all.length,
+    perColumn,
+    // Tasks in a status the board does not draw, so the UI can say so.
+    unclassified: all.length - [...claimed].length - Object.values(counts).reduce((a, b) => a + b, 0) + [...claimed].length,
+  };
+}
+
+function getFloorTaskCounts() {
+  const counts = {};
+  for (const task of getTasks().tasks || []) {
+    for (const raw of [task.assigned_agent, task.claimed_by]) {
+      const match = String(raw || '').trim().toLowerCase().match(/^f([1-9]|1[0-4])$/);
+      if (!match) continue;
+      const floor = `f${match[1]}`;
+      if (!counts[floor]) counts[floor] = new Set();
+      counts[floor].add(task.task_id);
+    }
+  }
+  const result = {};
+  for (const [floor, ids] of Object.entries(counts)) result[floor] = ids.size;
+  return result;
+}
+
+app.get('/api/task-board', (_req, res) => {
+  res.json(buildSnapshot('taskBoard'));
 });
 
 app.get('/api/tasks', (req, res) => {
   if (req.query.summary === '1' || req.query.summary === 'true') {
     return res.json(getQueueSummary());
   }
+  if (req.query.counts === '1' || req.query.counts === 'true') {
+    return res.json({ counts: getFloorTaskCounts() });
+  }
   res.json(getTasks());
 });
 
+app.get('/api/jarvis/tasks', (_req, res) => {
+  res.json(buildSnapshot('jarvisTasks'));
+});
+
+app.get('/api/jarvis/audit', (req, res) => {
+  res.json({ events: getJarvisAudit(req.query.limit) });
+});
+
+app.post('/api/jarvis/command', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'JARVIS_LOCAL_ONLY', 'JEV commands are available only from the local HUD');
+  const now = Date.now();
+  while (jarvisCommandTimestamps[0] && now - jarvisCommandTimestamps[0] > 60000) jarvisCommandTimestamps.shift();
+  if (jarvisCommandTimestamps.length >= 10) {
+    res.set('Retry-After', '60');
+    return sendError(res, 429, 'JEV_RATE_LIMITED', 'JEV accepts at most 10 commands per minute');
+  }
+  try {
+    const task = enqueueJarvisCommand({
+      prompt: req.body?.prompt,
+      target: req.body?.target,
+      priority: req.body?.priority,
+      confirmed: req.body?.confirmed,
+      typeConfirmation: req.body?.typeConfirmation,
+    });
+    jarvisCommandTimestamps.push(now);
+    jsonCache.delete(path.join(HIVE, 'tasks.json'));
+    res.status(201).json({ ok: true, task, message: 'Command routed to JEV' });
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'JEV_COMMAND_REJECTED', error.message || 'Unable to route command');
+  }
+});
+
 app.get('/api/queue', (_req, res) => {
-  res.json(getQueueSummary());
+  res.json(buildSnapshot('queue'));
 });
 
 app.get('/api/events', (req, res) => {
   const type = req.query.type ? String(req.query.type) : null;
-  const limit = Math.min(Number(req.query.limit) || 500, 5000);
-  res.json({ events: getRecentEvents(limit, type) });
+  const limit = clampLimit(req.query.limit, 500, 5000);
+  let events = getRecentEvents(limit, type);
+  // Heartbeats outnumber work events ~30:1 in this hive, so an unfiltered tail
+  // is almost entirely heartbeats and a "recent activity" view built on it shows
+  // nothing that happened. `exclude=heartbeat` reads a much larger window and
+  // drops heartbeats, so real activity stays reachable instead of being flushed
+  // out of the tail by heartbeat volume.
+  const exclude = req.query.exclude ? String(req.query.exclude) : null;
+  if (exclude) {
+    const drop = new Set(exclude.split(',').map(s => s.trim()).filter(Boolean));
+    if (drop.has('heartbeat')) {
+      const pool = getWorkEvents(clampLimit(req.query.work_limit, 200, 2000));
+      events = pool.filter(event => !drop.has(event.type));
+    } else {
+      events = events.filter(event => !drop.has(event.type));
+    }
+  }
+  // The tail buffer is a bounded read of a 29MB log, so this is what is
+  // reachable, not the whole history. Say so rather than implying completeness.
+  res.json({ events, reachable_window: true });
+});
+
+function getVerifyState() {
+  const st = readJsonCached(path.join(HIVE, 'verify_state.json'), null);
+  if (!st) return { present: false };
+  const tally = st.verdict_tally || {};
+  const scanned = (tally.OK || 0) + (tally.DODGE || 0) + (tally.SHORT || 0) + (tally.FAIL || 0) + (tally.EMPTY || 0);
+  const realWorkRatePct = scanned > 0 ? Math.round(((tally.OK || 0) / scanned) * 1000) / 10 : null;
+  return {
+    present: true,
+    at: st.at,
+    verdict_tally: tally,
+    requeued: st.requeued || [],
+    quarantined: st.quarantined || [],
+    realWorkRatePct,
+  };
+}
+
+app.get('/api/verify', (_req, res) => {
+  res.json(buildSnapshot('verify'));
 });
 
 app.get('/api/office-manager', (_req, res) => {
-  res.json(getOfficeManagerStatus());
+  res.json(buildSnapshot('officeManager'));
 });
 
 app.get('/api/harness/health', async (_req, res) => {
-  res.json(await getHarnessHealth());
+  res.json(await buildSnapshotAsync('harness'));
+});
+
+app.get('/api/services/health', async (_req, res) => {
+  res.json(await buildSnapshotAsync('services'));
 });
 
 app.get('/api/sessions', (_req, res) => {
-  res.json({ sessions: sessionRows() });
+  res.json(buildSnapshot('sessions'));
 });
+
+// Terminals across every host that publishes into this hive. A host that has
+// gone quiet is listed and flagged rather than dropped, and a corrupt file is
+// skipped so one bad machine cannot take the panel down.
+app.get('/api/terminals', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(terminalSnapshot());
+});
+
+// ---------- spawned terminals ----------
+//
+// The GET above reports the shells a HUMAN is sitting in, collected by
+// collect-terminals.py. The routes below are the other half: terminals the HUD
+// started itself. They are kept in a separate hive file
+// (spawned_terminals.json) because the collector rewrites terminals.json in
+// full every 60 seconds and would erase them; see manager.js.
+//
+// Every route here runs arbitrary commands, so all of them use the hardened
+// local gate: isLocalRequest rejects anything proxied through Tailscale
+// Serve, which arrives on loopback and would otherwise pass a socket check.
+const terminalGuard = (req, res) => {
+  if (!isLocalRequest(req)) {
+    return sendError(res, 403, 'local_only', 'terminal control is available only from this machine');
+  }
+  return null;
+};
+
+app.get('/api/terminals/spawned', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const collected = readJsonCached(path.join(HIVE, 'terminals.json'), null);
+  res.json(terminalManager.collectedTerminals(collected));
+});
+
+app.post('/api/terminals/spawn', async (req, res) => {
+  if (terminalGuard(req, res)) return;
+  try {
+    const terminal = await terminalManager.spawnOne(req.body || {});
+    liveHub?.publish(['terminalsSpawned']);
+    res.json({ ok: true, terminal });
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'TERMINAL_SPAWN_REJECTED', error.message);
+  }
+});
+
+app.post('/api/terminals/bulk', async (req, res) => {
+  if (terminalGuard(req, res)) return;
+  const body = req.body || {};
+  try {
+    // Orchestrate mode reaches `claude --permission-mode bypassPermissions` on a
+    // fresh worktree, so it is a separate branch that insists on confirmation
+    // rather than a shape the generic array path could be tricked into.
+    if (body.mode === 'orchestrate') {
+      const outcome = await terminalManager.spawnOrchestrate(body);
+      liveHub?.publish(['terminalsSpawned']);
+      return res.json({ ok: true, mode: 'orchestrate', ...outcome });
+    }
+    const results = await terminalManager.spawnBulk(body.terminals || [], { limit: body.limit });
+    liveHub?.publish(['terminalsSpawned']);
+    // Per-item outcomes, so one rejected command does not read as a failed batch.
+    res.json({
+      ok: results.every((r) => r.ok),
+      requested: results.length,
+      spawned: results.filter((r) => r.ok).length,
+      results,
+    });
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'TERMINAL_BULK_REJECTED', error.message);
+  }
+});
+
+// Literal sub-paths are registered BEFORE the ':id' routes below. Express
+// matches in registration order, so a ':id' route placed first would swallow
+// /spawn, /bulk, /reap and /health -- answering a spawn attempt as "unknown
+// terminal 404" and a POST as 405. Keep every literal name above this line.
+app.post('/api/terminals/reap', (req, res) => {
+  if (terminalGuard(req, res)) return;
+  const body = req.body || {};
+  res.json({ ok: true, ...terminalManager.reap({
+    maxAgeHours: body.maxAgeHours,
+    statuses: Array.isArray(body.statuses) ? body.statuses : undefined,
+  }) });
+});
+
+app.get('/api/terminals/health', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(terminalManager.health());
+});
+
+// Peers this HUD may dispatch work to. Read-only and ungated on purpose: it
+// reveals host names and reachability, which the merged terminal view already
+// exposes, and it performs no action. Acting on a peer requires a 'remote'
+// spawn, which is gated and allowlisted like any other.
+app.get('/api/terminals/peers', async (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ peers: await terminalManager.peers() });
+});
+
+app.get('/api/terminals/:id', (req, res) => {
+  if (terminalGuard(req, res)) return;
+  const terminal = terminalManager.get(req.params.id);
+  if (!terminal) return sendError(res, 404, 'unknown_terminal', `No terminal ${req.params.id}`);
+  const logs = terminalManager.logs(req.params.id, { lines: 50 });
+  res.set('Cache-Control', 'no-store');
+  res.json({ terminal, logs: logs.lines, log_bytes: logs.bytes });
+});
+
+app.get('/api/terminals/:id/logs', (req, res) => {
+  if (terminalGuard(req, res)) return;
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json(terminalManager.logs(req.params.id, { lines: req.query.lines }));
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'TERMINAL_LOGS_FAILED', error.message);
+  }
+});
+
+// Follow a terminal's output. SSE rather than a websocket because this is a
+// one-way stream and the socket path already reserves /api/live/socket.
+app.get('/api/terminals/:id/follow', (req, res) => {
+  if (terminalGuard(req, res)) return;
+  let terminal;
+  try { terminal = terminalManager.get(req.params.id); } catch { terminal = null; }
+  if (!terminal) return sendError(res, 404, 'unknown_terminal', `No terminal ${req.params.id}`);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  res.write(`event: hello\ndata: ${JSON.stringify({ id: terminal.id, status: terminal.status })}\n\n`);
+
+  let cursor = terminalManager.logsSince(req.params.id, 0).at || 0;
+  const drop = () => { clearInterval(timer); try { res.end(); } catch { /* closed */ } };
+  req.on('close', drop);
+  res.on('error', drop);
+  const timer = setInterval(() => {
+    let next;
+    try { next = terminalManager.logsSince(req.params.id, cursor); } catch { drop(); return; }
+    if (next.chunk) {
+      cursor = next.at;
+      res.write(`event: output\ndata: ${JSON.stringify({ chunk: next.chunk })}\n\n`);
+    }
+    const live = terminalManager.get(req.params.id);
+    if (!live || live.status !== 'running') {
+      res.write(`event: status\ndata: ${JSON.stringify({ status: live ? live.status : 'gone' })}\n\n`);
+      drop();
+    }
+  }, 700);
+});
+
+app.post('/api/terminals/:id/kill', async (req, res) => {
+  if (terminalGuard(req, res)) return;
+  try {
+    const terminal = await terminalManager.kill(req.params.id, { signal: (req.body || {}).signal });
+    liveHub?.publish(['terminalsSpawned']);
+    res.json({ ok: true, terminal });
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'TERMINAL_KILL_FAILED', error.message);
+  }
+});
+
+app.post('/api/terminals/:id/signal', async (req, res) => {
+  if (terminalGuard(req, res)) return;
+  try {
+    const terminal = await terminalManager.signal(req.params.id, (req.body || {}).signal);
+    res.json({ ok: true, terminal });
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'TERMINAL_SIGNAL_FAILED', error.message);
+  }
+});
+
+function getProcesses() {
+  return readJson(path.join(HIVE, 'processes.json'), { processes: [] });
+}
 
 app.get('/api/processes', (_req, res) => {
-  const processes = readJson(path.join(HIVE, 'processes.json'), { processes: [] });
-  res.json(processes);
+  res.json(buildSnapshot('processes'));
 });
 
+function getProjects() {
+  return readJson(path.join(HIVE, 'projects.json'), { projects: [] });
+}
+
 app.get('/api/projects', (_req, res) => {
-  const projects = readJson(path.join(HIVE, 'projects.json'), { projects: [] });
-  res.json(projects);
+  res.json(buildSnapshot('projects'));
 });
 
 // ---------- trading bot routes ----------
 
 app.get('/api/trading/backtests', (_req, res) => {
-  res.json({ backtest: getBacktestResults(), walkforward: getWalkForwardResults() });
+  res.json(buildSnapshot('tradingBacktests'));
 });
 
 app.get('/api/trading/strategies', (_req, res) => {
-  res.json({ config: getTradingBotConfig(), strategies: getStrategies() });
+  res.json(buildSnapshot('tradingStrategies'));
 });
 
 app.get('/api/trading/live', async (_req, res) => {
@@ -595,7 +2313,11 @@ app.get('/api/trading/live', async (_req, res) => {
 });
 
 app.get('/api/trading/ops', (_req, res) => {
-  res.json({ launchd: getLaunchdStatus(), adherence: getAdherenceLogs(), roster: getRoster() });
+  res.json(buildSnapshot('tradingOps'));
+});
+
+app.get('/api/validationEvidence', (_req, res) => {
+  res.json(buildSnapshot('validationEvidence'));
 });
 
 app.get('/api/knowledge/graphify', (_req, res) => {
@@ -604,6 +2326,10 @@ app.get('/api/knowledge/graphify', (_req, res) => {
 
 app.get('/api/knowledge/graphify/data', (_req, res) => {
   res.json(getGraphifyGraph());
+});
+
+app.get('/api/knowledge/graphify/communities', (_req, res) => {
+  res.json(buildSnapshot('knowledge'));
 });
 
 app.get('/api/knowledge/docs', (_req, res) => {
@@ -619,20 +2345,23 @@ app.get('/api/knowledge/docs', (_req, res) => {
 });
 
 // ---------- Cloud API / LLM routes ----------
+// The LLM client builds 4 provider objects and re-reads hive/registry.json in its
+// constructor, so it is created once per process instead of once per request.
+let llmClientSingleton = null;
+function getLLMClient() {
+  if (!llmClientSingleton) {
+    const { LLMClient } = require(path.join(HIVE, 'lib', 'llm', 'client'));
+    llmClientSingleton = new LLMClient();
+  }
+  return llmClientSingleton;
+}
+
 app.get('/api/llm/providers', (_req, res) => {
-  const { LLMClient } = require(path.join(HIVE, 'lib', 'llm', 'client'));
-  const client = new (require(path.join(HIVE, 'lib', 'llm', 'client')).LLMClient)();
-  res.json({ providers: client.getAllProviders(), health: client.getProviderHealth() });
+  res.json(buildSnapshot('providers'));
 });
 
 app.get('/api/llm/costs', (_req, res) => {
-  const { getAllCosts, getTotalCosts, getAgentCosts } = require(path.join(HIVE, 'lib', 'llm', 'cost'));
-  const agents = mergedAgents();
-  const costs = {};
-  for (const a of agents) {
-    costs[a.id] = getAgentCosts(a.id);
-  }
-  res.json({ agents: costs, total: getTotalCosts() });
+  res.json(buildSnapshot('costs'));
 });
 
 app.post('/api/llm/costs/reset/daily', (_req, res) => {
@@ -653,8 +2382,7 @@ app.get('/api/llm/rate-limits', (_req, res) => {
 });
 
 app.get('/api/llm/circuit-breakers', (_req, res) => {
-  const { getAllBreakers } = require(path.join(HIVE, 'lib', 'llm', 'circuitBreaker'));
-  res.json({ breakers: getAllBreakers() });
+  res.json(buildSnapshot('breakers'));
 });
 
 app.post('/api/llm/circuit-breakers/reset', (req, res) => {
@@ -664,11 +2392,12 @@ app.post('/api/llm/circuit-breakers/reset', (req, res) => {
 });
 
 app.post('/api/llm/test', async (req, res) => {
-  const { LLMClient } = require(path.join(HIVE, 'lib', 'llm', 'client'));
-  const { selectModelForTask } = require(path.join(HIVE, 'lib', 'llm', 'router'));
-  const client = new (require(path.join(HIVE, 'lib', 'llm', 'client')).LLMClient)();
-  const { prompt, agentId, taskType, provider, model } = req.body;
+  if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'llm/test is local-only');
+  const { prompt, agentId, taskType, provider, model } = req.body || {};
+  if (typeof prompt !== 'string' || !prompt.trim()) return sendError(res, 400, 'bad_request', 'prompt is required');
+  if (prompt.length > 8000) return sendError(res, 400, 'bad_request', 'prompt is too long');
   try {
+    const client = getLLMClient();
     const result = await client.call(prompt, { agentId: agentId || 'test', taskType: taskType || 'default', provider, preferredModel: model });
     res.json({ ok: true, result });
   } catch (e) {
@@ -677,25 +2406,130 @@ app.post('/api/llm/test', async (req, res) => {
 });
 
 // ---------- Polymarket Paper Trading ----------
-app.get('/api/polymarket/status', async (_req, res) => {
-  const configPath = path.join(HIVE, 'polymarket_config.json');
-  let config = { paper_only: true, engine_path: '/Users/aryanagarwal/Documents/polymarket.research/profitability_engine_fixed.py' };
-  if (fs.existsSync(configPath)) config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  res.json({ ...config, running: false }); // TODO: check if engine process exists
+function getPolymarketState() {
+  const loaded = loadPolymarketState();
+  const state = loaded?.state || null;
+  const gate = readJsonCached(path.join(POLYMARKET_RESEARCH, 'profitability_gate.json'), null);
+  const audit = readJsonl(path.join(POLYMARKET_RESEARCH, 'signal_audit.jsonl'), 2000);
+  const metrics = state?.performance_metrics || {};
+  const auditAllowed = audit.filter(item => item.decision === 'allow').length;
+  const rejectReasons = {};
+  for (const item of audit) {
+    if (item.decision !== 'reject') continue;
+    const reason = String(item.reason || 'unknown').split('(')[0];
+    rejectReasons[reason] = (rejectReasons[reason] || 0) + 1;
+  }
+  return {
+    present: !!state,
+    mode: state && state.dry_run ? 'dry-run' : 'paper',
+    trades: state ? state.trade_history.length : 0,
+    net_pnl: metrics.net_pnl ?? null,
+    realized_edge: metrics.realized_edge ?? null,
+    updated_at: state ? state.timestamp : null,
+    gate: gate ? { status: gate.gate_status, priced_exits: gate.priced_exits, requirements_met: gate.requirements_met } : null,
+    audit: { total: audit.length, allowed: auditAllowed, rejected: audit.length - auditAllowed, reject_reasons: rejectReasons },
+  };
+}
+
+app.get('/api/polymarket', (_req, res) => {
+  try {
+    res.json(getPolymarketState());
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'POLYMARKET_STATE_INVALID', error.message);
+  }
 });
 
-app.post('/api/polymarket/start', async (req, res) => {
-  // Safety gate: verify paper_only=true
-  const configPath = path.join(HIVE, 'polymarket_config.json');
-  const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, 'utf8')) : { paper_only: true };
-  if (!config.paper_only) return res.status(400).json({ ok: false, error: 'Paper-only mode required' });
-  // TODO: spawn profitability_engine_fixed.py as managed process
-  res.json({ ok: true, message: 'Paper engine start requested (not yet implemented)' });
+function getPolymarketMarkets() {
+  const loaded = loadPolymarketState();
+  const exclusions = readMarketExclusions();
+  return {
+    ...summarizePolymarketMarkets(loaded?.state || null, exclusions.exclusions),
+    exclusions: {
+      path: exclusions.path,
+      present: exclusions.present,
+      valid: exclusions.valid,
+      count: exclusions.valid ? exclusions.exclusions.length : null,
+      items: exclusions.exclusions,
+      error: exclusions.error,
+    },
+  };
+}
+
+app.get('/api/polymarket/markets', (_req, res) => {
+  try {
+    res.json(getPolymarketMarkets());
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'POLYMARKET_STATE_INVALID', error.message);
+  }
+});
+
+app.post('/api/polymarket/markets/exclude', (req, res) => {
+  try {
+    res.json({ ok: true, ...mutateMarketExclusion('exclude', req.body) });
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'POLYMARKET_EXCLUSION_REJECTED', error.message);
+  }
+});
+
+app.post('/api/polymarket/markets/include', (req, res) => {
+  try {
+    res.json({ ok: true, ...mutateMarketExclusion('include', req.body) });
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'POLYMARKET_EXCLUSION_REJECTED', error.message);
+  }
+});
+
+app.post('/api/polymarket/trades/clear', (req, res) => {
+  try {
+    const result = clearLocalPolymarketTrades(req.body);
+    // loadPolymarketState() reads straight from disk, so there is nothing cached
+    // to invalidate here — the next read already sees the cleared file.
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'POLYMARKET_CLEAR_REJECTED', error.message);
+  }
+});
+
+app.get('/api/polymarket/status', (_req, res) => {
+  res.json(getPolymarketRuntime());
+});
+
+app.post('/api/polymarket/start', async (_req, res) => {
+  const runtime = getPolymarketRuntime();
+  if (!runtime.managed) return sendError(res, 501, 'engine_not_managed', 'No managed paper-only Polymarket engine configuration is available');
+  if (!runtime.paper_only) return sendError(res, 409, 'paper_only_required', 'Paper-only mode is required');
+  if (!runtime.launchd.expected_loaded) return sendError(res, 409, 'engine_not_loaded', 'The managed Polymarket engine is not loaded from the expected launchd plist');
+  if (runtime.running) return res.json({ ok: true, already_running: true, ...runtime });
+  try {
+    execFileSync('/bin/launchctl', ['kickstart', '-k', POLYMARKET_LAUNCHD_TARGET], { stdio: 'pipe' });
+  } catch (error) {
+    return sendError(res, 502, 'engine_start_error', 'Unable to start the managed Polymarket engine', { reason: error.message });
+  }
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const after = getPolymarketRuntime();
+  if (!after.running || !after.launchd.expected_loaded) {
+    return sendError(res, 503, 'engine_start_failed', 'The managed Polymarket engine did not become visible after launchctl kickstart', after);
+  }
+  res.json({ ok: true, started: true, ...after });
 });
 
 app.post('/api/polymarket/stop', async (_req, res) => {
-  // TODO: stop engine process
-  res.json({ ok: true, message: 'Stop requested (not yet implemented)' });
+  const runtime = getPolymarketRuntime();
+  if (!runtime.managed) return sendError(res, 501, 'engine_not_managed', 'No managed paper-only Polymarket engine configuration is available');
+  if (!runtime.paper_only) return sendError(res, 409, 'paper_only_required', 'Paper-only mode is required');
+  if (!runtime.launchd.loaded) return res.json({ ok: true, already_stopped: true, ...runtime });
+  if (!runtime.launchd.expected_loaded) return sendError(res, 409, 'engine_plist_mismatch', 'The launchd job does not use the expected Polymarket plist');
+  try {
+    execFileSync('/bin/launchctl', ['bootout', POLYMARKET_LAUNCHD_TARGET], { stdio: 'pipe' });
+  } catch (error) {
+    return sendError(res, 502, 'engine_stop_error', 'Unable to stop the managed Polymarket engine', { reason: error.message });
+  }
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const after = getPolymarketRuntime();
+  if (after.running || after.launchd.loaded) {
+    return sendError(res, 503, 'engine_stop_failed', 'The managed Polymarket engine is still loaded or running after launchctl bootout', after);
+  }
+  res.json({ ok: true, stopped: true, ...after });
 });
 
 // ---------- Office Python Classification ----------
@@ -733,31 +2567,49 @@ app.get('/api/recovery/stats', async (_req, res) => {
 });
 
 app.post('/api/recovery/manual/:agentId', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'recovery is local-only');
+  if (!isIdentifier(req.params.agentId)) return sendError(res, 400, 'bad_request', 'invalid agentId');
   const { manualRecover } = require(path.join(HIVE, 'lib', 'recovery'));
-  await manualRecover(req.params.agentId);
-  res.json({ ok: true });
+  try {
+    await manualRecover(req.params.agentId);
+    res.json({ ok: true });
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'RECOVERY_FAILED', error.message);
+  }
 });
 
-app.post('/api/recovery/start', async (_req, res) => {
+app.post('/api/recovery/start', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'recovery is local-only');
   const { startRecoveryEngine } = require(path.join(HIVE, 'lib', 'recovery'));
-  await startRecoveryEngine();
-  res.json({ ok: true });
+  try {
+    await startRecoveryEngine();
+    res.json({ ok: true });
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'RECOVERY_FAILED', error.message);
+  }
 });
 
-app.post('/api/recovery/stop', async (_req, res) => {
+app.post('/api/recovery/stop', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'recovery is local-only');
   const { stopRecoveryEngine } = require(path.join(HIVE, 'lib', 'recovery'));
-  await stopRecoveryEngine();
-  res.json({ ok: true });
+  try {
+    await stopRecoveryEngine();
+    res.json({ ok: true });
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'RECOVERY_FAILED', error.message);
+  }
 });
 
 // ---------- JEV / Task Queue ----------
 app.get('/api/jev/stats', (_req, res) => {
-  const tasks = readJson(path.join(HIVE, 'tasks.json'), { tasks: [] });
+  const raw = readJson(path.join(HIVE, 'tasks.json'), {});
+  const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.tasks) ? raw.tasks : []);
   const byStatus = {};
-  for (const t of tasks.tasks) {
-    byStatus[t.status] = (byStatus[t.status] || 0) + 1;
+  for (const t of list) {
+    const status = (t && t.status) || 'unknown';
+    byStatus[status] = (byStatus[status] || 0) + 1;
   }
-  res.json({ tasks: tasks.tasks.length, byStatus, queues: {} }); // TODO: implement queues
+  res.json({ tasks: list.length, byStatus, queues: {} }); // TODO: implement queues
 });
 
 // ---------- Sessions with reattach ----------
@@ -768,10 +2620,274 @@ app.post('/api/sessions/:id/reattach', async (req, res) => {
   res.json({ ok });
 });
 
-// ---------- SSE: push "changed" whenever the hive moves ----------
+// ---------- live data: resource snapshots + change detection ----------
+
+let watcher = null;
+let watchTimer = null;
+const resourceSignatures = new Map();
+
+function build(name, produce, options = {}) {
+  return {
+    name,
+    produce,
+    signature: options.signature,
+    onError: options.onError,
+    // Telemetry must never be cached, by the browser or the service worker.
+    noStore: options.noStore ?? false,
+    // Expensive producers (sqlite, launchctl, subprocesses, a 770KB graph) are
+    // not re-checked on every hive write.
+    minIntervalMs: options.minIntervalMs ?? 0,
+    checkedAt: 0,
+  };
+}
+
+/**
+ * Every panel reads a named resource rather than a bespoke URL. The socket and
+ * the REST mirror both serve from this table, so a push and a poll can never
+ * disagree about shape.
+ */
+const RESOURCES = {
+  summary: build('summary', () => {
+    const agents = mergedAgents();
+    return { ...hiveStatus(), fleet: getFleet(), godId: getRegistry().godId, agents, floors: rollupFloors(agents) };
+  }),
+  agents: build('agents', () => ({ agents: mergedAgents() })),
+  queue: build('queue', () => getQueueSummary()),
+  projects: build('projects', () => getProjects()),
+  taskCounts: build('taskCounts', () => ({ counts: getFloorTaskCounts() })),
+  taskBoard: build('taskBoard', () => getTaskBoard(25)),
+  sessions: build('sessions', () => ({ sessions: sessionRows() })),
+  processes: build('processes', () => getProcesses()),
+  // Terminals this host started. A cheap signature keeps the socket from
+  // pushing an identical payload on every hive write, and the 5s floor keeps a
+  // fast-moving terminal list from turning into a push storm.
+  terminalsSpawned: build('terminalsSpawned', () => ({
+    spawned: terminalManager.list(),
+    health: terminalManager.health(),
+  }), { signature: () => `${terminalManager.list().length}:${terminalManager.activeCount()}:${terminalManager.health().log_bytes}`, minIntervalMs: 5000 }),
+  verify: build('verify', () => getVerifyState()),
+  officeManager: build('officeManager', () => getOfficeManagerStatus()),
+  jevStats: build('jevStats', () => {
+    const raw = readJson(path.join(HIVE, 'tasks.json'), {});
+    const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.tasks) ? raw.tasks : []);
+    const byStatus = {};
+    for (const t of list) {
+      const status = (t && t.status) || 'unknown';
+      byStatus[status] = (byStatus[status] || 0) + 1;
+    }
+    return { tasks: list.length, byStatus, queues: {} };
+  }),
+  services: build('services', () => getServiceHealth(), { signature: () => 'probe' }),
+  harness: build('harness', () => getHarnessHealth(), { signature: () => 'probe' }),
+  providers: build('providers', () => {
+    const client = getLLMClient();
+    return { providers: client.getAllProviders(), health: client.getProviderHealth() };
+  }, { onError: (error) => ({ providers: [], health: {}, error: error.message }) }),
+  breakers: build('breakers', () => {
+    const { getAllBreakers } = require(path.join(HIVE, 'lib', 'llm', 'circuitBreaker'));
+    return { breakers: getAllBreakers() };
+  }, { onError: (error) => ({ breakers: {}, error: error.message }) }),
+  costs: build('costs', () => {
+    const { getTotalCosts, getAgentCosts } = require(path.join(HIVE, 'lib', 'llm', 'cost'));
+    const agents = {};
+    for (const a of mergedAgents()) agents[a.id] = getAgentCosts(a.id);
+    return { agents, total: getTotalCosts() };
+  }, { onError: (error) => ({ agents: {}, total: null, error: error.message }) }),
+  knowledge: build('knowledge', () => getGraphifyCommunities()),
+  polymarket: build('polymarket', () => getPolymarketState(), {
+    onError: (error) => ({ present: false, mode: 'unknown', trades: 0, net_pnl: null, realized_edge: null, updated_at: null, gate: null, audit: { total: 0, allowed: 0, rejected: 0, reject_reasons: {} }, error: error.message }),
+    minIntervalMs: 15000,
+  }),
+  // The tail is a bounded read of a 29MB log, so this is the reachable window
+  // and not the whole history. Both this and /api/events carry the flag so the
+  // live twin and the route expose the same fields.
+  events: build('events', () => ({ events: getRecentEvents(300), reachable_window: true })),
+  jarvisTasks: build('jarvisTasks', () => ({ tasks: getJarvisTasks(50) })),
+  knowledgeStats: build('knowledgeStats', () => getGraphifyStats()),
+  knowledgeGraph: build('knowledgeGraph', () => getGraphifyGraph(), { minIntervalMs: 60000 }),
+  tradingBacktests: build('tradingBacktests', () => ({ backtest: getBacktestResults(), walkforward: getWalkForwardResults() }), { minIntervalMs: 15000 }),
+  tradingStrategies: build('tradingStrategies', () => ({ config: getTradingBotConfig(), strategies: getStrategies() }), { minIntervalMs: 15000 }),
+  tradingOps: build('tradingOps', () => ({ launchd: getFleetPlists(), launchdState: getFleetLaunchdState(), adherence: getAdherenceLogs(), roster: getRoster() }), { minIntervalMs: 15000 }),
+  validationEvidence: build('validationEvidence', () => getValidationEvidence(), { minIntervalMs: 30000 }),
+  combined: build('combined', () => readJson(path.join(os.homedir(), 'trading', 'openalice', 'ui', 'public', 'combined_portfolio.json'), {}), { minIntervalMs: 15000 }),
+  tradingLive: build('tradingLive', () => getLiveMetrics(), { minIntervalMs: 30000 }),
+  polymarketStatus: build('polymarketStatus', () => getPolymarketRuntime(), { minIntervalMs: 30000 }),
+  polymarketMarkets: build('polymarketMarkets', () => getPolymarketMarkets(), {
+    onError: (error) => ({ error: error.message, markets: [], exclusions: { present: false, valid: false, count: null, items: [], error: error.message } }),
+    minIntervalMs: 30000,
+  }),
+  // Hub telemetry, addressed as a resource so the client's store can poll it
+  // through the same path. It is deliberately not pushed.
+  streamStatus: build('streamStatus', () => (
+    liveHub
+      ? liveHub.status()
+      : { state: 'offline', socketPath: '/api/live/socket', clients: 0, sequence: 0, stats: { publishes: 0, pushes: 0 }, viewers: [] }
+  ), { signature: () => 'telemetry', noStore: true }),
+
+  autonomy: build('autonomy', () => (
+    autonomy
+      ? autonomy.snapshot()
+      : { policy: null, assessment: null, proposals: [], pending: 0, audit: [] }
+  )),
+
+  alerts: build('alerts', () => (
+    alertEngine
+      ? alertEngine.snapshot()
+      : { alerts: [], counts: { critical: 0, warn: 0, info: 0 }, unacknowledged: 0, history: [] }
+  )),
+};
+
+const resourceNames = () => Object.keys(RESOURCES);
+
+/**
+ * Resources addressed with a parameter, as `base/param`. The parameter is
+ * checked against a strict pattern so a crafted key cannot reach outside the
+ * hive.
+ */
+const PARAMETERIZED = {
+  agents: {
+    pattern: /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/,
+    produce: (id) => {
+      const detail = getAgentDetail(id);
+      if (!detail) throw requestError(`Unknown agent ${id}`, 404);
+      return detail;
+    },
+  },
+  ledger: {
+    pattern: /^(events|log)$/,
+    produce: (source) => getLedger(source, null, 500),
+  },
+};
+
+function resolveResource(name) {
+  if (RESOURCES[name]) return RESOURCES[name];
+  const slash = name.indexOf('/');
+  if (slash <= 0) return null;
+  const spec = PARAMETERIZED[name.slice(0, slash)];
+  const parameter = name.slice(slash + 1);
+  if (!spec || !spec.pattern.test(parameter)) return null;
+  return {
+    name,
+    produce: () => spec.produce(parameter),
+    parameterized: true,
+  };
+}
+
+function buildSnapshot(name) {
+  const resource = resolveResource(name);
+  if (!resource) throw requestError(`Unknown resource ${name}`, 404);
+  try {
+    return resource.produce();
+  } catch (error) {
+    // A hive missing a library (llm/, recovery/) must degrade to a payload the
+    // UI can render, not a 500 for the whole panel.
+    if (resource.onError) return resource.onError(error);
+    throw error;
+  }
+}
+
+const buildSnapshotAsync = (name) => Promise.resolve(buildSnapshot(name));
+
+/** The hive view the analyzers and the autonomy monitor read. */
+function readSnapshot() {
+  return {
+    summary: buildSnapshot('summary'),
+    queue: buildSnapshot('queue'),
+    breakers: buildSnapshot('breakers'),
+    costs: buildSnapshot('costs'),
+    services: buildSnapshot('services'),
+    harness: buildSnapshot('harness'),
+  };
+}
+
+/** Stable short hash, so a signature is one word instead of a whole payload. */
+function hashOf(text) {
+  return crypto.createHash('sha1').update(String(text)).digest('hex').slice(0, 16);
+}
+
+function signatureOf(name) {
+  const resource = resolveResource(name);
+  if (!resource) return 'error';
+  const now = Date.now();
+  if (resource.minIntervalMs && now - resource.checkedAt < resource.minIntervalMs) {
+    return resourceSignatures.get(name) ?? 'unchecked';
+  }
+  resource.checkedAt = now;
+  try {
+    // Probing resources are async, so they carry an explicit cheap signature
+    // instead of being stringified synchronously.
+    if (resource.signature) return resource.signature();
+    // buildSnapshot already applies the resource's onError fallback.
+    return hashOf(JSON.stringify(buildSnapshot(name)));
+  } catch {
+    return 'error';
+  }
+}
+
+/** Names whose content signature differs from the cached one. */
+function changedResources(names = resourceNames()) {
+  const changed = [];
+  for (const name of names) {
+    const next = signatureOf(name);
+    if (resourceSignatures.get(name) !== next) {
+      resourceSignatures.set(name, next);
+      changed.push(name);
+    }
+  }
+  return changed;
+}
+
+function startWatch() {
+  if (watcher) return;
+  try {
+    watcher = fs.watch(HIVE, { recursive: true }, () => {
+      clearTimeout(watchTimer);
+      watchTimer = setTimeout(onHiveChanged, 400);
+    });
+    watcher.on('error', (err) => {
+      // An unhandled 'error' event on the watcher would be an uncaught exception.
+      console.warn('[office-hud] hive watcher error:', err.message);
+    });
+  } catch (e) {
+    console.warn('[office-hud] fs.watch unavailable:', e.message);
+  }
+}
+
+/**
+ * Drop the read cache before recomputing signatures. Without this a write that
+ * lands inside the cache TTL is compared against — and pushed as — the previous
+ * value, so a subscriber can receive a payload that predates the change.
+ */
+function invalidateCaches() {
+  jsonCache.clear();
+}
+
+function onHiveChanged() {
+  watchTimer = null;
+  invalidateCaches();
+  // Parameterized resources have no fixed list, so they are re-checked against
+  // what clients actually subscribe to. The agent detail is TTL-cached, so this
+  // stays cheap.
+  const subscribed = liveHub?.subscribedKeys() ?? [];
+  const changed = [...new Set([...changedResources(), ...subscribed])];
+  if (changed.length) liveHub?.publish(changed);
+  broadcastSse();
+  if (alertEngine) liveHub?.publishAlerts(alertEngine.evaluate());
+  if (autonomy) {
+    const before = autonomy.pending;
+    autonomy.evaluate();
+    if (autonomy.pending !== before) liveHub?.publish(['autonomy']);
+  }
+}
+
+// ---------- SSE (kept for older clients; the socket is preferred) ----------
 
 const sseClients = new Set();
+const SSE_MAX_CLIENTS = 16;
 app.get('/api/stream', (req, res) => {
+  if (sseClients.size >= SSE_MAX_CLIENTS) {
+    return res.status(503).json({ error: 'too many stream clients' });
+  }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -779,41 +2895,512 @@ app.get('/api/stream', (req, res) => {
   });
   res.write('event: hello\ndata: {}\n\n');
   sseClients.add(res);
-  req.on('close', () => sseClients.delete(res));
+  const drop = () => {
+    sseClients.delete(res);
+    try { res.end(); } catch { /* already gone */ }
+  };
+  req.on('close', drop);
+  res.on('error', drop);
+  // Comment frames keep proxies and idle-timeout middleboxes from closing the stream.
+  const heartbeat = setInterval(() => {
+    if (res.writableEnded) return drop();
+    try { res.write(': ping\n\n'); } catch { drop(); }
+  }, 25000);
+  res.on('close', () => clearInterval(heartbeat));
 });
 
-let broadcastTimer = null;
-function broadcast() {
-  for (const res of sseClients) {
-    try { res.write('event: change\ndata: {}\n\n'); } catch { /* client gone */ }
+function broadcastSse() {
+  for (const res of [...sseClients]) {
+    if (res.writableEnded) {
+      sseClients.delete(res);
+      continue;
+    }
+    try {
+      // A client too slow to drain its buffer is dropped rather than allowed to
+      // grow the socket buffer without bound.
+      if (res.write('event: change\ndata: {}\n\n') === false) {
+        sseClients.delete(res);
+        try { res.end(); } catch { /* already gone */ }
+      }
+    } catch {
+      sseClients.delete(res);
+    }
   }
 }
-try {
-  fs.watch(HIVE, { recursive: true }, () => {
-    clearTimeout(broadcastTimer);
-    broadcastTimer = setTimeout(broadcast, 400);
+
+// ---------- alerts ----------
+
+app.get('/api/alerts', (_req, res) => {
+  if (!alertEngine) {
+    return res.json({ alerts: [], counts: { critical: 0, warn: 0, info: 0 }, unacknowledged: 0, history: [] });
+  }
+  res.json(alertEngine.snapshot());
+});
+
+app.post('/api/alerts/ack-all', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'alert acknowledgement is local-only');
+  if (!alertEngine) return res.json({ ok: true, acked: 0 });
+  res.json({ ok: true, acked: alertEngine.ackAll() });
+});
+
+app.post('/api/alerts/:fingerprint/ack', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'alert acknowledgement is local-only');
+  if (!alertEngine) return sendError(res, 503, 'unavailable', 'alert engine not running');
+  const ok = alertEngine.ack(String(req.params.fingerprint));
+  if (!ok) return sendError(res, 404, 'unknown_alert', 'No active alert with that fingerprint');
+  liveHub?.publishAlerts(alertEngine.snapshotList());
+  res.json({ ok: true });
+});
+
+app.post('/api/alerts/:fingerprint/unack', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'alert acknowledgement is local-only');
+  if (!alertEngine) return sendError(res, 503, 'unavailable', 'alert engine not running');
+  const ok = alertEngine.unack(String(req.params.fingerprint));
+  if (!ok) return sendError(res, 404, 'unknown_alert', 'No active alert with that fingerprint');
+  liveHub?.publishAlerts(alertEngine.snapshotList());
+  res.json({ ok: true });
+});
+
+// ---------- autonomy (opt-in; proposes, never deploys on its own) ----------
+
+app.get('/api/autonomy', (_req, res) => {
+  if (!autonomy) return res.json({ policy: null, assessment: null, proposals: [], pending: 0, audit: [] });
+  autonomy.evaluate();
+  res.json(autonomy.snapshot());
+});
+
+app.post('/api/autonomy/policy', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'autonomy policy is local-only');
+  if (!autonomy) return sendError(res, 503, 'unavailable', 'autonomy is not running');
+  try {
+    const policy = autonomy.updatePolicy(req.body || {});
+    liveHub?.publish(['autonomy']);
+    res.json({ ok: true, policy });
+  } catch (error) {
+    sendError(res, 400, 'invalid_policy', error.message);
+  }
+});
+
+app.post('/api/autonomy/proposals/:id/accept', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'accepting a proposal is local-only');
+  if (!autonomy) return sendError(res, 503, 'unavailable', 'autonomy is not running');
+  const result = autonomy.accept(String(req.params.id));
+  if (!result.ok) return sendError(res, 409, 'not_accepted', result.error);
+  liveHub?.publish(['autonomy']);
+  res.json(result);
+});
+
+app.post('/api/autonomy/proposals/:id/dismiss', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'dismissing a proposal is local-only');
+  if (!autonomy) return sendError(res, 503, 'unavailable', 'autonomy is not running');
+  const result = autonomy.dismiss(
+    String(req.params.id),
+    String(req.body?.reason || '').slice(0, 200) || undefined
+  );
+  if (!result.ok) return sendError(res, 409, 'not_dismissed', result.error);
+  liveHub?.publish(['autonomy']);
+  res.json(result);
+});
+
+// ---------- time machine ----------
+
+app.get('/api/replay/window', (_req, res) => {
+  res.json(replay.window(HIVE));
+});
+
+app.get('/api/replay', (req, res) => {
+  const at = Number(req.query.at);
+  if (!Number.isFinite(at) || at <= 0) {
+    return sendError(res, 400, 'bad_request', 'at must be an epoch milliseconds timestamp');
+  }
+  const hours = Math.min(
+    Math.max(Number(req.query.hours) || replay.DEFAULT_WINDOW_HOURS, 1),
+    replay.MAX_WINDOW_HOURS
+  );
+  res.json(replay.reconstruct({ hive: HIVE, when: new Date(at), windowHours: hours, agents: mergedAgents() }));
+});
+
+// ---------- REST mirror of the resource table ----------
+
+app.get('/api/live/resources', (_req, res) => {
+  res.json({
+    resources: resourceNames(),
+    paths: Object.fromEntries(resourceNames().map((name) => [name, `/api/live/${name}`])),
+    socket: '/api/live/socket',
   });
-} catch (e) {
-  console.warn('[office-hud] fs.watch unavailable:', e.message);
+});
+
+app.get('/api/live/status', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(buildSnapshot('streamStatus'));
+});
+
+// A trailing wildcard, because parameterized resources are addressed as
+// `agents/<id>`. Express 4 matches '*' and hands the remainder back in
+// params[0]; the named form (`*name`) is Express 5 syntax and silently matches
+// nothing here.
+app.get('/api/live/*', async (req, res) => {
+  const raw = req.params[0] ?? '';
+  const name = Array.isArray(raw) ? raw.join('/') : String(raw);
+  const resource = resolveResource(name);
+  if (!resource) return sendError(res, 404, 'unknown_resource', `Unknown resource ${name}`);
+  if (resource.noStore) res.set('Cache-Control', 'no-store');
+  try {
+    res.json(await buildSnapshotAsync(name));
+  } catch (error) {
+    sendError(res, error.statusCode || 500, 'resource_failed', error.message);
+  }
+});
+
+// ---------- single-port portal ----------
+
+function portalSlugForPort(port) {
+  for (const [slug, entry] of PORTAL_SERVICES) {
+    if (entry.port === port) return slug;
+  }
+  return null;
+}
+
+// Keep redirects inside this origin so following one never lands the operator
+// back on a raw port number.
+function rewriteUpstreamLocation(location) {
+  const value = String(location || '');
+  const match = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)(\/[^?#]*)?(\?[^#]*)?/i.exec(value);
+  if (!match) return value;
+  const targetPort = Number(match[1]);
+  const tail = match[2] || '/';
+  const query = match[3] || '';
+  const dest = portalSlugForPort(targetPort);
+  if (!dest) return value;
+  return `/port/${dest}${tail}${query}`;
+}
+
+function portalTarget(slug, rest, query) {
+  const entry = PORTAL_SERVICES.get(slug);
+  if (!entry) return null;
+  const raw = String(rest == null ? '' : rest).replace(/^\/+/, '');
+  if (/[\r\n]/.test(raw)) return null;
+  // A traversal segment could walk out of the intended upstream path.
+  if (raw.split('/').some((segment) => segment === '..' || segment === '.')) return null;
+  // Express 4's params[0] excludes the query string, so the upstream path has to
+  // carry it explicitly. Without this, a dashboard reached through the portal
+  // loses `?token=` and the pubserver answers 401 — the same link works
+  // directly, which is what makes this read as a portal-only fault.
+  const qs = query == null ? '' : String(query);
+  if (/[\r\n]/.test(qs)) return null;
+  return { entry, targetPath: `/${raw}${qs ? `?${qs}` : ''}` };
+}
+
+function proxyPortal(target, slug, res, req) {
+  const http = require('http');
+  // Relay only the caller's own credentials. The portal holds no secret, so it
+  // cannot grant access the caller did not already have.
+  const forwarded = {};
+  if (req && typeof req.headers.authorization === 'string') {
+    forwarded.authorization = req.headers.authorization;
+  }
+  const upstream = http.request(
+    { host: '127.0.0.1', port: target.entry.port, path: target.targetPath, method: 'GET', timeout: 10000, headers: forwarded },
+    (upstreamRes) => {
+      const type = String(upstreamRes.headers['content-type'] || '');
+      if (type) res.setHeader('Content-Type', type);
+      const location = rewriteUpstreamLocation(upstreamRes.headers.location);
+      if (location) res.setHeader('Location', location);
+      // Dashboards must not be served from cache or a fix would go unnoticed.
+      if (type.includes('text/html')) res.setHeader('Cache-Control', 'no-store');
+      res.status(upstreamRes.statusCode || 502);
+      upstreamRes.pipe(res);
+    },
+  );
+  upstream.on('timeout', () => upstream.destroy(new Error('upstream timeout')));
+  upstream.on('error', (error) => {
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
+    sendError(res, 502, 'portal_upstream_error',
+      `${target.entry.label} (127.0.0.1:${target.entry.port}): ${error.message}`);
+  });
+  upstream.end();
+}
+
+function portalEntry(req, res) {
+  // Registered wildcard-first: without strict routing `/port/dash/` also matches
+  // `/port/:slug`, and a redirect there would loop onto itself forever.
+  if (req.params[0] === undefined) {
+    return res.redirect(302, `${req.path}/`);
+  }
+  if (!isLocalRequest(req)) {
+    return sendError(res, 403, 'local_only', 'portal proxy is loopback-only');
+  }
+  const target = portalTarget(req.params.slug, req.params[0], req.originalUrl.includes('?')
+    ? req.originalUrl.slice(req.originalUrl.indexOf('?') + 1)
+    : '');
+  if (!target) {
+    return sendError(res, 404, 'unknown_portal_service', 'No such portal service');
+  }
+  return proxyPortal(target, req.params.slug, res, req);
+}
+
+app.get('/port/:slug/*', portalEntry);
+app.head('/port/:slug/*', (_req, res) => res.status(405).end());
+app.get('/port/:slug', portalEntry);
+
+app.get('/api/portal', async (_req, res) => {
+  const health = await getServiceHealth();
+  const byPort = new Map((health.services || []).map((service) => [service.port, service]));
+  res.json({
+    host: health.host,
+    checkedAt: health.checkedAt,
+    entryPort: PORT,
+    services: [...PORTAL_SERVICES].map(([slug, entry]) => {
+      const probe = byPort.get(entry.port);
+      return {
+        slug,
+        ...entry,
+        status: probe ? probe.status : 'unknown',
+        latencyMs: probe ? probe.latencyMs : null,
+        path: `/port/${slug}/`,
+      };
+    }),
+  });
+});
+
+// ---------- tournament (password-free, served HUD-side) ----------
+// The public pubserver (:3002) guards its dashboards with a shared secret, so
+// linking there from the HUD would prompt for a password. The HUD already runs
+// on this host and only needs the feed, so it reads the file itself and serves
+// both a JSON route and a self-contained page. This does NOT weaken the
+// pubserver: no auth exemption is added there, and no order path is touched.
+// The feed's `ts` is timezone-aware UTC (fixed in services/oa_tournament.py), so
+// staleness is computed correctly instead of being ~5.5h out.
+
+const FLEET_STATE_DIR = process.env.OPENALICE_STATE_DIR
+  || path.join(os.homedir(), 'trading', 'openalice', 'fleet-state');
+// NOTE: fleet-state/tournament.json is the large per-strategy STATE file (no
+// ts/btc/strategies). The feed the pubserver serves -- and the one
+// tournament.html renders -- is the small JSON in ui/public. Read that one.
+const FLEET_FEEDS_DIR = process.env.OPENALICE_FEEDS_DIR
+  || path.join(os.homedir(), 'trading', 'openalice', 'ui', 'public');
+const TOURNAMENT_FEED = path.join(FLEET_FEEDS_DIR, 'tournament.json');
+const TOURNAMENT_STALE_S = 660;
+
+function tournamentPayload() {
+  const feed = readJsonCached(TOURNAMENT_FEED, null);
+  if (!feed || typeof feed !== 'object') {
+    return { ok: false, error: 'tournament feed unavailable', path: TOURNAMENT_FEED };
+  }
+  const strategies = Array.isArray(feed.strategies) ? feed.strategies : [];
+  let ageS = null;
+  let ts = null;
+  if (feed.ts) {
+    ts = String(feed.ts);
+    const parsed = Date.parse(feed.ts);
+    if (Number.isFinite(parsed)) ageS = Math.round((Date.now() - parsed) / 1000);
+  } else {
+    // Fall back to file mtime so a malformed ts cannot read as "fresh".
+    try {
+      ageS = Math.round((Date.now() - fs.statSync(TOURNAMENT_FEED).mtimeMs) / 1000);
+    } catch { /* unreadable */ }
+  }
+  return {
+    ok: true,
+    ts,
+    ageS,
+    stale: ageS === null ? true : ageS > TOURNAMENT_STALE_S,
+    staleAfterS: TOURNAMENT_STALE_S,
+    btc: feed.btc ?? null,
+    eth: feed.eth ?? null,
+    funding_btc: feed.funding_btc ?? null,
+    funding_eth: feed.funding_eth ?? null,
+    basis: feed.basis ?? null,
+    pairs_z: feed.pairs_z ?? null,
+    cycles: feed.cycles ?? null,
+    leader: feed.leader ?? null,
+    strategies: strategies.map((s) => ({
+      name: s?.name ?? null,
+      side: s?.side ?? null,
+      return_pct: s?.return_pct ?? null,
+    })),
+  };
+}
+
+app.get('/api/tournament', (_req, res) => {
+  const payload = tournamentPayload();
+  if (!payload.ok) {
+    return sendError(res, 503, 'tournament_unavailable', payload.error, { path: payload.path });
+  }
+  res.json(payload);
+});
+
+app.get('/tournament', (_req, res) => {
+  const p = tournamentPayload();
+  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+  const rows = p.strategies.map((s, i) => `
+      <tr>
+        <td class="rank">${i + 1}</td>
+        <td>${esc(s.name)}</td>
+        <td>${esc(s.side)}</td>
+        <td class="${(s.return_pct ?? 0) < 0 ? 'neg' : 'pos'}">${s.return_pct == null ? '—'
+          : (s.return_pct >= 0 ? '+' : '') + Number(s.return_pct).toFixed(2) + '%'}</td>
+      </tr>`).join('');
+  const banner = p.stale
+    ? `<div class="warn">STALE — last update ${p.ageS}s ago
+       (threshold ${p.staleAfterS}s)</div>`
+    : `<div class="ok">fresh — ${p.ageS}s ago</div>`;
+  res.type('html').send(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tournament — Office HUD</title>
+<style>
+  :root{color-scheme:dark}
+  body{margin:0;padding:24px;background:#0b0e14;color:#e6e9ef;
+       font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  h1{font-size:18px;margin:0 0 4px;letter-spacing:.02em}
+  .sub{color:#8b93a7;margin-bottom:16px}
+  .cards{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+  .card{background:#141a26;border:1px solid #232c3d;border-radius:8px;padding:10px 14px}
+  .card b{display:block;color:#fff;font-size:16px}
+  .card span{color:#8b93a7;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  table{width:100%;border-collapse:collapse;background:#141a26;
+        border:1px solid #232c3d;border-radius:8px;overflow:hidden}
+  th,td{text-align:left;padding:8px 12px;border-bottom:1px solid #1c2432}
+  th{color:#8b93a7;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  tr:last-child td{border-bottom:none}
+  .rank{color:#8b93a7;width:44px}
+  .pos{color:#3ddc97}.neg{color:#ff5c5c}
+  .ok{color:#3ddc97;margin-bottom:14px}
+  .warn{color:#ffb454;margin-bottom:14px}
+  a{color:#6ea8fe}
+</style></head><body>
+  <h1>Tournament</h1>
+  <div class="sub">paper strategies · served by the Office HUD · no password
+    · <a href="/api/tournament">JSON</a> · <a href="/">HUD</a></div>
+  ${p.ok ? `${banner}
+  <div class="cards">
+    <div class="card"><b>${esc(p.btc)}</b><span>BTC</span></div>
+    <div class="card"><b>${esc(p.eth)}</b><span>ETH</span></div>
+    <div class="card"><b>${p.cycles == null ? '—' : esc(p.cycles)}</b><span>cycles</span></div>
+    <div class="card"><b>${esc(p.leader)}</b><span>leader</span></div>
+  </div>
+  <table><thead><tr><th>#</th><th>strategy</th><th>side</th><th>return</th></tr></thead>
+  <tbody>${rows || '<tr><td colspan="4">no strategies</td></tr>'}</tbody></table>`
+    : `<div class="warn">${esc(p.error)}</div>`}
+</body></html>`);
+});
+
+// ---------- HUD launcher (injected, no rebuild required) ----------
+// The SPA is a Vite build with hashed assets, so adding a nav entry the normal
+// way means `npm run build`, which churns asset hashes and has been fragile.
+// A bug fix or a small betterment must not depend on a rebuild, so the server
+// injects this launcher into the served index.html instead. It is standalone
+// (no dependency on React's DOM), idempotent via a marker, and degrades to a
+// plain link if the script never runs.
+
+const HUD_LAUNCHER_MARKER = '<!-- hud:tournament-launcher -->';
+
+function hudLauncherSnippet() {
+  return `${HUD_LAUNCHER_MARKER}
+<style>
+  #hud-tournament-launcher{position:fixed;right:16px;bottom:16px;z-index:2147483000;
+    display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;
+    background:#141a26;color:#e6e9ef;border:1px solid #232c3d;
+    font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;
+    text-decoration:none;box-shadow:0 6px 20px rgba(0,0,0,.45)}
+  #hud-tournament-launcher:hover{border-color:#3a4a63;background:#182033}
+  #hud-tournament-launcher .dot{width:8px;height:8px;border-radius:50%;background:#8b93a7;flex:none}
+  #hud-tournament-launcher .dot.fresh{background:#3ddc97}
+  #hud-tournament-launcher .dot.stale{background:#ffb454}
+  #hud-tournament-launcher .lbl{white-space:nowrap}
+  #hud-tournament-launcher b{color:#fff;font-weight:600}
+</style>
+<a id="hud-tournament-launcher" href="/tournament" title="Paper tournament (no password)">
+  <span class="dot"></span><span class="lbl">Tournament</span>
+</a>
+<script>
+(function(){
+  var el=document.getElementById('hud-tournament-launcher');
+  if(!el)return;
+  var dot=el.querySelector('.dot'), lbl=el.querySelector('.lbl');
+  fetch('/api/tournament',{cache:'no-store'}).then(function(r){return r.json();})
+    .then(function(d){
+      if(!d||!d.ok)return;
+      dot.className='dot '+(d.stale?'stale':'fresh');
+      var lead=(d.strategies&&d.strategies[0])||null;
+      if(lead&&lead.return_pct!=null){
+        var sign=lead.return_pct>=0?'+':'';
+        lbl.textContent='Tournament · '+lead.name+' '+sign+Number(lead.return_pct).toFixed(1)+'%';
+        el.setAttribute('aria-label',lbl.textContent);
+      }
+    }).catch(function(){});
+})();
+</script>`;
+}
+
+function injectHudLauncher(html) {
+  if (typeof html !== 'string' || html.includes(HUD_LAUNCHER_MARKER)) return html;
+  if (!html.includes('</body>')) return html;
+  return html.replace('</body>', `${hudLauncherSnippet()}\n</body>`);
 }
 
 // ---------- static web app ----------
 
 const dist = path.join(__dirname, '..', 'web', 'dist');
+// Unknown /api paths must not fall through to the SPA and return HTML 200.
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown API route' }));
 if (fs.existsSync(dist)) {
+  // Serve the SPA shell ourselves so the launcher can be injected. express.static
+  // would answer `/` with the raw file before this could run.
+  const indexHtml = () => {
+    try {
+      return injectHudLauncher(fs.readFileSync(path.join(dist, 'index.html'), 'utf8'));
+    } catch {
+      return null;
+    }
+  };
+  app.get('/', (_req, res) => {
+    const html = indexHtml();
+    if (html === null) return res.sendFile(path.join(dist, 'index.html'));
+    res.type('html').send(html);
+  });
   app.use(express.static(dist));
-  app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
+  app.get('*', (_req, res) => {
+    const html = indexHtml();
+    if (html === null) return res.sendFile(path.join(dist, 'index.html'));
+    res.type('html').send(html);
+  });
+} else {
+  app.get('*', (_req, res) => res.status(503).send('web/dist is missing — run `npm run build`'));
 }
 
-// Create HTTP server with retry logic for EADDRINUSE
-const http = require('http');
-const server = http.createServer(app);
+// ---------- process bootstrap ----------
+// Everything above is pure wiring: requiring this module yields the express app
+// without binding a port, so the test suite can drive it on an ephemeral port
+// against a fixture hive.
 
-function startServer(port, retries = 10, delay = 500) {
+const http = require('http');
+
+let announcedReady = false;
+function announceReady(port) {
+  if (announcedReady) return;
+  announcedReady = true;
+  console.log(`[office-hud] hive: ${HIVE} (${fs.existsSync(HIVE) ? 'found' : 'MISSING'})`);
+  console.log(`[office-hud] open → http://localhost:${port}`);
+}
+
+const createServer = () => http.createServer(app);
+
+// A launchd restart can find the old process still holding the port; retry
+// briefly, but cap the backoff so a restart is never stuck for minutes.
+const PORT_BACKOFF_CAP_MS = 4000;
+
+function startServer(port = PORT, retries = 8, delay = 500) {
+  const server = createServer();
   return new Promise((resolve, reject) => {
     server.listen(port, HOST, () => {
-      console.log(`[office-hud] hive: ${HIVE} (${fs.existsSync(HIVE) ? 'found' : 'MISSING'})`);
-      console.log(`[office-hud] open → http://localhost:${port}`);
+      announceReady(port);
       resolve(server);
     });
 
@@ -821,7 +3408,7 @@ function startServer(port, retries = 10, delay = 500) {
       if (err.code === 'EADDRINUSE' && retries > 0) {
         console.log(`[office-hud] port ${port} in use, retrying in ${delay}ms... (${retries} retries left)`);
         setTimeout(() => {
-          resolve(startServer(port, retries - 1, delay * 1.5));
+          resolve(startServer(port, retries - 1, Math.min(delay * 2, PORT_BACKOFF_CAP_MS)));
         }, delay);
       } else {
         reject(err);
@@ -830,38 +3417,152 @@ function startServer(port, retries = 10, delay = 500) {
   });
 }
 
-let serverInstance;
-startServer(PORT).then(s => {
-  serverInstance = s;
-  console.log(`[office-hud] hive: ${HIVE} (${fs.existsSync(HIVE) ? 'found' : 'MISSING'})`);
-  console.log(`[office-hud] open → http://localhost:${PORT}`);
-}).catch(err => {
-  console.error('[office-hud] failed to start server:', err);
-  process.exit(1);
-});
+let serverInstance = null;
 
-// Graceful shutdown
 function shutdown(signal) {
   console.log(`[office-hud] received ${signal}, shutting down gracefully...`);
-  if (serverInstance) {
-    serverInstance.closeAllConnections();
-    serverInstance.close((err) => {
-      if (err) {
-        console.error('[office-hud] server close error:', err);
-      } else {
-        console.log('[office-hud] server closed');
-      }
-      process.exit(0);
-    });
-    // Force exit after 2 seconds if graceful shutdown fails
-    setTimeout(() => {
-      console.error('[office-hud] forced shutdown after timeout');
-      process.exit(1);
-    }, 2000);
-  } else {
+  liveHub?.close();
+  alertEngine?.stop();
+  if (watcher) { try { watcher.close(); } catch { /* already closed */ } }
+  // End the SSE streams first: an open event-stream response keeps the server
+  // from draining, which used to trip the force-exit timer on every restart.
+  for (const res of [...sseClients]) {
+    sseClients.delete(res);
+    try { res.end(); } catch { /* already gone */ }
+  }
+  if (!serverInstance) { process.exit(0); return; }
+  const server = serverInstance;
+  server.closeAllConnections();
+  server.close((err) => {
+    if (err) console.error('[office-hud] server close error:', err);
+    else console.log('[office-hud] server closed');
     process.exit(0);
+  });
+  // Backstop only: closeAllConnections() above should have drained by now.
+  setTimeout(() => {
+    console.error('[office-hud] forced shutdown after timeout');
+    process.exit(1);
+  }, 5000);
+}
+
+/**
+ * Fail loudly and once, instead of crash-looping: a half-installed
+ * node_modules (an interrupted `npm ci`, a stray symlink) otherwise shows up as
+ * repeated MODULE_NOT_FOUND restarts with no explanation.
+ */
+function verifyDependencies() {
+  const required = ['express', 'js-yaml'];
+  const missing = required.filter((name) => {
+    try { require.resolve(name); return false; } catch { return true; }
+  });
+  if (missing.length) {
+    console.error(
+      `[office-hud] missing dependencies: ${missing.join(', ')}.\n` +
+      `[office-hud] run: cd ${path.join(__dirname, '..')} && npm ci`
+    );
+    process.exit(1);
   }
 }
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+function bootstrap() {
+  verifyDependencies();
+  // Express 4 does not catch async handler rejections; without these a single
+  // throw kills the process and launchd restarts it.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[office-hud] unhandled rejection:', reason && reason.stack ? reason.stack : reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[office-hud] uncaught exception:', err && err.stack ? err.stack : err);
+  });
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  startWatch();
+
+  // Spawned terminals outlive a HUD restart (launchd KeepAlive restarts this
+  // process within a second of any exit), so the registry is loaded and
+  // reconciled against live process state before anything is served. Without
+  // this a restart would report every still-running terminal as missing, and a
+  // naive fix -- trusting the file -- would report dead ones as running.
+  terminalManager.load().then((count) => {
+    console.log(`[office-hud] spawned terminals: ${count} reconciled`);
+  }).catch((error) => {
+    console.warn('[office-hud] spawned terminal load failed:', error.message);
+  });
+
+  // Reap finished terminals and their logs. Hourly is deliberate: the cutoff is
+  // measured in hours, so a minute-level sweep would only churn the registry.
+  // unref'd so it never holds the process open on the way down.
+  const reaper = setInterval(() => {
+    try { terminalManager.reap(); } catch (error) {
+      console.warn('[office-hud] terminal reap failed:', error.message);
+    }
+  }, 60 * 60 * 1000);
+  reaper.unref?.();
+
+  // The engines are constructed at module scope; bootstrap only starts them.
+  alertEngine.start();
+  autonomy.evaluate();
+
+  return startServer(PORT).then((server) => {
+    serverInstance = server;
+    // The live socket rides the same HTTP server as the REST API.
+    liveHub = new LiveHub({
+      snapshot: buildSnapshotAsync,
+      alerts: () => (alertEngine ? alertEngine.snapshotList() : []),
+      heartbeatMs: 25000,
+      isHostAllowed: hostIsAllowed,
+    });
+    liveHub.attach(server);
+    announceReady(PORT);
+    return server;
+  }).catch((err) => {
+    console.error('[office-hud] failed to start server:', err);
+    process.exit(1);
+  });
+}
+
+// The engines exist as soon as the module is loaded, so every route is wired
+// whether or not this process went through bootstrap(). bootstrap() only starts
+// timers, watches the hive and binds a port.
+alertEngine = new AlertEngine({ read: readSnapshot, intervalMs: 30000 });
+
+// The controller shares the snapshot reader and routes through the same JEV
+// enqueue a human uses, so an automated request is never privileged over a
+// manual one.
+autonomy = new AutonomyController({
+  read: readSnapshot,
+  route: ({ prompt, target, priority }) => enqueueJarvisCommand({
+    prompt,
+    target,
+    priority,
+    confirmed: true,
+  }),
+});
+
+if (require.main === module) {
+  bootstrap();
+}
+
+module.exports = {
+  app,
+  bootstrap,
+  createServer,
+  startServer,
+  // internals the test suite asserts against
+  verifyDependencies,
+  isDangerousJarvisPrompt,
+  enqueueJarvisCommand,
+  internals: {
+    injectHudLauncher, hudLauncherSnippet, tournamentPayload,
+    readJson, readJsonCached, readText, readTail, readJsonl, clampLimit,
+    getFloorTaskCounts, getTaskBoard, getGraphifyCommunities, withHiveFileLock,
+    getAgentDetail, getLedger, resolveResource, PARAMETERIZED,
+    mergedAgents, sessionRows, rollupFloors, getWorkEvents, getQueueSummary,
+    isLocalRequest, isIdentifier, requestError, sendError, buildSnapshot,
+    portalTarget, rewriteUpstreamLocation, portalSlugForPort, PORTAL_SERVICES,
+    parseLaunchctlList, getFleetLaunchdState,
+    changedResources, signatureOf, resourceNames, invalidateCaches, hostIsAllowed, hostOnly,
+    HIVE, FLEET_ROOT, SERVICE_PORTS, JSON_CACHE_MS, RESOURCES,
+  },
+};

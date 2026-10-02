@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useLive, type FleetEvent } from '../api';
+import { VirtualTable } from './VirtualTable';
 
 const EVENT_TYPES = [
   ['', 'All Events'],
@@ -26,23 +27,33 @@ function eventTime(timestamp?: string) {
   return Number.isNaN(date.getTime()) ? timestamp : date.toLocaleString();
 }
 
+function eventSummary(value: unknown) {
+  const text = String(value).replace(/\s+/g, ' ').trim();
+  return text.length <= 240 ? text : `${text.slice(0, 240)}…`;
+}
+
 export default function LedgerTimeline() {
   const [source, setSource] = useState<'log' | 'events'>('events');
   const [kind, setKind] = useState('');
-  const query = new URLSearchParams({ source, limit: '200' });
+  const query = new URLSearchParams({ source, limit: '500' });
   if (kind) query.set('kind', kind);
   const { data, error } = useLive<{ source: string; events: FleetEvent[] }>(`/api/ledger?${query.toString()}`);
   const events = data?.events ?? [];
+  const filteredEvents = kind ? events.filter(event => event.type === kind) : events;
 
   return (
     <div className="h-full overflow-auto p-4">
-      <div className="flex items-center justify-between mb-4 gap-4">
-        <h2 className="font-mono text-hud-amber text-lg">F2 · LEDGER TIMELINE</h2>
+      <div className="flex flex-wrap items-center justify-between mb-4 gap-4">
+        <div className="flex items-center gap-3">
+          <h2 className="font-mono text-hud-amber text-lg">F2 · LEDGER TIMELINE</h2>
+          <span className="text-xs font-mono text-hud-dim">{filteredEvents.length} shown</span>
+        </div>
         <div className="flex items-center gap-2">
           <div className="flex rounded-lg border border-hud-edge overflow-hidden">
             {(['events', 'log'] as const).map(value => (
               <button
                 key={value}
+                type="button"
                 onClick={() => setSource(value)}
                 className={`px-3 py-1.5 text-xs font-mono ${source === value ? 'bg-hud-edge text-hud-text' : 'text-hud-dim hover:text-hud-text'}`}
               >
@@ -50,14 +61,27 @@ export default function LedgerTimeline() {
               </button>
             ))}
           </div>
-          <select className="input w-44 text-xs" value={kind} onChange={event => setKind(event.target.value)}>
+          <select className="input w-44 text-xs" value={kind} onChange={event => setKind(event.target.value)} aria-label="Filter by event kind">
             {EVENT_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </div>
       </div>
-      <div className="space-y-2">
-        {events.map((event, index) => (
-          <div key={`${event.timestamp ?? 'event'}-${event.task_id ?? ''}-${event.agent_id ?? ''}-${index}`} className="panel p-3">
+      <p className="text-[10px] font-mono text-hud-dim mb-2">
+        {filteredEvents.length} event{filteredEvents.length === 1 ? '' : 's'}
+        {filteredEvents.length >= 500 ? ' (newest 500 of the retained window)' : ''}
+      </p>
+      <VirtualTable
+        rows={filteredEvents}
+        rowHeight={54}
+        height="calc(100vh - 260px)"
+        className="space-y-2"
+        // No index in the key: a new head event or a filter change would
+        // otherwise renumber every later row and remount the whole window,
+        // which is the cost VirtualTable exists to avoid.
+        rowKey={(event) => `${event.timestamp ?? 'event'}-${event.task_id ?? ''}-${event.agent_id ?? ''}`}
+        emptyLabel={error ? `Failed to load events: ${error}` : 'No events found'}
+        renderRow={(event) => (
+          <div className="panel p-3 w-full">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 min-w-0">
                 <span className={`font-mono text-xs ${eventTone(event.type)}`}>{event.type || 'event'}</span>
@@ -66,13 +90,10 @@ export default function LedgerTimeline() {
               </div>
               <span className="text-[10px] font-mono text-hud-dim shrink-0">{eventTime(event.timestamp)}</span>
             </div>
-            {event.result && <div className="mt-2 text-xs text-hud-dim truncate">{event.result}</div>}
+            {event.result && <div className="mt-2 text-xs text-hud-dim truncate">{eventSummary(event.result)}</div>}
           </div>
-        ))}
-        {events.length === 0 && (
-          <div className="panel py-8 text-center text-hud-dim text-sm">{error ? `Failed to load events: ${error}` : 'No events found'}</div>
         )}
-      </div>
+      />
     </div>
   );
 }
