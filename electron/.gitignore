@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# electron-builder staging directory. Recreated from scratch on every pack by
+# build/before-pack.js, which copies the HUD server's resolved dependency
+# closure out of office-hud/node_modules. Never edit or commit it.
+.packstage/
+
+# Packaged output: release/mac-arm64/Office HUD.app, Office HUD-<version>-arm64.dmg,
+# the .dmg.blockmap, and builder-debug.yml.
+release/
+
+# Compiled TypeScript. This is derived output — `npm run build` (tsc) regenerates
+# it from the committed main/preload/shared/test *.ts sources, and `npm run dist`
+# runs that build before packaging, so nothing is lost by ignoring it.
+#
+# office-hud/.gitignore already contains a `dist/` rule that matches this
+# directory at any depth (verified with `git check-ignore -v`). It is repeated
+# here so this package stays correct on its own if it is ever moved or the parent
+# ignore file changes. See README.md ("Is dist/ ignored?").
+dist/
+
+.DS_Store
+*.log
+
+# Stray tsc output at the package root. The real output is dist/, which is
+# ignored above; this file appeared from an earlier one-off compile and nothing
+# imports it.
+server-manager.js

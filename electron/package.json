@@ -1,0 +1,91 @@
+{
+  "name": "office-hud-electron",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native shell for the Office HUD — attaches to the HUD server on 127.0.0.1:4747, spawning it only when nothing already serves it.",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:watch": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "npm run build && electron dist/main/main.js",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "dist": "npm run build && electron-builder --mac --arm64",
+    "dist:dir": "npm run build && electron-builder --dir --mac --arm64",
+    "clean": "rm -rf release .packstage"
+  },
+  "build": {
+    "appId": "com.goodwearr.office-hud",
+    "productName": "Office HUD",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "beforePack": "build/before-pack.js",
+    "publish": null,
+    "files": [
+      "package.json",
+      "dist/main/**/*",
+      "!**/*.map",
+      "dist/preload/**/*",
+      "!**/*.map",
+      "dist/shared/**/*",
+      "!**/*.map",
+      {
+        "from": ".packstage/node_modules",
+        "to": "node_modules",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../",
+        "filter": [
+          "server/index.js",
+          "server/package.json",
+          "server/lib/**/*",
+          "!**/*.map",
+          "!**/test/**",
+          "!**/*.md",
+          "!**/.DS_Store"
+        ]
+      },
+      "!**/.DS_Store",
+      "!**/{.gitignore,.git,.editorconfig}"
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSHighResolutionCapable": true
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "electron": "^33.2.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.9.3"
+  }
+}
