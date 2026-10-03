@@ -36,7 +36,7 @@ const STATE_FILE = 'spawned_terminals.json';
 const TYPES = ['tmux', 'background', 'orchestrate', 'remote'];
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP'];
 const DEFAULTS = {
-  maxConcurrent: 50,
+  maxConcurrent: 100,
   reapAfterHours: 24,
   reconcileMs: 60000,
   // Deliberately generous: this is a ceiling that exists so a hung command cannot
