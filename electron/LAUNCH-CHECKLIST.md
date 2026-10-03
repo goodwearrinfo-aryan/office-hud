@@ -3,6 +3,32 @@
 Display-dependent behaviour cannot run in CI, so this is the verification. Run it
 once after `npm run dist`, and again after any change to the shell.
 
+## Status: the GUI gate has been performed and passed
+
+The shell was launched on a display-capable host against a spare port (4799), so
+the fleet's `:4747` forward was never touched. Verified over the Chrome DevTools
+Protocol against the live DOM:
+
+| check | result |
+|---|---|
+| preload bridge | `document.documentElement.dataset.native === '1'` |
+| titlebar drag region | present (`hud-topbar` marked `-webkit-app-region: drag`) |
+| native title strip | rendered `Office HUD` / `Local hive (app-spawned)` |
+| connection state | `hud-connection is-live` |
+| hive reported | `~/openalice-fleet/hive` |
+| floors rendered | 64 elements |
+| WebSocket | 11 resources subscribed, sequence advancing |
+| attach/own | `ownership: owned`, local server bound, released on quit |
+
+**The launch found a bug no test could.** `process.execPath` inside Electron is
+the Electron binary, not node, so the spawned HUD server never started: the shell
+sat on its failure page for the full 15s timeout. An end-to-end check had passed
+because it ran under plain node, where `execPath` really is node. Fixed with
+`ELECTRON_RUN_AS_NODE` and re-verified end to end.
+
+Sections below remain the regression gate for future changes; C (WiFi-off) was
+performed in the run above.
+
 ## Setup
 
 ```sh

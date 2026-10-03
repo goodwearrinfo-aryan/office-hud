@@ -8,12 +8,26 @@ guess and does not disturb anyone else's session.
 
 | | repo | tracks | remote |
 |---|---|---|---|
-| A | `openalice-fleet` (superproject) | 91 files under `office-hud/` | `goodwearrinfo-aryan/openalice-fleet` (private) |
+| A | `openalice-fleet` (superproject) | 117 files under `office-hud/` | `goodwearrinfo-aryan/openalice-fleet` (private) |
 | B | `openalice-fleet/office-hud` (nested) | its own tree | `goodwearrinfo-aryan/office-hud` (public) |
 
 Same working tree, two independent histories. Repo B is the **canonical** repo.
 Repo A's copy of `office-hud/` is frozen and must not be modified until the
 migration below is run deliberately.
+
+## Fleet tracking inventory (2026-10-03, corrected)
+
+The superproject's tracking grew from 91 to **117** files while this work was in
+progress — another session added 26, including all of `electron/`. Any migration
+must reconcile against 117, not the original 91.
+
+| area | files |
+|---|---|
+| `web/` | 42 |
+| `server/` | 40 |
+| `electron/` | 16 |
+| `scripts/` | 12 |
+| root | 4 (`README.md`, `package.json`, `package-lock.json`, `OfficeHUD.icns`) |
 
 ## State as of 2026-10-03
 
