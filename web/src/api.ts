@@ -29,6 +29,30 @@ export interface Agent {
   sessionFresh: boolean;
   currentTaskId: string | null;
   currentTaskTitle: string | null;
+  /**
+   * What backs the status/display labels above, so a panel can show its
+   * reasoning instead of asking the reader to trust a colour.
+   *
+   * This was missing from the canonical type even though the server has emitted
+   * it on every agent since it was added. GodPanel worked around that by
+   * declaring a private duplicate of the whole agent shape, which is how the
+   * canonical type stayed wrong while the component that needed the field
+   * type-checked fine.
+   *
+   * `processLiveness` keeps three states apart on purpose: a live process, a dead
+   * one, and no pid reported at all are different facts, and collapsing them
+   * into one "unverified" reads as a problem when nothing is wrong.
+   */
+  evidence: {
+    hasSession: boolean;
+    sessionFresh: boolean;
+    hasTask: boolean;
+    taskStatus: string | null;
+    heartbeatAgeSec: number | null;
+    processId: number | null;
+    processLiveness: 'alive' | 'dead' | 'no-pid' | null;
+    processVerified: boolean;
+  };
 }
 
 export interface Summary {
@@ -37,25 +61,77 @@ export interface Summary {
   present: boolean;
   godId: string | null;
   agents: Agent[];
+  /**
+   * `floors` is emitted as an empty array on this deployment, which is the
+   * truthful shape of "no floor rollup was produced".
+   *
+   * Typed as a `FloorRollup[]` covering every member FloorTable's own
+   * `FloorRow` declares, so the `Summary & { floors?: FloorRow[] }` intersection
+   * it uses resolves to a readable type. Leaving it undeclared did NOT fail:
+   * an intersection with an absent optional property silently collapses to
+   * `never[]`, so `floors.length === 0` type-checked and the panel rendered its
+   * empty state forever with no error to explain why. It is now genuinely empty
+   * on this deployment, so the panel honestly says so rather than pretending
+   * the field is missing.
+   */
+  floors?: Array<{
+    floor: string;
+    lead: string | null;
+    leadIsLive: boolean;
+    agents: number;
+    running: number;
+    working: number;
+    idle: number;
+    stale: number;
+    failed: number;
+    offline: number;
+    breaker: number;
+    health: string;
+  }>;
+  /** A second copy of the agent list with the time it was collected. */
+  fleet?: { ts?: number; agents?: Agent[] };
 }
 
+/**
+ * A process row from /api/processes, as collected into the hive's processes.json.
+ *
+ * This shape previously declared `pid`, `name`, `kind` and `observed_at`, none
+ * of which the server ever sent. It type-checked cleanly, so a consumer reading
+ * `process.pid` would render `undefined` with no error anywhere — a declared
+ * field that does not exist is worse than an absent one, because it reads as a
+ * guarantee.
+ *
+ * `pid` and `process_id` are both optional because the collectors disagree: rows
+ * sourced from the hive carry `pid`, engine probes carry only `process_id`.
+ * `command` arrives already redacted server-side.
+ */
 export interface ProcessRecord {
-  pid: number;
-  name: string;
-  kind: string;
-  status: string;
-  command: string;
-  observed_at: string;
+  status?: string;
+  command?: string;
+  pid?: number;
+  process_id?: string;
+  project_id?: string;
+  started_at?: string;
+  last_seen?: string;
+  health?: string;
+  restart_count?: number;
 }
 
+/**
+ * A project row from /api/projects.
+ *
+ * `branch`, `health`, `last_seen` and `metadata` were declared here and are
+ * never emitted by projects.json, so they resolved to undefined at runtime while
+ * type-checking cleanly. Replaced with the fields that are actually sent, plus
+ * the timestamps the collector records.
+ */
 export interface ProjectRecord {
   project_id: string;
   name?: string;
   status?: string;
-  branch?: string;
-  health?: string;
-  last_seen?: string;
-  metadata?: Record<string, unknown>;
+  description?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Message {
