@@ -105,7 +105,7 @@ export default function TimeMachine() {
     return (
       <div className="hud-floor">
         <h2>F13 · TIME MACHINE</h2>
-        <p className="hud-muted">{windowError ? `Cannot read the event window: ${windowError}` : 'Loading event window…'}</p>
+        <p className="text-hud-dim">{windowError ? `Cannot read the event window: ${windowError}` : 'Loading event window…'}</p>
       </div>
     );
   }
@@ -161,10 +161,10 @@ export default function TimeMachine() {
         <span>{stampFmt.format(new Date(bounds.latest))}</span>
       </div>
 
-      {error && <p className="hud-error">{error}</p>}
+      {error && <p className="text-hud-red">{error}</p>}
 
       {isLive && (
-        <p className="hud-muted">
+        <p className="text-hud-dim">
           Showing live. Drag the scrubber to reconstruct the office as it was.
           {bounds.eventsAvailable > 0 && ` ${bounds.eventsAvailable.toLocaleString()} events retained.`}
         </p>
@@ -222,7 +222,7 @@ export default function TimeMachine() {
                     <time>{timeFmt.format(new Date(transition.at))}</time>
                     <span className={`tag tag--${transition.type}`}>{transition.type.replace('task_', '')}</span>
                     <span className="truncate">{transition.agent ?? '—'}</span>
-                    {transition.reason && <span className="muted truncate">{transition.reason}</span>}
+                    {transition.reason && <span className="text-hud-dim truncate">{transition.reason}</span>}
                   </li>
                 ))}
                 {snapshot.transitions.length === 0 && (
@@ -232,7 +232,7 @@ export default function TimeMachine() {
             </section>
           </div>
 
-          <p className="hud-muted">
+          <p className="text-hud-dim">
             Reconstructed from {snapshot.window.eventsConsidered.toLocaleString()} retained events
             {snapshot.window.earliestEventAt
               ? ` covering back to ${stampFmt.format(new Date(snapshot.window.earliestEventAt))}`
