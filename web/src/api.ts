@@ -365,10 +365,23 @@ export interface PolymarketExclusionFile {
   error: string | null;
 }
 
+/**
+ * The market-exclusion list and whether it could be read at all.
+ *
+ * `present`, `valid` and `error` were missing here while the server sends all
+ * three, and `count` is null whenever `valid` is false. That combination is the
+ * hazard: the type said `count: number` (always a number) and said nothing about
+ * validity, so a consumer could render a count while the file behind it was
+ * unreadable or malformed. `count` is nullable precisely because "no count" is
+ * a distinct, reportable state rather than a zero.
+ */
 export interface PolymarketExclusionSet {
   path: string;
-  count: number;
+  present?: boolean;
+  valid?: boolean;
+  count: number | null;
   items: PolymarketExclusion[];
+  error?: string | null;
 }
 
 export interface PolymarketMarket {
@@ -396,21 +409,24 @@ export interface PolymarketPortfolio {
   current_drawdown: number | null;
 }
 
+/**
+ * A summary of the local polymarket engine's own state.
+ *
+ * The seven optional fields this previously declared (`open_trades`,
+ * `closed_trades`, `trade_sides`, `signal_decisions`, `order_statuses`,
+ * `performance_metrics`, `portfolio`) are not emitted by the summariser, so a
+ * consumer reading them got `undefined` where the honest answer is "this engine
+ * does not report that". Declared-but-absent reads as a guarantee that nothing
+ * needs checking.
+ */
 export interface PolymarketMarketSummary {
   trades: number;
-  open_trades?: number;
-  closed_trades?: number;
-  trade_sides?: Record<string, number>;
   signals: number;
-  signal_decisions?: Record<string, number>;
   orders: number;
-  order_statuses?: Record<string, number>;
   fills: number;
   open_positions: number;
   closed_positions: number;
   markets: number;
-  performance_metrics?: Record<string, unknown>;
-  portfolio?: PolymarketPortfolio;
 }
 
 export interface PolymarketMarketsResponse {
@@ -471,8 +487,25 @@ export interface HarnessHealth {
   model: string;
   error: string | null;
   checkedAt: string;
+  /**
+   * Providers that are configured but not currently serving. Empty is the healthy
+   * case and is a real measurement, not missing data.
+   *
+   * This was absent from the canonical type while Overview read it. That worked
+   * only because Overview declares a private copy of HarnessHealth with the field
+   * included — the second component-local duplicate of a type that api.ts already
+   * exports, and the same pattern that hid Agent.evidence from the canonical
+   * Agent.
+   */
+  degradedProviders?: string[];
 }
 
+/**
+ * One probed service from /api/services/health.
+ *
+ * `attempts` is sent by the collector (how many times it tried before recording
+ * a status) and was previously undeclared.
+ */
 export interface ServicePort {
   name: string;
   port: number;
@@ -480,6 +513,7 @@ export interface ServicePort {
   status: 'online' | 'offline';
   latencyMs: number;
   error: string | null;
+  attempts?: number;
 }
 
 export interface ServiceHealth {
