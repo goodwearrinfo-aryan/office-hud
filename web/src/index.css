@@ -1480,3 +1480,16 @@ body {
   outline: 2px solid var(--hud-amber);
   outline-offset: 2px;
 }
+/* Colour escapes used inside JarvisConsole. !important because they sit alongside
+   Tailwind text-* utilities and must win regardless of source order. */
+.text-green {
+  color: var(--hud-green) !important;
+}
+
+.text-alert {
+  color: var(--hud-red) !important;
+}
+
+.text-blue {
+  color: var(--hud-blue) !important;
+}
