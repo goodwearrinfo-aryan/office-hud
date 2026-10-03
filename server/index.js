@@ -36,6 +36,7 @@ const FLEET_ROOT = path.dirname(HIVE);
 // times in one session, and once reached production wide open.
 const { isLocalRequest } = require('./lib/local_only');
 const { TerminalManager } = require('./lib/terminal/manager');
+const { redactCommand, redactEntry, redactAll } = require('./lib/redact');
 
 const terminalManager = new TerminalManager({ hive: HIVE });
 const POLYMARKET_ROOT = '/Users/a/polymarket';
@@ -906,14 +907,22 @@ function terminalSnapshot() {
   for (const host of hosts) {
     const doc = host.doc || {};
     for (const shell of Array.isArray(doc.shell_terminals) ? doc.shell_terminals : []) {
-      terminals.push({ ...shell, host: host.host, host_stale: host.stale, age_sec: host.age_sec });
+      // Redacted on the way out, not on the way in: the hive keeps the real
+      // command line, and only the served copy is masked.
+      terminals.push(redactEntry({ ...shell, host: host.host, host_stale: host.stale, age_sec: host.age_sec }));
     }
     for (const session of Array.isArray(doc.agent_sessions) ? doc.agent_sessions : []) {
       sessions.push({ ...session, host: host.host, host_stale: host.stale });
     }
   }
   return {
-    hosts: hosts.map(({ doc, ...rest }) => rest),
+    // `processes` is carried per host, redacted, because a command line is the
+    // thing most likely to hold a credential and callers should not have to ask
+    // a second endpoint for it.
+    hosts: hosts.map(({ doc, ...rest }) => ({
+      ...rest,
+      processes: redactAll(Array.isArray(doc?.processes) ? doc.processes : []),
+    })),
     terminals,
     sessions,
     stale_hosts: hosts.filter(h => h.stale).map(h => h.host),
@@ -2442,7 +2451,11 @@ app.post('/api/terminals/:id/signal', async (req, res) => {
 });
 
 function getProcesses() {
-  return readJson(path.join(HIVE, 'processes.json'), { processes: [] });
+  const doc = readJson(path.join(HIVE, 'processes.json'), { processes: [] });
+  // Same reasoning as terminalSnapshot: the hive keeps the real command line,
+  // the served copy does not. These are real process command lines, so a token
+  // passed as an argument would otherwise be readable by any HUD viewer.
+  return { ...doc, processes: redactAll(doc.processes) };
 }
 
 app.get('/api/processes', (_req, res) => {
