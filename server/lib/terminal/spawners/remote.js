@@ -219,7 +219,7 @@ function probePeerPath(peer, options = {}) {
 
 function resetPathCache() { pathCache.clear(); }
 
-function spawn({ peer, argv, cwd, logFile, env, onExit, resolvedPath }) {
+function spawn({ peer, argv, cwd, logFile, env, onExit, resolvedPath, timeoutMs, graceMs = 5000 }) {
   if (!Array.isArray(argv) || !argv.length) throw new Error('remote spawn requires an argv array');
 
   const args = ['-F', String(process.env.REMOTE_SSH_CONFIG || path.join(os.homedir(), '.ssh', 'config'))];
@@ -278,14 +278,36 @@ function spawn({ peer, argv, cwd, logFile, env, onExit, resolvedPath }) {
   }
 
   let closed = false;
+  let timedOut = false;
   const finish = (code, signal) => {
     if (closed) return;
     closed = true;
+    if (timer) clearTimeout(timer);
     if (stream) { try { stream.end(); } catch { /* ended */ } }
     if (typeof onExit === 'function') {
-      try { onExit({ code, signal }); } catch { /* a listener must not break exit */ }
+      try { onExit({ code, signal, timedOut }); } catch { /* a listener must not break exit */ }
     }
   };
+
+  // Same ceiling as the local background backend, and for the same reason: a
+  // hung remote holds its slot until the ssh client dies, and the reconcile loop
+  // rightly keeps reporting `running` while that pid is alive. Killing the ssh
+  // client closes the channel, which is what actually stops the remote command.
+  let grace = null;
+  let timer = null;
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      try { fs.appendFileSync(logFile, `[hud] timed out after ${timeoutMs}ms; closing ssh channel\n`); } catch { /* log gone */ }
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      grace = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      }, graceMs);
+      grace.unref?.();
+    }, timeoutMs);
+    timer.unref?.();
+  }
+
   child.on('exit', finish);
   child.on('error', (error) => {
     // execFile-style failures (ssh missing, auth refused) surface here before

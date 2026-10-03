@@ -11,6 +11,12 @@
 //
 // `detached: true` puts the child in its own process group so it survives the
 // HUD being restarted, and the manager still tracks the pid so it can be killed.
+//
+// Every spawn also carries a timeout. Without one a command that hangs holds its
+// concurrency slot forever: nothing exits, the manager's reconcile loop correctly
+// sees a live pid and leaves the record `running`, and once maxConcurrent such
+// commands accumulate the pool is exhausted and every later spawn is refused.
+// A ceiling makes that state reachable deliberately instead of by accident.
 
 const { spawn: spawnProcess } = require('node:child_process');
 const fs = require('node:fs');
@@ -22,7 +28,7 @@ const path = require('node:path');
  * `onExit` is invoked once when the child exits so the manager can move the
  * terminal out of `running` without polling for it.
  */
-function spawn({ argv, cwd, logFile, env, onExit }) {
+function spawn({ argv, cwd, logFile, env, onExit, timeoutMs, graceMs = 5000 }) {
   if (!Array.isArray(argv) || !argv.length) throw new Error('background spawn requires an argv array');
 
   // Open the log in append mode so several terminals can share a directory and
@@ -61,14 +67,35 @@ function spawn({ argv, cwd, logFile, env, onExit }) {
   }
 
   let closed = false;
+  let timedOut = false;
   const finish = (code, signal) => {
     if (closed) return;
     closed = true;
+    if (timer) clearTimeout(timer);
     if (stream) { try { stream.end(); } catch { /* already ended */ } }
     if (typeof onExit === 'function') {
-      try { onExit({ code, signal }); } catch { /* a listener must not break exit */ }
+      try { onExit({ code, signal, timedOut }); } catch { /* a listener must not break exit */ }
     }
   };
+
+  // SIGTERM first so the child can clean up, then SIGKILL if it ignores that.
+  // The grace timer is what stops a timed-out command from lingering as an
+  // orphan holding the very slot the timeout was meant to free.
+  let grace = null;
+  let timer = null;
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      try { fs.appendFileSync(logFile, `[hud] timed out after ${timeoutMs}ms; sending SIGTERM\n`); } catch { /* log gone */ }
+      try { process.kill(child.pid, 'SIGTERM'); } catch { /* already gone */ }
+      grace = setTimeout(() => {
+        try { process.kill(child.pid, 'SIGKILL'); } catch { /* already gone */ }
+      }, graceMs);
+      grace.unref?.();
+    }, timeoutMs);
+    timer.unref?.();
+  }
+
   child.on('exit', finish);
   child.on('error', (error) => finish(null, null, error));
 

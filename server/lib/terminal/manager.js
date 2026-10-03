@@ -35,7 +35,15 @@ const remoteSpawner = require('./spawners/remote');
 const STATE_FILE = 'spawned_terminals.json';
 const TYPES = ['tmux', 'background', 'orchestrate', 'remote'];
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP'];
-const DEFAULTS = { maxConcurrent: 50, reapAfterHours: 24, reconcileMs: 60000 };
+const DEFAULTS = {
+  maxConcurrent: 50,
+  reapAfterHours: 24,
+  reconcileMs: 60000,
+  // Deliberately generous: this is a ceiling that exists so a hung command cannot
+  // hold a concurrency slot forever, not a budget for ordinary work. A full test
+  // suite legitimately runs for many minutes. 0 disables it.
+  commandTimeoutMs: 30 * 60 * 1000,
+};
 
 // The hive lock is resolved per-manager rather than once at module load. Reading
 // it from process.env at require time only worked because index.js happens to
@@ -67,6 +75,9 @@ class TerminalManager {
     this.maxConcurrent = Number(options.maxConcurrent) || DEFAULTS.maxConcurrent;
     this.reapAfterHours = Number(options.reapAfterHours) || DEFAULTS.reapAfterHours;
     this.reconcileMs = Number(options.reconcileMs) || DEFAULTS.reconcileMs;
+    this.commandTimeoutMs = options.commandTimeoutMs === undefined
+      ? DEFAULTS.commandTimeoutMs
+      : Number(options.commandTimeoutMs);
     this.reconcileTimer = null;
     // id -> terminal record
     this.registry = new Map();
@@ -184,6 +195,8 @@ class TerminalManager {
       by_type: records.reduce((acc, r) => { acc[r.type] = (acc[r.type] || 0) + 1; return acc; }, {}),
       log_files: usage.files,
       log_bytes: usage.bytes,
+      timed_out: records.filter((r) => r.timedOut).length,
+      command_timeout_ms: this.commandTimeoutMs,
       max_concurrent: this.maxConcurrent,
       persist_error: this.lastPersistError,
     };
@@ -195,6 +208,12 @@ class TerminalManager {
    * Spawn one terminal. Throws with a statusCode on rejection so the route can
    * pass it straight through.
    */
+  /** Per-spawn timeout override, or the configured default. 0 disables. */
+  timeoutFor(spec = {}) {
+    const raw = spec.timeoutMs === undefined ? this.commandTimeoutMs : Number(spec.timeoutMs);
+    return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULTS.commandTimeoutMs;
+  }
+
   async spawnOne(spec = {}) {
     const type = String(spec.type || 'tmux');
     if (!TYPES.includes(type)) {
@@ -245,6 +264,7 @@ class TerminalManager {
         envKeys: Object.keys(env).sort(),
         logBytes: 0,
         logFiles: 0,
+      timedOut: false,
       };
       try {
         const started = await tmuxSpawner.spawn({
@@ -292,6 +312,7 @@ class TerminalManager {
       envKeys: Object.keys(env).sort(),
       logBytes: 0,
       logFiles: 0,
+      timedOut: false,
     };
     this.registry.set(id, record);
     try {
@@ -300,12 +321,14 @@ class TerminalManager {
         cwd: verdict.cwd,
         logFile,
         env,
-        onExit: ({ code, signal: sig }) => {
+        timeoutMs: this.timeoutFor(spec),
+        onExit: ({ code, signal: sig, timedOut }) => {
           const live = this.registry.get(id);
           if (!live) return;
           // An exit callback can land after a kill() already finalised the
           // record; do not walk a killed terminal back to exited.
           if (live.status === 'killed') return;
+          live.timedOut = Boolean(timedOut);
           live.status = code === 0 ? 'exited' : 'failed';
           live.exitCode = code ?? null;
           live.signal = sig ?? null;
@@ -397,6 +420,7 @@ class TerminalManager {
         envKeys: [],
         logBytes: 0,
         logFiles: 0,
+      timedOut: false,
       };
       this.registry.set(id, record);
       records.push(record);
@@ -450,6 +474,7 @@ class TerminalManager {
       envKeys: [],
       logBytes: 0,
       logFiles: 0,
+      timedOut: false,
     };
     this.registry.set(id, record);
     try {
@@ -467,9 +492,11 @@ class TerminalManager {
         logFile,
         env: {},
         resolvedPath,
-        onExit: ({ code, signal: sig }) => {
+        timeoutMs: this.timeoutFor(spec),
+        onExit: ({ code, signal: sig, timedOut }) => {
           const live = this.registry.get(id);
           if (!live || live.status === 'killed') return;
+          live.timedOut = Boolean(timedOut);
           live.status = code === 0 ? 'exited' : 'failed';
           live.exitCode = code ?? null;
           live.signal = sig ?? null;

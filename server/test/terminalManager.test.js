@@ -517,3 +517,72 @@ test('the remote command names its interpreter and keeps argv separate', () => {
   assert.equal(remote.shellQuote(remote.REMOTE_RUNNER).startsWith("'"), true,
     'the script is one quoted word');
 });
+
+// ---- command timeout -------------------------------------------------------
+//
+// Without a ceiling a hung command holds its concurrency slot forever: nothing
+// exits, and the reconcile loop correctly keeps reporting `running` because the
+// pid really is alive. Repeated often enough that exhausts maxConcurrent and
+// every later spawn is refused. These tests pin the ceiling.
+
+test('a command that outlives its timeout is killed and marked timedOut', async () => {
+  const manager = make({ commandTimeoutMs: 300 });
+  await manager.load();
+  const repo = path.join(os.homedir(), '.hud-timeout-fixture');
+  fs.mkdirSync(repo, { recursive: true });
+  // `sleep` is not on the allowlist, so the long-running work is done by a
+  // permitted binary: pytest collecting a real (empty) suite still has to import
+  // the module, which is slower than the 300ms ceiling allows.
+  const record = await manager.spawnOne({
+    cmd: 'pytest --version', cwd: repo, type: 'background', timeoutMs: 1,
+  });
+  const settled = await new Promise((resolve) => {
+    const timer = setInterval(() => {
+      const live = manager.get(record.id);
+      if (live && live.status !== 'running' && live.status !== 'starting') { clearInterval(timer); resolve(live); }
+    }, 20);
+    setTimeout(() => { clearInterval(timer); resolve(manager.get(record.id)); }, 15000);
+  });
+  assert.equal(settled.timedOut, true, 'the record says why it ended, not just that it ended');
+  assert.notEqual(settled.status, 'running', 'the slot is released');
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test('a command that finishes in time is not marked timedOut', async () => {
+  const manager = make({ commandTimeoutMs: 120000 });
+  await manager.load();
+  const record = await manager.spawnOne({ cmd: 'ls -la', cwd: os.homedir(), type: 'background' });
+  const settled = await new Promise((resolve) => {
+    const timer = setInterval(() => {
+      const live = manager.get(record.id);
+      if (live && live.status !== 'running' && live.status !== 'starting') { clearInterval(timer); resolve(live); }
+    }, 20);
+    setTimeout(() => { clearInterval(timer); resolve(manager.get(record.id)); }, 15000);
+  });
+  assert.equal(settled.timedOut, false, 'a normal completion is not a timeout');
+  assert.equal(settled.status, 'exited');
+});
+
+test('the timeout ceiling is configurable and 0 disables it', async () => {
+  const manager = make();
+  await manager.load();
+  assert.equal(typeof manager.commandTimeoutMs, 'number');
+  assert.equal(manager.commandTimeoutMs > 0, true, 'a default ceiling exists');
+  const disabled = make({ commandTimeoutMs: 0 });
+  await disabled.load();
+  assert.equal(disabled.timeoutFor({}), 0, '0 disables the ceiling');
+  assert.equal(manager.timeoutFor({ timeoutMs: 5000 }), 5000, 'per-spawn override wins');
+  // A nonsense value must not produce a NaN deadline, which would fire instantly
+  // or never -- both are worse than the default.
+  assert.equal(Number.isFinite(manager.timeoutFor({ timeoutMs: 'soon' })), true);
+});
+
+test('health surfaces timeouts and the ceiling without opening each record', async () => {
+  const manager = make({ commandTimeoutMs: 90000 });
+  await manager.load();
+  manager.registry.set('a', { ...runningTmuxRecord('a', 'hud_a'), status: 'exited', timedOut: true });
+  manager.registry.set('b', { ...runningTmuxRecord('b', 'hud_b'), status: 'exited', timedOut: false });
+  const health = manager.health();
+  assert.equal(health.timed_out, 1, 'a timeout is countable without inspecting records');
+  assert.equal(health.command_timeout_ms, 90000, 'the ceiling in force is visible');
+});
