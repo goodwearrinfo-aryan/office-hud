@@ -1,23 +1,23 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
-  darkMode: 'class',
   theme: {
     extend: {
       colors: {
         hud: {
-          bg: '#0b0e14',
-          panel: '#12161f',
-          surface: '#182033',
-          edge: '#232a38',
-          text: '#e7eaf0',
-          dim: '#5b6a8f',
-          amber: '#f5a623',
-          green: '#34d399',
-          red: '#f87171',
-          blue: '#60a5fa',
-          purple: '#c084fc',
-          cyan: '#22d3ee',
+          bg: 'rgb(var(--hud-bg-rgb) / <alpha-value>)',
+          panel: 'rgb(var(--hud-panel-rgb) / <alpha-value>)',
+          surface: 'rgb(var(--hud-surface-rgb) / <alpha-value>)',
+          edge: 'rgb(var(--hud-edge-rgb) / <alpha-value>)',
+          'edge-strong': 'var(--hud-edge-strong)',
+          text: 'rgb(var(--hud-text-rgb) / <alpha-value>)',
+          dim: 'rgb(var(--hud-dim-rgb) / <alpha-value>)',
+          amber: 'rgb(var(--hud-amber-rgb) / <alpha-value>)',
+          green: 'rgb(var(--hud-green-rgb) / <alpha-value>)',
+          red: 'rgb(var(--hud-red-rgb) / <alpha-value>)',
+          blue: 'rgb(var(--hud-blue-rgb) / <alpha-value>)',
+          purple: 'rgb(var(--hud-purple-rgb) / <alpha-value>)',
+          cyan: 'rgb(var(--hud-cyan-rgb) / <alpha-value>)',
         },
       },
       fontFamily: {

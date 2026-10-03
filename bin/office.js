@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // office CLI — start the HUD server and open the browser.
 
-const { spawn } = require('child_process');
-const { homedir } = require('os');
-const { join } = require('path');
+const { spawn, execFileSync } = require('child_process');
+const { join, dirname } = require('path');
 
 const PORT = process.env.PORT || 4747;
-const HUD_DIR = join(homedir(), 'openalice-fleet', 'office-hud');
+// Resolve relative to this script; homedir() guesses break on this machine
+// (the fleet lives at ~/trading/openalice-fleet, not ~/openalice-fleet).
+const HUD_DIR = join(__dirname, '..');
 const SERVER = join(HUD_DIR, 'server', 'index.js');
+const LABEL = 'com.aryan.office-hud';
 
 function log(...args) { console.log('[office]', ...args); }
 
@@ -20,10 +22,19 @@ function isServerRunning() {
   });
 }
 
-async function main() {
-  const cmd = process.argv[2];
+function isLaunchdLoaded() {
+  try {
+    return execFileSync('/bin/launchctl', ['list', LABEL], { stdio: 'pipe' }).toString().includes(LABEL);
+  } catch {
+    return false;
+  }
+}
 
-  if (cmd === 'stop') {
+async function stop() {
+  if (isLaunchdLoaded()) {
+    execFileSync('/bin/launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`], { stdio: 'pipe' });
+    log(`unloaded ${LABEL}`);
+  } else {
     const pid = await isServerRunning();
     if (pid) {
       process.kill(Number(pid), 'SIGTERM');
@@ -31,6 +42,22 @@ async function main() {
     } else {
       log('server not running');
     }
+  }
+}
+
+async function main() {
+  const cmd = process.argv[2];
+
+  if (cmd === 'stop') {
+    await stop();
+    return;
+  }
+
+  if (cmd === 'restart') {
+    await stop();
+    await new Promise((r) => setTimeout(r, 1000));
+    execFileSync('/bin/launchctl', ['bootstrap', `gui/${process.getuid()}`, join(HUD_DIR, '..', 'launchd', `${LABEL}.plist`)], { stdio: 'pipe' });
+    log(`reloaded ${LABEL}`);
     return;
   }
 

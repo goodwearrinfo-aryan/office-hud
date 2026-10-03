@@ -1,4 +1,7 @@
 node_modules/
+# the bare name also catches a symlink called node_modules, which the
+# trailing-slash form above does not match
+node_modules
 dist/
 .DS_Store
 *.log
