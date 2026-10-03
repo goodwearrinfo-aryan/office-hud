@@ -272,6 +272,11 @@ function defaultSpawn(): ChildProcess {
     cwd: hudRoot,
     env: {
       ...process.env,
+      // Inside Electron, process.execPath is the Electron binary. Without this
+      // flag the "node server" child would launch Electron again, never bind the
+      // port, and fail with no output to explain why. Under a plain node test
+      // run the flag is inert, which is why only a real launch catches it.
+      ELECTRON_RUN_AS_NODE: '1',
       PORT: String(HUD_PORT),
       HOST: HUD_HOST,
       OFFICE_HUD_LABEL: OWNED_HIVE_LABEL,
