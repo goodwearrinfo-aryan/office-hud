@@ -2598,7 +2598,14 @@ function getProcesses() {
   // Same reasoning as terminalSnapshot: the hive keeps the real command line,
   // the served copy does not. These are real process command lines, so a token
   // passed as an argument would otherwise be readable by any HUD viewer.
-  return { ...doc, processes: redactAll(doc.processes) };
+  //
+  // processView adds the provenance this payload was missing: where the rows came
+  // from and how old they are. Without them an on-disk file frozen since yesterday
+  // renders identically to one written a minute ago, which is a cache pretending to
+  // be live. stored_status keeps what was actually recorded so a view can show what
+  // it claimed, and a stale observation is served as STALE rather than under its own
+  // status.
+  return processView({ ...doc, source: doc.source || 'hive/processes.json' });
 }
 
 app.get('/api/processes', (_req, res) => {

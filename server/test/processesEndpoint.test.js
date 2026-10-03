@@ -8,11 +8,32 @@
 // wiring fails here and here only.
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { makeFixtureHive, loadServer, startTestServer } = require('./helpers/harness');
 
 const fixture = makeFixtureHive();
 const server = loadServer(fixture.hive);
 let http;
+
+// This file asserts on the SERVED payload, so it needs a payload to serve. The
+// canary below is what makes the redaction assertion mean something: without a
+// credential in the fixture, "no secret reached the client" passes vacuously --
+// the failure mode this file exists to prevent. The ordinary flags beside it are
+// the other half: a redactor that blanks the whole command line would satisfy the
+// canary check and leave the view useless.
+fs.writeFileSync(path.join(fixture.hive, 'processes.json'), JSON.stringify({
+  collected_at: new Date().toISOString(),
+  source: 'fixture',
+  live: true,
+  processes: [
+    {
+      pid: 4242,
+      command: 'node server/index.js --port 8080 --api-key sk-ant-CANARY0123456789abcdef',
+      status: 'RUNNING',
+    },
+  ],
+}));
 
 test.before(async () => { http = await startTestServer(server.app); });
 test.after(async () => {
