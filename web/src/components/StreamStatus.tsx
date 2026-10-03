@@ -61,7 +61,7 @@ export default function StreamStatus() {
             <li key={viewer.id}>
               {viewer.label || viewer.id}
               {viewer.floor ? ` · ${viewer.floor}` : ''}
-              <span className="muted"> ({viewer.keys.length} keys)</span>
+              <span className="text-hud-dim"> ({viewer.keys.length} keys)</span>
             </li>
           ))}
         </ul>

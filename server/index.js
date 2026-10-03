@@ -37,8 +37,12 @@ const FLEET_ROOT = path.dirname(HIVE);
 const { isLocalRequest } = require('./lib/local_only');
 const { TerminalManager } = require('./lib/terminal/manager');
 const { redactCommand, redactEntry, redactAll } = require('./lib/redact');
+const alphaInsiderStats = require('./alphainsider_stats_route');
 
-const terminalManager = new TerminalManager({ hive: HIVE });
+const terminalManager = new TerminalManager({
+  hive: HIVE,
+  ...(process.env.OFFICE_MAX_TERMINALS ? { maxConcurrent: Number(process.env.OFFICE_MAX_TERMINALS) } : {}),
+});
 const POLYMARKET_ROOT = '/Users/a/polymarket';
 const POLYMARKET_RESEARCH = path.join(POLYMARKET_ROOT, 'research');
 const POLYMARKET_STATE_PATH = path.join(POLYMARKET_RESEARCH, 'engine_state.json');
@@ -1761,17 +1765,24 @@ async function getHarnessHealth() {
       error: null,
       checkedAt,
     };
-  } catch (error) {
-    return {
-      ok: false,
-      url: `${FREE_HARNESS_URL}/health`,
-      status: 'offline',
-      provider: 'none',
-      model: 'none',
-      error: error.message,
-      checkedAt,
-    };
-  }
+} catch (error) {
+      return {
+        ok: false,
+        url: `${FREE_HARNESS_URL}/health`,
+        status: 'offline',
+        provider: 'none',
+        model: 'none',
+        // Present even offline. HarnessHealth declares this field as required, and
+        // it means "providers ahead of the winner that are unusable" -- with no
+        // winner reachable there are none, so an empty list is the truthful answer.
+        // Omitting it here made api.ts describe a payload the server never sends
+        // whenever the 2s probe timed out, which is how three contract tests came
+        // to fail intermittently and pass on a rerun.
+        degradedProviders: [],
+        error: error.message,
+        checkedAt,
+      };
+    }
 }
 
 const SERVICE_PROBE_ATTEMPTS = 2;
@@ -1965,8 +1976,12 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.get('/api/alphainsider/status', (_req, res) => proxyFreeHarnessJson('/alphainsider/status', res));
-app.get('/api/alphainsider/strategies', (_req, res) => proxyFreeHarnessJson('/alphainsider/strategies', res));
-app.get('/api/alphainsider/positions', (req, res) => proxyFreeHarnessJson('/alphainsider/positions', res, { strategy_id: req.query.strategy_id }));
+  app.get('/api/alphainsider/strategies', (_req, res) => proxyFreeHarnessJson('/alphainsider/strategies', res));
+  app.get('/api/alphainsider/positions', (req, res) => proxyFreeHarnessJson('/alphainsider/positions', res, { strategy_id: req.query.strategy_id }));
+
+  // The poller/trader stats feed lives in its own file precisely so a rewrite of
+  // this one cannot silently drop it. AlphaInsiderPanel still reads it.
+  alphaInsiderStats.register(app);
 
 app.get('/api/summary', (_req, res) => {
   res.json(buildSnapshot('summary'));
