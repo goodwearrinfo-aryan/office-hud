@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react';
-import type { Agent } from '../api';
 
 interface Props {
   onClose: () => void;
-  agents: Agent[];
 }
 
-export default function GodConsole({ onClose, agents }: Props) {
+export default function GodConsole({ onClose }: Props) {
   const [selectedFloor, setSelectedFloor] = useState<string>('all');
   const [prompt, setPrompt] = useState('');
   const [history, setHistory] = useState<{ role: 'user' | 'assistant' | 'system'; content: string }[]>([]);
