@@ -1621,33 +1621,37 @@ function getQueueSummary() {
     return /llm call failed|llm_error|all llm providers failed|executor ended: llm_error|executor ended: error/i.test(text);
   };
   const completedButFailed = completedTasks.filter(looksFailed);
-  // "Verified" has to mean the work is backed by something durable. Deriving it
+// "Verified" has to mean the work is backed by something durable. Deriving it
   // by subtraction — complete minus keyword-matched failures — produces a field
   // that carries the word "verified" while measuring only "not flagged as
-  // failed", and a completion with no artifacts at all sails straight through.
-  // On the live hive that overclaim was 100% of completions, so this counts
-  // evidence instead of inferring it from the absence of a failure marker.
-  //
-  // Two shapes count, because the fleet records provenance two ways and a
-  // definition that only understood one of them would go blind to the other:
-  //
-  //   evidence.artifacts[]  a non-empty list of produced artifacts
-  //   evidence.file          a concrete file the work touched (with `line`)
-  //
-  // As of this writing every one of the 522 live COMPLETE tasks has
-  // `evidence.file` present but EMPTY, and no `artifacts[]` at all — so the
-  // honest count is 0, where the old subtraction reported 522. That is the point
-  // of the change: the field used to claim verification it had no evidence for.
-  // The `file` branch is kept because that is the shape the executor is expected
-  // to fill in, not because it currently contributes anything.
-  //
-  // Evidence is not correctness — it means something durable was recorded. The
-  // unverified remainder stays visible for exactly that distinction.
-  const hasDurableEvidence = (task) => {
+  // failed", and a completion with nothing behind it passes straight through.
+  // So this counts recorded output instead of inferring it from the absence of
+  // a failure marker.
+//
+// The evidence model follows the work this fleet actually does, which is
+// overwhelmingly TEXT: an agent claims a task, calls an LLM, and the deliverable
+// is the response. Checking for a written file would therefore report 0 verified
+// for a fleet that completed 522 real tasks, which is its own kind of lie — and
+// `evidence.file` is empty on all of them precisely because these agents never
+// write files, not because the work failed.
+//
+// So three shapes count, in descending order of strength:
+//
+//   evidence.artifacts[]   a non-empty list of produced artifacts (strongest)
+//   evidence.file           a concrete file the work touched
+//   result                  a non-empty recorded output — the actual deliverable
+//                           for the text work this fleet does
+//
+// `result` is trimmed before testing so a whitespace-only completion does not
+// pass as evidence. Evidence is not correctness: it means something durable was
+// recorded. The unverified remainder stays visible for exactly that distinction.
+const hasDurableEvidence = (task) => {
     const evidence = task.evidence;
-    if (!isPlainObject(evidence)) return false;
-    if (Array.isArray(evidence.artifacts) && evidence.artifacts.length > 0) return true;
-    return typeof evidence.file === 'string' && evidence.file.trim().length > 0;
+    if (isPlainObject(evidence)) {
+      if (Array.isArray(evidence.artifacts) && evidence.artifacts.length > 0) return true;
+      if (typeof evidence.file === 'string' && evidence.file.trim().length > 0) return true;
+    }
+    return typeof task.result === 'string' && task.result.trim().length > 0;
   };
   const verifiedTasks = completedTasks.filter(task => hasDurableEvidence(task) && !looksFailed(task));
   // The remainder: stored COMPLETE, not flagged as failed, and backed by nothing.

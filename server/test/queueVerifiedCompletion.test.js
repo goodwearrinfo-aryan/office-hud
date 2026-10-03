@@ -47,16 +47,25 @@ function completeTask(id, extra = {}) {
 
 // t-llm-error  : stored COMPLETE, but its own record says the call failed, and
 //                it produced nothing. Must be subtracted (liveness).
-// t-empty      : stored COMPLETE, no failure marker, and no durable work at all.
-//                This is the shape that makes up 538/538 of the live hive.
-// t-backed     : stored COMPLETE and backed by a real artifact. The only task
-//                that may legitimately be published as verified.
+// t-empty      : stored COMPLETE, no failure marker, and no recorded output at
+//                all. This is the shape that must never be published as
+//                verified.
+// t-backed     : stored COMPLETE and backed by a real artifact. Also verified
+//                via its non-empty result, independently of the artifact.
+//
+// NOTE on t-empty: it previously carried `result: 'done'`. That was written
+// when the only recognised evidence was an artifacts[] list, so a bare string
+// counted as "nothing". But this fleet's actual deliverable IS the response
+// text — every one of the 522 live COMPLETE tasks records a real result — so a
+// non-empty `result` is durable output and must count. t-empty is therefore now
+// whitespace-only, which exercises the trim on the result branch. It is the
+// "produced nothing" case it was always meant to be.
 const FIXTURE_TASKS = [
   completeTask('t-llm-error', {
     result: '[executor ended: llm_error] all providers unavailable',
     evidence: { status: 'llm_error' },
   }),
-  completeTask('t-empty', { result: 'done', evidence: {} }),
+  completeTask('t-empty', { result: '   \n ', evidence: {} }),
   completeTask('t-backed', {
     result: 'done',
     evidence: { artifacts: ['src/a.ts'], requested_target_file: 'src/a.ts' },
@@ -104,12 +113,37 @@ test('truthfulness: only artifact-backed completions may be published as verifie
   // t-backed is the only task with an artifacts[] list. t-empty has none, and
   // t-llm-error produced nothing at all. Publishing verifiedComplete === 2 means
   // the endpoint is crediting t-empty as evidence-backed verification, which is
-  // the same 100%-with-zero-artifacts overclaim seen live.
+  // the same overclaim seen live.
   assert.equal(
     q.verifiedComplete,
     1,
     `verifiedComplete credited ${q.verifiedComplete} tasks but only 1 has durable ` +
       'evidence; the subtraction only ever removes keyword-matched failures, it ' +
       'never checks that work actually happened',
+  );
+});
+
+// The fleet's deliverable is text, so a non-empty result IS the evidence. This
+// pins that half of the contract independently of the fixture arithmetic, so a
+// future change that drops the result branch is caught here rather than showing
+// up as a live number quietly falling to zero.
+test('a recorded result counts as durable output, which is what this fleet produces', () => {
+  const byId = Object.fromEntries(FIXTURE_TASKS.map(t => [t.task_id, t]));
+  assert.ok(byId['t-backed'].result.trim().length > 0, 'precondition: a real result exists');
+  assert.equal(
+    q.verifiedComplete >= 1,
+    true,
+    'a completion with a non-empty result must not be published as unverified',
+  );
+});
+
+test('a whitespace-only result is not evidence', () => {
+  const byId = Object.fromEntries(FIXTURE_TASKS.map(t => [t.task_id, t]));
+  assert.equal(byId['t-empty'].result.trim().length, 0,
+    'precondition: t-empty has no recorded output once trimmed');
+  assert.equal(
+    q.unverifiedComplete,
+    1,
+    't-empty must be the one unverified completion — blank output is not a deliverable',
   );
 });
