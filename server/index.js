@@ -1172,9 +1172,17 @@ function mergedAgents() {
 function rollupFloors(agents) {
   const byFloor = new Map();
   for (const agent of agents) {
-    const floor = agent.floor || null;
-    if (!floor) continue;
-    if (!byFloor.has(floor)) {
+const floor = agent.floor || null;
+      if (!floor) continue;
+      // An agent's `floor` attribute is not reserved for floors. It is also used
+      // for organisational groups (command, office, operations, polymarket,
+      // specialists, workers), so grouping by it emitted those groups as if they
+      // were floors: 18 rows for 12 floors, six of them with no manager, no state
+      // and no liveness. A floor id is f<digits>; anything else is an agent group
+      // and belongs in the agent view. The groups are not removed from the roster,
+      // they simply stop being reported as floors.
+      if (!/^f\d+$/i.test(String(floor))) continue;
+      if (!byFloor.has(floor)) {
       byFloor.set(floor, {
         floor,
         lead: null,
@@ -1212,14 +1220,19 @@ function rollupFloors(agents) {
     if (nb != null) return 1;
     return a.floor.localeCompare(b.floor);
   });
-  for (const row of floors) {
-    row.health = row.working > 0 ? 'working'
-      : row.stale > 0 ? 'stale'
-      : row.breaker > 0 ? 'breaker'
-      : row.offline > 0 && row.offline === row.agents ? 'offline'
-      : row.idle > 0 ? 'idle'
-      : 'unknown';
-  }
+for (const row of floors) {
+      // Named `state`, with an explicit UNKNOWN rather than null or blank: a panel
+      // reading this has to be able to tell "cannot establish" from "no value".
+      row.state = row.working > 0 ? 'working'
+        : row.stale > 0 ? 'stale'
+        : row.breaker > 0 ? 'breaker'
+        : row.offline > 0 && row.offline === row.agents ? 'offline'
+        : row.idle > 0 ? 'idle'
+        : 'UNKNOWN';
+      // `health` is kept alongside it so readers written against the old field do
+      // not break in the same deploy that introduces `state`.
+      row.health = row.state === 'UNKNOWN' ? 'unknown' : row.state;
+    }
   return floors;
 }
 

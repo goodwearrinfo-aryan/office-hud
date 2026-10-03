@@ -165,13 +165,18 @@ test('agents without a floor are excluded, and empty input is empty', () => {
 });
 
 test('numbered floors sort in numeric order, not lexicographically', () => {
-  const rows = rollupFloors([
-    agent({ id: 'a', floor: 'f10' }),
-    agent({ id: 'b', floor: 'f2' }),
-    agent({ id: 'c', floor: 'command' }),
-  ]);
-  assert.deepEqual(rows.map(r => r.floor), ['f2', 'f10', 'command']);
-});
+    // Only f<digits> reaches rollupFloors now: the floor attribute is also used
+    // for organisational groups like `command`, and emitting those as floors gave
+    // 18 rows for 12 floors (see summaryFloorsContract.test.js). So this asserts
+    // the numeric ordering directly, which is what lexicographic sorting breaks:
+    // f10 before f2.
+    const rows = rollupFloors([
+      agent({ id: 'a', floor: 'f10' }),
+      agent({ id: 'b', floor: 'f2' }),
+      agent({ id: 'c', floor: 'f1' }),
+    ]);
+    assert.deepEqual(rows.map(r => r.floor), ['f1', 'f2', 'f10']);
+  });
 
 // ---- completion integrity ---------------------------------------------------
 // A task can be recorded COMPLETE while its own record says the model call
