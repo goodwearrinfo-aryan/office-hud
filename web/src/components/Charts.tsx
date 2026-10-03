@@ -122,7 +122,6 @@ export function WinRateProfitFactor({ strategies }: { strategies: Record<string,
 }
 
 export function RiskMetricsDoughnut({ value, max, label, color = '#34d399' }: { value: number; max: number; label: string; color?: string }) {
-  const pct = Math.min(value / max, 1);
   return (
     <div style={{ height: 140 }}>
       <Doughnut

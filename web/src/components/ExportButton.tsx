@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { exportAgents, exportLedger, exportBacktest, exportRiskMetrics } from '../utils/export';
+import { exportAgents, exportLedger, exportBacktest, exportRiskMetrics, type ExportFormat } from '../utils/export';
 import { useLive, type Agent, type LedgerEvent, type BacktestData, type Summary } from '../api';
 
 interface Props {
@@ -12,24 +12,23 @@ interface Props {
   summary?: Summary;
 }
 
-export default function ExportButton({ type, label = 'Export', agents, events, backtestData, riskMetrics, summary }: Props) {
+export default function ExportButton({ type, label = 'Export', agents, events, backtestData, riskMetrics }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const { data: agentsData } = useLive<Summary>('/api/summary');
   const { data: ledgerData } = useLive<{ events: any[] }>('/api/ledger?limit=2000');
   const { data: backtest } = useLive<any>('/api/trading/backtests');
-  const { data: risk } = useLive<any>('/api/trading/backtests'); // reuse for risk
 
-  const handleExport = (format: 'json' | 'csv') => {
+  const handleExport = (format: ExportFormat) => {
     try {
       switch (type) {
         case 'agents':
-          exportAgents(agents ?? agentsData?.agents ?? []);
+          exportAgents(agents ?? agentsData?.agents ?? [], format);
           break;
         case 'ledger':
-          exportLedger(events ?? ledgerData?.events ?? []);
+          exportLedger(events ?? ledgerData?.events ?? [], format);
           break;
         case 'backtest':
-          exportBacktest(backtestData ?? backtest?.backtest ?? {});
+          exportBacktest(backtestData ?? backtest?.backtest ?? {}, format);
           break;
         case 'risk':
           // compute risk metrics from backtest
@@ -56,7 +55,7 @@ export default function ExportButton({ type, label = 'Export', agents, events, b
             const kurtosis = rets.length > 3 ? (rets.reduce((a, b) => a + (b - mean) ** 4, 0) / rets.length) / Math.pow(rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length, 2) - 3 : 0;
             return { strategy: name, sharpe, sortino, calmar, var95, cvar95, maxDD, volatility: std * Math.sqrt(252 * 288), skew, kurtosis };
           });
-          exportRiskMetrics(riskMetrics ?? metrics);
+          exportRiskMetrics(riskMetrics ?? metrics, format);
           break;
       }
       setMenuOpen(false);
