@@ -3891,6 +3891,11 @@ module.exports = {
     getAgentDetail, getLedger, resolveResource, PARAMETERIZED,
     mergedAgents, sessionRows, rollupFloors, getWorkEvents, getQueueSummary,
     classifyTaskTruth, summarizeTasks, processView, redactRecord,
+    // Exported so harnessHealthShape.test.js can compare the success and catch
+    // branches without a network round trip. The bug it pins is real: the catch
+    // branch used to omit degradedProviders, so the same resource changed shape
+    // depending on whether the probe answered inside its 2s timeout.
+    getHarnessHealth,
     readPublicSyncStatus, PUBLIC_SYNC_STALE_SECONDS,
     openaliceStatus, frozenFeedsRoute, liveDigestRoute, strategySearchRoute,
     isLocalRequest, isIdentifier, requestError, sendError, buildSnapshot,
