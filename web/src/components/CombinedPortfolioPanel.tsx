@@ -122,7 +122,7 @@ export default function CombinedPortfolioPanel() {
       <div className="panel-surface">
         <table className="w-full">
           <thead>
-            <tr className="border-b border-hud-border">
+            <tr className="border-b border-hud-edge">
               <th className="px-3 py-2 text-left text-[10px] font-mono text-hud-dim">COMPONENT</th>
               <th className="px-3 py-2 text-left text-[10px] font-mono text-hud-dim">WEIGHT</th>
               <th className="px-3 py-2 text-left text-[10px] font-mono text-hud-dim">EQUITY</th>
@@ -135,7 +135,7 @@ export default function CombinedPortfolioPanel() {
               const w = comp.weight ?? 0;
               const excluded = comp.included === false;
               return (
-                <tr key={name} className={`border-b border-hud-border last:border-0${excluded ? ' opacity-50' : ''}`}>
+                <tr key={name} className={`border-b border-hud-edge last:border-0${excluded ? ' opacity-50' : ''}`}>
                   <td className="px-3 py-2 font-mono text-sm">
                     {NAMES[name] || name}
                     <div className={`mt-1 h-1 rounded ${excluded ? 'bg-hud-dim' : 'bg-hud-accent'}`}

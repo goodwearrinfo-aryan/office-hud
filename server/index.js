@@ -1762,17 +1762,24 @@ async function getHarnessHealth() {
       error: null,
       checkedAt,
     };
-  } catch (error) {
-    return {
-      ok: false,
-      url: `${FREE_HARNESS_URL}/health`,
-      status: 'offline',
-      provider: 'none',
-      model: 'none',
-      error: error.message,
-      checkedAt,
-    };
-  }
+} catch (error) {
+      return {
+        ok: false,
+        url: `${FREE_HARNESS_URL}/health`,
+        status: 'offline',
+        provider: 'none',
+        model: 'none',
+        // Present even offline. HarnessHealth declares this field as required, and
+        // it means "providers ahead of the winner that are unusable" -- with no
+        // winner reachable there are none, so an empty list is the truthful answer.
+        // Omitting it here made api.ts describe a payload the server never sends
+        // whenever the 2s probe timed out, which is how three contract tests came
+        // to fail intermittently and pass on a rerun.
+        degradedProviders: [],
+        error: error.message,
+        checkedAt,
+      };
+    }
 }
 
 const SERVICE_PROBE_ATTEMPTS = 2;
