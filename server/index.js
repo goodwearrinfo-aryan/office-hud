@@ -39,7 +39,10 @@ const { TerminalManager } = require('./lib/terminal/manager');
 const { redactCommand, redactEntry, redactAll } = require('./lib/redact');
 const alphaInsiderStats = require('./alphainsider_stats_route');
 
-const terminalManager = new TerminalManager({ hive: HIVE });
+const terminalManager = new TerminalManager({
+  hive: HIVE,
+  ...(process.env.OFFICE_MAX_TERMINALS ? { maxConcurrent: Number(process.env.OFFICE_MAX_TERMINALS) } : {}),
+});
 const POLYMARKET_ROOT = '/Users/a/polymarket';
 const POLYMARKET_RESEARCH = path.join(POLYMARKET_ROOT, 'research');
 const POLYMARKET_STATE_PATH = path.join(POLYMARKET_RESEARCH, 'engine_state.json');
