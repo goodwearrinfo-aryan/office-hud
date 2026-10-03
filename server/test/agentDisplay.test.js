@@ -223,3 +223,21 @@ test('the queue reports dependency-blocked tasks with the reason', () => {
     assert.ok(task.reason, `blocked task ${task.task_id} must say why it is waiting`);
   }
 });
+
+test('one agent appears once, whatever casing the registry used', () => {
+  // The hive registry accumulated both casings for the same agent (PM-RISK and
+  // pm-risk), which inflated the roster and the floor counts the HUD reports.
+  // This invariant holds for whatever the live registry contains.
+  const ids = mergedAgents().map((agent) => String(agent.id || '').toLowerCase());
+  const seen = new Map();
+  for (const id of ids) {
+    assert.ok(id, 'an agent with no id cannot be deduplicated');
+    assert.equal(seen.has(id), false, `${id} is listed more than once (case-insensitive)`);
+    seen.set(id, true);
+  }
+});
+
+test('every agent id is unique even before folding case', () => {
+  const ids = mergedAgents().map((agent) => agent.id);
+  assert.equal(new Set(ids).size, ids.length, 'exact duplicate ids in the roster');
+});

@@ -980,14 +980,34 @@ function mergedAgents() {
   const fleet = getFleet();
   const reg = getRegistry();
   const now = Date.now();
-  const fleetById = Object.fromEntries((fleet.agents || []).map(agent => [agent.id, agent]));
+  const fleetById = new Map(
+    (fleet.agents || []).map(agent => [String(agent.id || '').toLowerCase(), agent]),
+  );
   const byId = new Map();
+  // Merged case-insensitively, because the registry has accumulated both
+  // casings for the same agent: PM-RISK and pm-risk are one agent, and listing
+  // both inflated the floor count and the roster the HUD reports. The same
+  // function already lowercases session and task keys below, so this key was
+  // the odd one out. The registry itself is left untouched: it is written by
+  // live agents and deduping it here keeps the fix on the read path.
+  const canonical = new Map();
 
   for (const [id, agent] of Object.entries(reg.agents || {})) {
-    byId.set(id, { ...agent, ...(fleetById[id] || {}), id });
+    const key = String(id || '').toLowerCase();
+    if (!key) continue;
+    const existing = canonical.get(key);
+    // Prefer the fleet's spelling when it has one: the fleet is what is
+    // actually running right now.
+    const fromFleet = fleetById.get(key);
+    const chosenId = fromFleet ? (fromFleet.id ?? id) : (existing ?? id);
+    canonical.set(key, chosenId);
+    byId.set(key, { ...agent, ...(fromFleet || {}), id: chosenId });
   }
   for (const agent of fleet.agents || []) {
-    if (!byId.has(agent.id)) byId.set(agent.id, agent);
+    const key = String(agent.id || '').toLowerCase();
+    if (!key) continue;
+    if (!canonical.has(key)) canonical.set(key, agent.id);
+    if (!byId.has(key)) byId.set(key, { ...agent, id: canonical.get(key) });
   }
 
   // Newest session per agent, tracked for BOTH fresh and stale sessions. An
