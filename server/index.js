@@ -38,6 +38,16 @@ const { isLocalRequest } = require('./lib/local_only');
 const { TerminalManager } = require('./lib/terminal/manager');
 const { redactCommand, redactEntry, redactAll } = require('./lib/redact');
 const alphaInsiderStats = require('./alphainsider_stats_route');
+// Route modules kept in their own files so a rewrite of this one cannot silently
+// drop them -- the failure mode that lost the AlphaInsider stats routes twice.
+const strategySearchRoute = require('./strategy_search_route');
+const liveDigestRoute = require('./live_digest_route');
+const openaliceStatus = require('./openaliceStatus');
+const frozenFeedsRoute = require('./frozen_feeds_route');
+const { registerEvidenceRoutes } = require('./evidenceRoutes');
+const { registerWedgedRoutes } = require('./lib/wedgedProcesses');
+const { classifyTaskTruth, summarizeTasks } = require('./taskTruth.js');
+const { processView, redactRecord } = require('./processTruth');
 
 const terminalManager = new TerminalManager({
   hive: HIVE,
@@ -1983,6 +1993,15 @@ app.get('/api/alphainsider/status', (_req, res) => proxyFreeHarnessJson('/alphai
   // this one cannot silently drop it. AlphaInsiderPanel still reads it.
   alphaInsiderStats.register(app);
 
+  // Route modules that live in their own files. Each register() is idempotent,
+  // so a re-registration during a hot reload is safe.
+  strategySearchRoute.register(app);
+  liveDigestRoute.register(app);
+  openaliceStatus.register(app);
+  frozenFeedsRoute.register(app);
+  registerEvidenceRoutes(app);
+  registerWedgedRoutes(app, HIVE);
+
 app.get('/api/summary', (_req, res) => {
   res.json(buildSnapshot('summary'));
 });
@@ -3806,8 +3825,58 @@ if (require.main === module) {
   bootstrap();
 }
 
+// A day plus a two-hour budget: the sync runs daily, so a run is still
+// trustworthy a couple of hours past its nominal window.
+const PUBLIC_SYNC_STALE_SECONDS = 26 * 60 * 60;
+const PUBLIC_SYNC_STATUS_PATH = process.env.OPENALICE_PUBLIC_SYNC_STATUS
+  || path.join(__dirname, '..', '..', 'state', 'public_sync_status.json');
+function readPublicSyncStatus(now = Date.now(), statusPath = PUBLIC_SYNC_STATUS_PATH) {
+  let raw;
+  try {
+    raw = fs.readFileSync(statusPath, 'utf8');
+  } catch (err) {
+    const missing = err && err.code === 'ENOENT';
+    return {
+      present: false,
+      status: missing ? 'no_status_file' : 'unreadable',
+      error: missing ? null : String((err && err.message) || err).slice(0, 160),
+      last_run_at: null,
+      age_seconds: null,
+      stale: true,
+    };
+  }
+  let record;
+  try {
+    record = JSON.parse(raw);
+  } catch (err) {
+    return {
+      present: false,
+      status: 'unreadable',
+      error: String((err && err.message) || err).slice(0, 160),
+      last_run_at: null,
+      age_seconds: null,
+      stale: true,
+    };
+  }
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    return { present: false, status: 'unreadable', error: 'status file is not an object',
+             last_run_at: null, age_seconds: null, stale: true };
+  }
+  const ranAt = Date.parse(record.last_run_at || '');
+  const ageSeconds = Number.isFinite(ranAt) ? Math.max(0, Math.floor((now - ranAt) / 1000)) : null;
+  return {
+    ...record,
+    present: true,
+    // A missing or unparseable timestamp is itself stale: we cannot claim the
+    // job ran. Silence must never read as health.
+    age_seconds: ageSeconds,
+    stale: ageSeconds === null || ageSeconds > PUBLIC_SYNC_STALE_SECONDS,
+  };
+}
+
 module.exports = {
   app,
+
   bootstrap,
   createServer,
   startServer,
@@ -3821,6 +3890,9 @@ module.exports = {
     getFloorTaskCounts, getTaskBoard, getGraphifyCommunities, withHiveFileLock,
     getAgentDetail, getLedger, resolveResource, PARAMETERIZED,
     mergedAgents, sessionRows, rollupFloors, getWorkEvents, getQueueSummary,
+    classifyTaskTruth, summarizeTasks, processView, redactRecord,
+    readPublicSyncStatus, PUBLIC_SYNC_STALE_SECONDS,
+    openaliceStatus, frozenFeedsRoute, liveDigestRoute, strategySearchRoute,
     isLocalRequest, isIdentifier, requestError, sendError, buildSnapshot,
     portalTarget, rewriteUpstreamLocation, portalSlugForPort, PORTAL_SERVICES,
     parseLaunchctlList, getFleetLaunchdState,

@@ -1,8 +1,8 @@
 'use strict';
 
 // Decides whether a request came from this machine, for the local-only routes
-// (terminal spawn/kill, recovery engine, autonomy policy, jarvis command, and
-// the other mutating endpoints).
+// (recovery engine, autonomy policy, jarvis command, and the other mutating
+// endpoints).
 //
 // This lives in its own module, not inline in server/index.js, because
 // index.js is ~130KB and is concurrently rewritten by another agent. Five times
