@@ -67,8 +67,7 @@ export function exportAgents(agents: any[], format: ExportFormat = 'both') {
     lastSeen: a.lastSeen,
     lastSeenHuman: a.lastSeen ? new Date(a.lastSeen).toISOString() : '',
   }));
-  downloadJSON(simplified, `agents-${Date.now()}.json`);
-  downloadCSV(simplified, `agents-${Date.now()}.csv`);
+  emit(simplified, 'agents', format);
 }
 
 export function exportLedger(events: any[], format: ExportFormat = 'both') {
@@ -78,8 +77,7 @@ export function exportLedger(events: any[], format: ExportFormat = 'both') {
     kind: e.kind,
     ...Object.fromEntries(Object.entries(e).filter(([k]) => k !== 'ts' && k !== 'kind')),
   }));
-  downloadJSON(simplified, `ledger-${Date.now()}.json`);
-  downloadCSV(simplified, `ledger-${Date.now()}.csv`);
+  emit(simplified, 'ledger', format);
 }
 
 export function exportBacktest(backtest: any, format: ExportFormat = 'both') {

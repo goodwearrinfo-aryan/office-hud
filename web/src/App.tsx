@@ -256,7 +256,7 @@ export default function App() {
       )}
 
       {/* God Console */}
-      {godConsoleOpen && <GodConsole onClose={() => setGodConsoleOpen(false)} agents={agents} />}
+      {godConsoleOpen && <GodConsole onClose={() => setGodConsoleOpen(false)} />}
 
       {/* Jarvis console */}
       {jarvisOpen && (
