@@ -104,6 +104,12 @@ const SAFE_POST_PREFIXES = [
   // prefix grants nothing on its own -- but keep it under review: any new route
   // beginning /api/terminals/ inherits the reach of this entry.
   '/api/terminals/',
+  // Autopilot operator actions: land, dismiss, policy, and a manual tick. These
+  // reach only the autopilot's own state; they cannot merge, push, or write to a
+  // checkout, and each one re-checks that the caller is local. Listed for the
+  // same reason as /api/terminals/ — the global gate would otherwise 405 them
+  // before their own handler ever runs.
+  '/api/autopilot/',
 ];
 
 const app = express();
@@ -2227,6 +2233,139 @@ app.get('/api/terminals/health', (_req, res) => {
 app.get('/api/terminals/peers', async (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({ peers: await terminalManager.peers() });
+});
+
+// ---------------------------------------------------------------------------
+// Autopilot — proposes, never lands.
+//
+// Generation one is verification-only: each tick runs the suite in a throwaway
+// worktree and files the result. It writes no code. Landing a proposal is an
+// operator action on a loopback request, and the autopilot has no code path that
+// merges, pushes, or rewrites history.
+// ---------------------------------------------------------------------------
+const { createRunner } = require('./lib/autopilot_runner');
+const { computeFleetPerformance } = require('./lib/fleet_performance');
+
+const autopilotRunner = createRunner({
+  // The repo root, not server/: __dirname is the directory this file lives in,
+  // and the autopilot needs the checkout to read .git and spawn worktrees.
+  repo: path.join(__dirname, '..'),
+  hive: HIVE,
+  ref: process.env.OFFICE_HUD_AUTOPILOT_REF || 'origin/main',
+  withFileLock: hiveFileLock,
+});
+const autopilot = autopilotRunner.createAutopilot();
+const AUTOPILOT_TICK_MS = Number(process.env.OFFICE_HUD_AUTOPILOT_TICK_MS) > 0
+  ? Number(process.env.OFFICE_HUD_AUTOPILOT_TICK_MS)
+  : 30 * 60 * 1000;
+
+function autopilotGuard(req, res) {
+  if (isLocalRequest(req)) return false;
+  sendError(res, 403, 'AUTOPILOT_LOCAL_ONLY', 'Autopilot control is available only from the local HUD');
+  return true;
+}
+
+app.get('/api/autopilot/snapshot', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const state = await autopilotRunner.readState(autopilot);
+  const persisted = autopilotRunner.loadState();
+  res.json({
+    ...autopilot.snapshot({
+      ref: autopilotRunner.ref,
+      stateFile: path.basename(autopilotRunner.stateFile),
+      sharedTreeDirty: state.sharedTreeDirty,
+      staleWorktrees: state.dirtyFiles,
+      baseline: persisted.baselineFailures ?? null,
+      baselineEstablishedAt: persisted.baselineEstablishedAt ?? null,
+      lastVerification: persisted.lastVerification ?? null,
+      lastRegression: persisted.lastRegression ?? null,
+    }),
+  });
+});
+
+app.get('/api/autopilot/proposals', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ proposals: autopilot.proposals, sequence: autopilot.sequence });
+});
+
+// Land/dismiss are operator decisions. The autopilot can propose all it likes;
+// this is the only way a proposal ever changes state, and it is loopback-only.
+app.post('/api/autopilot/proposals/:id/land', (req, res) => {
+  if (autopilotGuard(req, res)) return;
+  try {
+    const note = typeof req.body?.note === 'string' ? req.body.note.slice(0, 200) : 'landed by operator';
+    const proposal = autopilot.land(req.params.id, note);
+    autopilotRunner.persist(autopilot);
+    res.json({ ok: true, proposal });
+  } catch (error) {
+    sendError(res, 409, 'autopilot_land_failed', error.message);
+  }
+});
+
+app.post('/api/autopilot/proposals/:id/dismiss', (req, res) => {
+  if (autopilotGuard(req, res)) return;
+  try {
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 200) : 'dismissed by operator';
+    const proposal = autopilot.dismiss(req.params.id, reason);
+    autopilotRunner.persist(autopilot);
+    res.json({ ok: true, proposal });
+  } catch (error) {
+    sendError(res, 409, 'autopilot_dismiss_failed', error.message);
+  }
+});
+
+app.post('/api/autopilot/policy', (req, res) => {
+  if (autopilotGuard(req, res)) return;
+  try {
+    const policy = autopilot.updatePolicy(req.body || {});
+    autopilotRunner.persist(autopilot);
+    res.json({ ok: true, policy });
+  } catch (error) {
+    sendError(res, 400, 'autopilot_policy_invalid', error.message);
+  }
+});
+
+// One manual tick, for the operator who does not want to wait for the interval.
+app.post('/api/autopilot/tick', async (req, res) => {
+  if (autopilotGuard(req, res)) return;
+  const verdict = await autopilot.tick();
+  autopilotRunner.persist(autopilot);
+  res.json({ ok: true, ...verdict });
+});
+
+// Read-only performance roll-up over the hive. Deliberately unauthenticated
+// read, like the other GETs, and deliberately free of side effects.
+app.get('/api/fleet/performance', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    res.json(computeFleetPerformance({ hive: HIVE }));
+  } catch (error) {
+    sendError(res, 500, 'fleet_performance_failed', error.message);
+  }
+});
+
+// The ticker. Off by default (policy.enabled is false), so a fresh install
+// never runs a suite on a timer by surprise. unref() so it never holds the
+// process open on shutdown.
+const autopilotTimer = setInterval(() => {
+  autopilot.tick()
+    .then((verdict) => {
+      autopilotRunner.persist(autopilot);
+      if (verdict && verdict.ok === false) {
+        console.log(`[office-hud] autopilot tick refused: ${verdict.reason}`);
+      }
+    })
+    .catch((error) => console.error('[office-hud] autopilot tick failed:', error.message));
+}, AUTOPILOT_TICK_MS);
+autopilotTimer.unref?.();
+
+app.get('/api/terminals/:id', (req, res) => {
+  if (terminalGuard(req, res)) return;
+  const terminal = terminalManager.get(req.params.id);
+  if (!terminal) return sendError(res, 404, 'unknown_terminal', `No terminal ${req.params.id}`);
+  const logs = terminalManager.logs(req.params.id, { lines: 50 });
+  res.set('Cache-Control', 'no-store');
+  res.json({ terminal, logs: logs.lines, log_bytes: logs.bytes });
 });
 
 app.get('/api/terminals/:id', (req, res) => {
