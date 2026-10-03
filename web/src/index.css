@@ -17,6 +17,14 @@
   --hud-blue: #60a5fa;
   --hud-purple: #c084fc;
   --hud-cyan: #22d3ee;
+  /* Soft tints and channel triplets. Kept as channels (not fixed rgba) so the
+     light theme below can re-tint them without a second copy of every rule. */
+  --hud-green-soft: rgba(52, 211, 153, 0.12);
+  --hud-red-soft: rgba(248, 113, 113, 0.12);
+  --hud-cyan-soft: rgba(34, 211, 238, 0.12);
+  --hud-edge-strong: #2f3949;
+  --hud-panel-rgb: 18 22 31;
+  --hud-edge-rgb: 35 42 56;
 }
 
 [data-theme="light"] {
@@ -32,6 +40,12 @@
   --hud-blue: #2563eb;
   --hud-purple: #a855f7;
   --hud-cyan: #06b6d4;
+  --hud-green-soft: rgba(5, 150, 105, 0.10);
+  --hud-red-soft: rgba(220, 38, 38, 0.10);
+  --hud-cyan-soft: rgba(6, 182, 212, 0.10);
+  --hud-edge-strong: #cbd5e1;
+  --hud-panel-rgb: 255 255 255;
+  --hud-edge-rgb: 226 232 240;
 }
 
 * {
@@ -326,3 +340,1143 @@ body {
 .md code { background: var(--hud-edge); color: var(--hud-blue); border-radius: 4px; padding: 1px 5px; font-size: 11.5px; font-family: 'SF Mono', ui-monospace, Menlo, monospace; }
 .md pre { background: var(--hud-surface); border: 1px solid var(--hud-edge); border-radius: 8px; padding: 12px; overflow-x: auto; }
 .md pre code { background: transparent; padding: 0; font-size: 12px; }
+/* ---- component styles for the floors and overlays wired in App.tsx ----
+   Ported from the local tree so JarvisConsole, AlertRail, AutonomyPanel,
+   TimeMachine, ValidationFloor and Overview are not mounted unstyled. */
+.hud-floor-content{
+  min-width: 0;
+  min-height: 0;
+}
+.jarvis-console{
+  min-height: 100%;
+  padding: 1.25rem;
+  color: var(--hud-text);
+  background:
+    radial-gradient(circle at 78% 0%, rgba(34, 211, 238, 0.07), transparent 28rem),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 20rem);
+}
+.jarvis-header{
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--hud-edge);
+  padding: 0.25rem 0.25rem 1.25rem;
+}
+.jarvis-eyebrow,
+.jarvis-kicker,
+.jarvis-metric span,
+.jarvis-panel-meta,
+.jarvis-command-hint,
+.jarvis-readonly,
+.jarvis-footer,
+.jarvis-bar-column time,
+.jarvis-alert time{
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.jarvis-eyebrow{
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--hud-cyan);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+.jarvis-pulse{
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--hud-cyan);
+  box-shadow: 0 0 0 0.25rem rgba(34, 211, 238, 0.1), 0 0 1rem var(--hud-cyan);
+  animation: hudPulse 2s ease-in-out infinite;
+}
+.jarvis-header h1{
+  margin: 0.45rem 0 0.25rem;
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: clamp(1.7rem, 4vw, 3rem);
+  letter-spacing: -0.08em;
+}
+.jarvis-header h1 span{
+  color: var(--hud-cyan);
+  font-weight: 500;
+}
+.jarvis-header p{
+  margin: 0;
+  color: var(--hud-dim);
+  font-size: 0.82rem;
+}
+.jarvis-header-actions{
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+}
+.jarvis-readonly{
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+  color: var(--hud-green);
+  font-size: 0.65rem;
+  font-weight: 800;
+}
+.jarvis-readonly small{
+  color: var(--hud-dim);
+  font-size: 0.52rem;
+}
+.jarvis-clock{
+  color: var(--hud-amber);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+.jarvis-commandbar{
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  border: 1px solid var(--hud-edge-strong);
+  border-radius: 0.75rem;
+  padding: 0.65rem 0.8rem;
+  background: rgba(9, 11, 16, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.04);
+}
+.jarvis-command-prefix{
+  color: var(--hud-cyan);
+  font-size: 1.35rem;
+}
+.jarvis-commandbar input{
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--hud-text);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.8rem;
+}
+.jarvis-commandbar input::placeholder{
+  color: var(--hud-dim);
+}
+.jarvis-command-hint{
+  color: var(--hud-dim);
+  font-size: 0.55rem;
+}
+.jarvis-metrics{
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.jarvis-metric,
+.jarvis-panel{
+  border: 1px solid var(--hud-edge);
+  border-radius: 0.75rem;
+  background: linear-gradient(145deg, rgba(24, 30, 41, 0.88), rgba(17, 21, 29, 0.9));
+  box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.14);
+}
+.jarvis-metric{
+  min-width: 0;
+  padding: 0.85rem 0.9rem;
+}
+.jarvis-metric span,
+.jarvis-kicker{
+  display: block;
+  color: var(--hud-dim);
+  font-size: 0.58rem;
+  font-weight: 800;
+}
+.jarvis-metric strong{
+  display: block;
+  margin: 0.45rem 0 0.25rem;
+  color: var(--hud-text);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 1.5rem;
+  letter-spacing: -0.06em;
+}
+.jarvis-metric small,
+.jarvis-process small,
+.jarvis-project small,
+.jarvis-provider small,
+.jarvis-activity small{
+  display: block;
+  overflow: hidden;
+  color: var(--hud-dim);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jarvis-grid{
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.jarvis-grid-main{
+  grid-template-columns: minmax(0, 1.8fr) minmax(280px, 0.8fr);
+}
+.jarvis-grid-secondary{
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
+}
+.jarvis-grid-tertiary{
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.jarvis-panel{
+  min-width: 0;
+  overflow: hidden;
+  padding: 1rem;
+}
+.jarvis-panel-heading{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.9rem;
+}
+.jarvis-panel-heading h2{
+  margin: 0.25rem 0 0;
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+}
+.jarvis-panel-meta{
+  color: var(--hud-dim);
+  font-size: 0.55rem;
+  white-space: nowrap;
+}
+.jarvis-floor-grid{
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+.jarvis-floor{
+  position: relative;
+  min-height: 5.8rem;
+  border: 1px solid var(--hud-edge);
+  border-radius: 0.6rem;
+  padding: 0.7rem;
+  background: var(--hud-surface);
+  color: var(--hud-text);
+  text-align: left;
+  transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
+}
+.jarvis-floor:hover,
+.jarvis-floor:focus-visible{
+  border-color: var(--hud-cyan);
+  background: rgba(34, 211, 238, 0.08);
+  transform: translateY(-1px);
+}
+.jarvis-floor-top{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.8rem;
+  color: var(--hud-dim);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.62rem;
+}
+.jarvis-floor-top i,
+.jarvis-status-dot,
+.jarvis-activity-dot{
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--hud-dim);
+}
+.jarvis-floor.is-idle .jarvis-floor-top i,
+.jarvis-status-dot.is-online,
+.jarvis-activity-dot{
+  background: var(--hud-green);
+  box-shadow: 0 0 0.7rem rgba(61, 220, 151, 0.6);
+}
+.jarvis-floor.is-busy .jarvis-floor-top i{
+  background: var(--hud-cyan);
+  box-shadow: 0 0 0.7rem rgba(34, 211, 238, 0.6);
+  animation: hudPulse 1.2s ease-in-out infinite;
+}
+.jarvis-floor.is-alert .jarvis-floor-top i,
+.jarvis-status-dot.is-alert{
+  background: var(--hud-red);
+  box-shadow: 0 0 0.7rem rgba(251, 113, 133, 0.5);
+}
+.jarvis-floor.is-dimmed{
+  opacity: 0.35;
+}
+.jarvis-floor strong,
+.jarvis-floor small{
+  display: block;
+}
+.jarvis-floor strong{
+  font-size: 0.78rem;
+}
+.jarvis-floor small{
+  margin-top: 0.25rem;
+  color: var(--hud-dim);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.58rem;
+  text-transform: uppercase;
+}
+.jarvis-floor-open{
+  position: absolute;
+  right: 0.55rem;
+  bottom: 0.5rem;
+  border: 0;
+  background: transparent;
+  color: var(--hud-dim);
+  font-size: 0.85rem;
+}
+.jarvis-floor-open:hover{
+  color: var(--hud-cyan);
+}
+.jarvis-alert-count{
+  display: inline-flex;
+  min-width: 1.5rem;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.25rem 0.4rem;
+  background: var(--hud-green-soft);
+  color: var(--hud-green);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.65rem;
+}
+.jarvis-alert-count.has-alerts{
+  background: var(--hud-red-soft);
+  color: var(--hud-red);
+}
+.jarvis-alert-list,
+.jarvis-activity-list,
+.jarvis-process-list,
+.jarvis-project-list{
+  display: grid;
+  gap: 0.45rem;
+}
+.jarvis-alert,
+.jarvis-clear-state{
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  border: 1px solid var(--hud-edge);
+  border-radius: 0.55rem;
+  padding: 0.7rem;
+  background: var(--hud-surface);
+}
+.jarvis-alert > span,
+.jarvis-clear-state > span{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--hud-red-soft);
+  color: var(--hud-red);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.7rem;
+}
+.jarvis-alert p,
+.jarvis-clear-state p{
+  flex: 1;
+  margin: 0;
+  font-size: 0.76rem;
+}
+.jarvis-alert time{
+  color: var(--hud-red);
+  font-size: 0.5rem;
+}
+.jarvis-clear-state > span{
+  background: var(--hud-green-soft);
+  color: var(--hud-green);
+}
+.jarvis-clear-state small{
+  color: var(--hud-dim);
+  font-size: 0.65rem;
+}
+.jarvis-panel-footer{
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.9rem;
+  border-top: 1px solid var(--hud-edge);
+  padding-top: 0.7rem;
+  color: var(--hud-dim);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.55rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.jarvis-panel-footer strong{
+  color: var(--hud-amber);
+  font-weight: 600;
+}
+.jarvis-bars{
+  display: flex;
+  align-items: end;
+  gap: 0.5rem;
+  height: 10rem;
+  padding: 0.5rem 0.25rem 0;
+  border-bottom: 1px solid var(--hud-edge);
+}
+.jarvis-bar-column{
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  height: 100%;
+}
+.jarvis-bar-column > span,
+.jarvis-bar-column time{
+  color: var(--hud-dim);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.5rem;
+}
+.jarvis-bar-track{
+  display: flex;
+  width: 100%;
+  min-height: 0.5rem;
+  flex: 1;
+  align-items: end;
+  border-radius: 0.25rem 0.25rem 0 0;
+  background: var(--hud-cyan-soft);
+}
+.jarvis-bar-track i{
+  display: block;
+  width: 100%;
+  border-radius: 0.25rem 0.25rem 0 0;
+  background: linear-gradient(180deg, var(--hud-cyan), var(--hud-blue));
+}
+.jarvis-activity{
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  border-bottom: 1px solid var(--hud-edge);
+  padding: 0.4rem 0;
+}
+.jarvis-activity:last-child{
+  border-bottom: 0;
+}
+.jarvis-activity-dot{
+  margin-top: 0.35rem;
+  flex: 0 0 auto;
+}
+.jarvis-activity strong{
+  display: block;
+  color: var(--hud-text);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.jarvis-process,
+.jarvis-project,
+.jarvis-provider{
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border-bottom: 1px solid var(--hud-edge);
+  padding: 0.5rem 0;
+}
+.jarvis-process:last-child,
+.jarvis-project:last-child{
+  border-bottom: 0;
+}
+.jarvis-process > div,
+.jarvis-project > div:not(.jarvis-project-mark),
+.jarvis-provider > div:not(.jarvis-provider-orb){
+  min-width: 0;
+  flex: 1;
+}
+.jarvis-process strong,
+.jarvis-project strong,
+.jarvis-provider strong{
+  display: block;
+  overflow: hidden;
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jarvis-process em,
+.jarvis-project > span,
+.jarvis-provider > span:last-child{
+  color: var(--hud-dim);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.55rem;
+  font-style: normal;
+  text-transform: uppercase;
+}
+.jarvis-project-mark,
+.jarvis-provider-orb{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.8rem;
+  height: 1.8rem;
+  flex: 0 0 auto;
+  border: 1px solid var(--hud-cyan);
+  border-radius: 0.5rem;
+  color: var(--hud-cyan);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.7rem;
+}
+.jarvis-provider-orb{
+  border-radius: 50%;
+  color: var(--hud-amber);
+  font-size: 1.2rem;
+}
+.jarvis-provider-list{
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  color: var(--hud-dim);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.58rem;
+}
+.jarvis-provider-list span{
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.jarvis-provider-list em{
+  margin-left: auto;
+  color: var(--hud-text);
+  font-style: normal;
+}
+.jarvis-loading{
+  display: flex;
+  min-height: 4rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--hud-dim);
+  font-size: 0.72rem;
+}
+.jarvis-footer{
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0.25rem 0;
+  color: var(--hud-dim);
+  font-size: 0.5rem;
+}
+.jarvis-commandbar select,
+.jarvis-agent-filter{
+  min-width: 8.5rem;
+  border: 1px solid var(--hud-edge);
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.55rem;
+  background: var(--hud-surface);
+  color: var(--hud-dim);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.62rem;
+}
+.jarvis-commandbar input{
+  min-width: 0;
+  flex: 1;
+}
+.jarvis-command-submit,
+.jarvis-confirm-submit{
+  border: 1px solid var(--hud-cyan);
+  border-radius: 0.45rem;
+  padding: 0.52rem 0.7rem;
+  background: var(--hud-cyan-soft);
+  color: var(--hud-cyan);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.62rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.jarvis-command-submit:hover,
+.jarvis-confirm-submit:hover:not(:disabled){
+  background: rgba(34, 211, 238, 0.18);
+}
+.jarvis-command-submit span{
+  margin-left: 0.35rem;
+  color: var(--hud-amber);
+}
+.jarvis-command-submit:disabled,
+.jarvis-confirm-submit:disabled{
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.jarvis-command-status{
+  min-height: 1.25rem;
+  padding: 0 0.2rem;
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.62rem;
+}
+.jarvis-command-status span{
+  display: inline-block;
+  margin-top: 0.4rem;
+}
+.jarvis-panel-tools{
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.jarvis-agent-filter{
+  min-width: 8rem;
+  padding: 0.35rem 0.45rem;
+  font-size: 0.58rem;
+}
+.jarvis-floor-task{
+  position: absolute;
+  right: 0.55rem;
+  bottom: 0.5rem;
+  border: 0;
+  background: transparent;
+  color: var(--hud-cyan);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.52rem;
+  letter-spacing: 0.08em;
+}
+.jarvis-floor-task:hover{
+  color: var(--hud-amber);
+}
+.jarvis-jev-panel{
+  margin-bottom: 1rem;
+}
+.jarvis-task-list{
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+.jarvis-task{
+  min-width: 0;
+  border: 1px solid var(--hud-edge);
+  border-left: 2px solid var(--hud-dim);
+  border-radius: 0.55rem;
+  padding: 0.7rem;
+  background: var(--hud-surface);
+}
+.jarvis-task.is-complete{
+  border-left-color: var(--hud-green);
+}
+.jarvis-task.is-failed{
+  border-left-color: var(--hud-red);
+}
+.jarvis-task.is-progress{
+  border-left-color: var(--hud-cyan);
+}
+.jarvis-task.is-queued{
+  border-left-color: var(--hud-amber);
+}
+.jarvis-task-top{
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.45rem;
+  color: var(--hud-dim);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.52rem;
+  text-transform: uppercase;
+}
+.jarvis-task-top time{
+  margin-left: auto;
+}
+.jarvis-task-status{
+  color: var(--hud-cyan);
+  font-weight: 800;
+}
+.jarvis-task.is-complete .jarvis-task-status{
+  color: var(--hud-green);
+}
+.jarvis-task.is-failed .jarvis-task-status{
+  color: var(--hud-red);
+}
+.jarvis-task strong,
+.jarvis-task small,
+.jarvis-task p{
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jarvis-task strong{
+  font-size: 0.7rem;
+}
+.jarvis-task small{
+  margin-top: 0.3rem;
+  color: var(--hud-dim);
+  font-size: 0.6rem;
+}
+.jarvis-task p{
+  margin: 0.45rem 0 0;
+  color: var(--hud-text);
+  font-size: 0.62rem;
+}
+.jarvis-modal-backdrop{
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(3, 5, 9, 0.78);
+  backdrop-filter: blur(0.35rem);
+}
+.jarvis-confirm-modal{
+  width: min(100%, 34rem);
+  border: 1px solid var(--hud-edge-strong);
+  border-radius: 0.85rem;
+  padding: 1.1rem;
+  background: #111722;
+  box-shadow: 0 2rem 5rem rgba(0, 0, 0, 0.45);
+}
+.jarvis-modal-close{
+  border: 0;
+  background: transparent;
+  color: var(--hud-dim);
+  font-size: 1.2rem;
+}
+.jarvis-confirm-card{
+  border: 1px solid var(--hud-edge);
+  border-radius: 0.6rem;
+  padding: 0.85rem;
+  background: var(--hud-surface);
+}
+.jarvis-confirm-card > span,
+.jarvis-confirm-card > div,
+.jarvis-type-confirm{
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.jarvis-confirm-card > span{
+  color: var(--hud-dim);
+}
+.jarvis-confirm-card p{
+  margin: 0.55rem 0 0.8rem;
+  color: var(--hud-text);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  text-transform: none;
+  white-space: normal;
+}
+.jarvis-confirm-card > div{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  color: var(--hud-amber);
+}
+.jarvis-confirm-card > div span{
+  border: 1px solid var(--hud-edge);
+  border-radius: 999px;
+  padding: 0.25rem 0.4rem;
+}
+.jarvis-type-confirm{
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.8rem;
+  color: var(--hud-red);
+}
+.jarvis-type-confirm strong{
+  color: var(--hud-amber);
+}
+.jarvis-type-confirm input{
+  border: 1px solid var(--hud-red);
+  border-radius: 0.45rem;
+  padding: 0.6rem;
+  outline: 0;
+  background: var(--hud-surface);
+  color: var(--hud-text);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.jarvis-type-confirm input:focus{
+  box-shadow: 0 0 0 0.2rem rgba(251, 113, 133, 0.12);
+}
+.jarvis-confirm-actions{
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  margin-top: 1rem;
+}
+.jarvis-alpha-panel{
+  margin-bottom: 1rem;
+}
+.jarvis-alpha-panel .jarvis-panel-tools{
+  color: var(--hud-dim);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.55rem;
+}
+.jarvis-floor-task.static{
+  position: static;
+  border: 1px solid var(--hud-edge);
+  border-radius: 0.35rem;
+  padding: 0.28rem 0.4rem;
+  background: var(--hud-surface);
+}
+.jarvis-alpha-metrics{
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-bottom: 0.8rem;
+}
+.jarvis-alpha-metrics > div{
+  border: 1px solid var(--hud-edge);
+  border-radius: 0.5rem;
+  padding: 0.55rem;
+  background: var(--hud-surface);
+}
+.jarvis-alpha-metrics span,
+.jarvis-alpha-metrics strong,
+.jarvis-alpha-list-title,
+.jarvis-alpha-boundary{
+  display: block;
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  text-transform: uppercase;
+}
+.jarvis-alpha-metrics span,
+.jarvis-alpha-list-title,
+.jarvis-alpha-boundary span{
+  color: var(--hud-dim);
+  font-size: 0.52rem;
+  letter-spacing: 0.08em;
+}
+.jarvis-alpha-metrics strong{
+  margin-top: 0.3rem;
+  color: var(--hud-text);
+  font-size: 0.8rem;
+}
+.jarvis-alpha-grid{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+.jarvis-alpha-list{
+  min-width: 0;
+  border: 1px solid var(--hud-edge);
+  border-radius: 0.55rem;
+  padding: 0.65rem;
+  background: var(--hud-surface);
+}
+.jarvis-alpha-list-title{
+  margin-bottom: 0.4rem;
+}
+.jarvis-alpha-row{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  border-top: 1px solid var(--hud-edge);
+  padding: 0.45rem 0;
+}
+.jarvis-alpha-row > div{
+  min-width: 0;
+}
+.jarvis-alpha-row strong,
+.jarvis-alpha-row small{
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jarvis-alpha-row strong{
+  color: var(--hud-text);
+  font-size: 0.68rem;
+}
+.jarvis-alpha-row small{
+  margin-top: 0.2rem;
+  color: var(--hud-dim);
+  font-size: 0.56rem;
+}
+.jarvis-alpha-row > span{
+  flex: 0 0 auto;
+  color: var(--hud-amber);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.55rem;
+  text-transform: uppercase;
+}
+.jarvis-alpha-error{
+  margin: 0 0 0.65rem;
+  color: var(--hud-red);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.6rem;
+}
+.jarvis-alpha-boundary{
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 0.75rem;
+  border: 1px solid rgba(61, 220, 151, 0.18);
+  border-radius: 0.5rem;
+  padding: 0.55rem;
+  background: var(--hud-green-soft);
+}
+.jarvis-alpha-boundary span{
+  color: var(--hud-green);
+  white-space: nowrap;
+}
+.jarvis-alpha-boundary small{
+  color: var(--hud-dim);
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.62rem;
+  text-transform: none;
+}
+.jarvis-runtime{
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+  color: var(--hud-amber);
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+  font-size: 0.65rem;
+  font-weight: 800;
+}
+.jarvis-runtime small{
+  color: var(--hud-dim);
+  font-size: 0.52rem;
+  font-weight: 400;
+}
+.jarvis-runtime.live{
+  color: var(--hud-green);
+}
+.jarvis-runtime.offline{
+  color: var(--hud-red);
+}
+.jarvis-quick-actions{
+  margin: 0.85rem 0 1rem;
+  border: 1px solid var(--hud-edge);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(17, 23, 32, 0.72);
+}
+.jarvis-quick-heading{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.65rem;
+}
+.jarvis-quick-heading > span,
+.jarvis-quick-action small,
+.jarvis-quick-action span,
+.jarvis-quick-heading strong{
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
+}
+.jarvis-quick-heading > span,
+.jarvis-quick-action small{
+  color: var(--hud-dim);
+  font-size: 0.55rem;
+  text-transform: uppercase;
+}
+.jarvis-quick-heading strong{
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--hud-text);
+  font-size: 0.72rem;
+}
+.jarvis-quick-grid{
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.jarvis-quick-action{
+  min-width: 0;
+  border: 1px solid var(--hud-edge);
+  border-radius: 0.55rem;
+  padding: 0.65rem;
+  background: var(--hud-surface);
+  color: var(--hud-text);
+  text-align: left;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+.jarvis-quick-action:hover,
+.jarvis-quick-action:focus-visible{
+  border-color: var(--hud-cyan);
+  background: var(--hud-cyan-soft);
+  transform: translateY(-1px);
+}
+.jarvis-quick-action strong,
+.jarvis-quick-action small{
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jarvis-quick-action strong{
+  font-size: 0.7rem;
+}
+.jarvis-quick-action small{
+  margin-top: 0.3rem;
+}
+.jarvis-quick-action span{
+  display: block;
+  margin-top: 0.55rem;
+  color: var(--hud-cyan);
+  font-size: 0.52rem;
+}
+.alert-rail{
+  width: 320px;
+  flex: 0 0 320px;
+  border-left: 1px solid var(--hud-edge-rgb);
+  padding: 12px;
+  overflow: auto;
+  max-height: calc(100vh - 96px);
+  position: sticky;
+  top: 12px;
+}
+.alert-rail__head{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.alert-rail__title{ font-size: 10px; letter-spacing: .14em; color: var(--hud-dim); }
+.alert-rail__counts{ display: flex; gap: 4px; }
+.alert-rail__spacer{ flex: 1; }
+.alert-rail__toggle,
+.alert-rail__ackall{
+  background: none;
+  border: 0;
+  color: var(--hud-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.alert-rail__toggle:hover, .alert-rail__ackall:hover{ color: var(--hud-amber); }
+.alert-rail__list{ list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.alert-rail__empty{ color: var(--hud-dim); font-size: 12px; padding: 8px 0; }
+.alert-rail__error{ color: var(--hud-red); font-size: 12px; }
+.alert-rail__stamp{ color: var(--hud-dim); font-size: 10px; margin-top: 10px; }
+.alert__head{
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 9px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.alert__sev{ font-size: 9px; letter-spacing: .1em; font-family: ui-monospace, monospace; }
+.alert__sev--critical{ color: #f87171; }
+.alert__sev--warn{ color: #f5a623; }
+.alert__sev--info{ color: #4cc2ff; }
+.alert__title{ flex: 1; font-size: 12.5px; line-height: 1.35; }
+.alert__age{ font-size: 10px; color: var(--hud-dim); white-space: nowrap; }
+.alert__body{ padding: 0 10px 9px 10px; font-size: 12px; color: var(--hud-dim); }
+.alert__body p{ margin: 0 0 6px; }
+.alert__meta{ font-size: 10.5px; }
+.alert__ack{
+  background: none;
+  border: 1px solid var(--hud-edge-rgb);
+  border-radius: 6px;
+  color: var(--hud-dim);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.alert__ack:hover{ color: var(--hud-amber); border-color: var(--hud-amber); }
+.alert-rail__history{ margin-top: 12px; font-size: 11px; color: var(--hud-dim); }
+.alert-rail__history ul{ list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.time-machine__head{ display: flex; align-items: center; gap: 10px; }
+.time-machine__clock{ margin-left: auto; font-family: ui-monospace, monospace; font-size: 18px; color: var(--hud-amber); }
+.time-machine__controls{ display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.time-machine__controls button{
+  background: var(--hud-panel-rgb);
+  border: 1px solid var(--hud-edge-rgb);
+  color: var(--hud-dim);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.time-machine__controls button:hover:not(:disabled){ color: var(--hud-amber); border-color: var(--hud-amber); }
+.time-machine__controls button.is-active{ color: var(--hud-green); border-color: var(--hud-green); }
+.time-machine__controls button:disabled{ opacity: .4; cursor: not-allowed; }
+.time-machine__hours{ display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--hud-dim); }
+.time-machine__hours select{
+  background: var(--hud-panel-rgb);
+  border: 1px solid var(--hud-edge-rgb);
+  color: inherit;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+.time-machine__scrub{ width: 100%; accent-color: #f5a623; }
+.time-machine__scale{ display: flex; justify-content: space-between; font-size: 10px; color: var(--hud-dim); font-family: ui-monospace, monospace; }
+.time-machine__stats{ display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.time-machine__panel{ border: 1px solid var(--hud-edge-rgb); border-radius: 10px; padding: 12px; }
+.time-machine__panel h3{ margin: 0 0 10px; font-size: 10px; letter-spacing: .12em; color: var(--hud-dim); }
+.time-machine__bars{ display: flex; align-items: flex-end; gap: 4px; height: 90px; }
+.time-machine__bar{ flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; gap: 4px; }
+.time-machine__bar span{ display: block; min-height: 2px; background: linear-gradient(180deg, #f5a623, rgba(245,166,35,.35)); border-radius: 3px 3px 0 0; }
+.time-machine__bar em{ font-style: normal; font-size: 9px; color: var(--hud-dim); text-align: center; }
+.time-machine__grid{ display: grid; gap: 12px; grid-template-columns: 1fr; }
+.time-machine__transitions{ list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.time-machine__transitions li{ display: flex; gap: 8px; align-items: baseline; }
+.time-machine__transitions time{ color: var(--hud-dim); font-family: ui-monospace, monospace; font-size: 11px; }
+.stream-status__row{ display: flex; align-items: center; gap: 7px; }
+.stream-status__row--meta{ margin-top: 5px; flex-wrap: wrap; gap: 10px; color: var(--hud-dim); font-family: ui-monospace, monospace; font-size: 10px; }
+.stream-status__dot{ width: 7px; height: 7px; border-radius: 50%; background: var(--hud-dim); flex: 0 0 auto; }
+.stream-status__dot.is-live{ background: #34d399; box-shadow: 0 0 7px #34d399; }
+.stream-status__dot.is-connecting{ background: #f5a623; }
+.stream-status__dot.is-offline{ background: #f87171; }
+.stream-status__label{ letter-spacing: .1em; font-size: 10px; }
+.stream-status__meta{ margin-left: auto; color: var(--hud-dim); font-size: 10px; }
+.stream-status__viewers{ list-style: none; margin: 6px 0 0; padding: 0; color: var(--hud-dim); font-size: 10.5px; display: flex; flex-direction: column; gap: 2px; }
+.stream-status__hint{ margin: 7px 0 0; color: var(--hud-dim); font-size: 10.5px; line-height: 1.4; }
+.autonomy__head{ display: flex; align-items: center; gap: 8px; }
+.autonomy__title{ margin: 0; font-size: 10px; letter-spacing: .14em; color: var(--hud-dim); }
+.autonomy__state{ margin-left: auto; font-size: 9px; letter-spacing: .12em; padding: 1px 6px; border-radius: 999px; }
+.autonomy__state.is-on{ background: rgba(52,211,153,.16); color: #34d399; }
+.autonomy__state.is-off{ background: rgba(125,139,153,.14); color: var(--hud-dim); }
+.autonomy__blurb{ margin: 7px 0; color: var(--hud-dim); line-height: 1.45; font-size: 10.5px; }
+.autonomy__gate{ border-top: 1px solid var(--hud-edge-rgb); padding-top: 7px; margin-top: 7px; }
+.autonomy__toggle{ display: flex; align-items: flex-start; gap: 6px; color: var(--hud-text); font-size: 11px; cursor: pointer; }
+.autonomy__toggle input{ margin-top: 1px; accent-color: #34d399; }
+.autonomy__stats{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 8px 0 0; }
+.autonomy__stats div{ display: flex; flex-direction: column; }
+.autonomy__stats dt{ font-size: 9px; color: var(--hud-dim); text-transform: uppercase; letter-spacing: .06em; }
+.autonomy__stats dd{ margin: 0; font-family: ui-monospace, monospace; font-size: 12px; }
+.autonomy__reason{ margin: 7px 0 0; color: var(--hud-amber); font-size: 10.5px; }
+.autonomy__hint{ margin: 5px 0 0; color: var(--hud-dim); font-size: 10px; line-height: 1.4; }
+.autonomy__error{ margin: 6px 0 0; color: #f87171; font-size: 10.5px; }
+.autonomy__proposal{ margin-top: 9px; border: 1px solid rgba(245,166,35,.4); border-radius: 7px; padding: 8px; background: rgba(245,166,35,.06); }
+.autonomy__proposal-head{ display: flex; align-items: baseline; gap: 6px; }
+.autonomy__badge{ font-size: 9px; letter-spacing: .1em; color: #f5a623; }
+.autonomy__proposal-title{ flex: 1; font-size: 11.5px; }
+.autonomy__expires{ font-size: 9.5px; color: var(--hud-dim); }
+.autonomy__prompt{ margin: 6px 0; font-size: 10.5px; color: var(--hud-dim); line-height: 1.45; }
+.autonomy__actions{ display: flex; gap: 6px; }
+.autonomy__accept, .autonomy__dismiss, .autonomy__save{
+  border-radius: 6px; font: inherit; font-size: 10.5px; padding: 3px 9px; cursor: pointer;
+}
+.autonomy__accept{ background: #f5a623; border: 1px solid #f5a623; color: #17110a; font-weight: 600; }
+.autonomy__accept:hover:not(:disabled){ filter: brightness(1.1); }
+.autonomy__dismiss, .autonomy__save{ background: none; border: 1px solid var(--hud-edge-rgb); color: var(--hud-dim); }
+.autonomy__dismiss:hover:not(:disabled), .autonomy__save:hover:not(:disabled){ color: var(--hud-amber); border-color: var(--hud-amber); }
+.autonomy__accept:disabled, .autonomy__dismiss:disabled, .autonomy__save:disabled{ opacity: .5; cursor: not-allowed; }
+.autonomy__details{ margin-top: 8px; }
+.autonomy__details summary{ cursor: pointer; color: var(--hud-dim); font-size: 10px; }
+.autonomy__policy{ display: flex; flex-direction: column; gap: 5px; margin: 7px 0; }
+.autonomy__policy label{ display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--hud-dim); font-size: 10.5px; }
+.autonomy__policy input[type="number"]{ width: 72px; background: #0e141b; border: 1px solid var(--hud-edge-rgb); color: var(--hud-text); border-radius: 5px; padding: 2px 5px; font: inherit; font-size: 10.5px; }
+.autonomy__policy .autonomy__toggle{ justify-content: flex-start; }
+.autonomy__audit{ list-style: none; margin: 7px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: var(--hud-dim); }
+.autonomy__audit li{ display: flex; gap: 6px; align-items: baseline; }
+.autonomy__audit time{ font-family: ui-monospace, monospace; flex: 0 0 auto; }
+.autonomy__audit-action{ flex: 0 0 auto; text-transform: uppercase; letter-spacing: .06em; }
+.autonomy__audit-action.is-proposal_accepted{ color: #34d399; }
+.autonomy__audit-action.is-proposal_raised{ color: #f5a623; }
+.autonomy__audit-action.is-proposal_suppressed,
+.autonomy__audit-action.is-route_failed{ color: #f87171; }
+.jarvis-floor-open-target strong{ display: block; }
+.jarvis-floor-open-target small{ display: block; }
+.jarvis-floor-open-target:focus-visible{
+  outline: 2px solid var(--hud-amber);
+  outline-offset: 2px;
+}
