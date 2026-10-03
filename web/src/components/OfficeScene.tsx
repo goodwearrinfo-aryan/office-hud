@@ -133,7 +133,21 @@ export default function OfficeScene({ agents, onSelect, selectedId }: Props) {
               </thead>
               <tbody>
                 {(activeOnly ? workers.filter(agent => agent.display === 'busy' || agent.display === 'idle') : workers).map(agent => (
-                  <tr key={agent.id} className="cursor-pointer" onClick={() => onSelect(agent.id)}>
+                  <tr
+                    key={agent.id}
+                    className="cursor-pointer"
+                    onClick={() => onSelect(agent.id)}
+                    /* Reachable by keyboard: the row is the primary nav for F3. */
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Open ${agent.name} (${agent.display})`}
+                    onKeyDown={event => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        onSelect(agent.id);
+                      }
+                    }}
+                  >
                     <td className="text-hud-text">{agent.name}</td>
                     <td style={{ color: STATUS_COLORS[agent.display] }}>{agent.display}</td>
                     <td className="max-w-[300px] truncate">{agent.currentTaskTitle || agent.currentTaskId || '—'}</td>
