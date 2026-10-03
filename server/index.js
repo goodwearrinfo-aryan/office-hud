@@ -1573,6 +1573,28 @@ function getGraphifyCommunities(limit = 12) {
   };
 }
 
+/**
+ * Why a BLOCKED task is waiting.
+ *
+ * Only reports what the record actually contains. A dependency list is turned
+ * into a statement only when the list is there to be read; otherwise this says
+ * so plainly rather than guessing at a cause, because a fabricated reason is
+ * worse than an absent one — it reads like knowledge the system does not have.
+ */
+function blockedReason(task) {
+  const evidence = isPlainObject(task.evidence) ? task.evidence : {};
+  const explicit = task.blocked_reason || task.block_reason || evidence.blocked_reason || evidence.reason;
+  if (explicit) return String(explicit);
+
+  const deps = task.depends_on || task.dependencies || evidence.depends_on;
+  if (Array.isArray(deps) && deps.length > 0) {
+    const shown = deps.slice(0, 3).map(dep => (typeof dep === 'string' ? dep : (dep && dep.task_id) || '?')).join(', ');
+    const extra = deps.length > 3 ? `, +${deps.length - 3} more` : '';
+    return `waiting on ${deps.length} unmet dependency(ies): ${shown}${extra}`;
+  }
+  return 'blocked with no reason recorded';
+}
+
 function getQueueSummary() {
   const now = Date.now();
   const tasks = getTasks().tasks || [];
@@ -1599,6 +1621,39 @@ function getQueueSummary() {
     return /llm call failed|llm_error|all llm providers failed|executor ended: llm_error|executor ended: error/i.test(text);
   };
   const completedButFailed = completedTasks.filter(looksFailed);
+  // "Verified" has to mean the work is backed by something durable. Deriving it
+  // by subtraction — complete minus keyword-matched failures — produces a field
+  // that carries the word "verified" while measuring only "not flagged as
+  // failed", and a completion with no artifacts at all sails straight through.
+  // On the live hive that overclaim was 100% of completions, so this counts
+  // evidence instead of inferring it from the absence of a failure marker.
+  //
+  // Two shapes count, because the fleet records provenance two ways and a
+  // definition that only understood one of them would go blind to the other:
+  //
+  //   evidence.artifacts[]  a non-empty list of produced artifacts
+  //   evidence.file          a concrete file the work touched (with `line`)
+  //
+  // As of this writing every one of the 522 live COMPLETE tasks has
+  // `evidence.file` present but EMPTY, and no `artifacts[]` at all — so the
+  // honest count is 0, where the old subtraction reported 522. That is the point
+  // of the change: the field used to claim verification it had no evidence for.
+  // The `file` branch is kept because that is the shape the executor is expected
+  // to fill in, not because it currently contributes anything.
+  //
+  // Evidence is not correctness — it means something durable was recorded. The
+  // unverified remainder stays visible for exactly that distinction.
+  const hasDurableEvidence = (task) => {
+    const evidence = task.evidence;
+    if (!isPlainObject(evidence)) return false;
+    if (Array.isArray(evidence.artifacts) && evidence.artifacts.length > 0) return true;
+    return typeof evidence.file === 'string' && evidence.file.trim().length > 0;
+  };
+  const verifiedTasks = completedTasks.filter(task => hasDurableEvidence(task) && !looksFailed(task));
+  // The remainder: stored COMPLETE, not flagged as failed, and backed by nothing.
+  // Reported rather than folded away, because "completed but unverified" is the
+  // number an operator actually needs in order to distrust a completion rate.
+  const unverifiedComplete = completedTasks.length - completedButFailed.length - verifiedTasks.length;
   const inProgress = tasks.filter(task => String(task.status).toUpperCase() === 'IN_PROGRESS');
   const staleInProgress = inProgress.filter(task => {
     const heartbeat = timestampMs(task.heartbeat || task.claimed_at);
@@ -1632,7 +1687,23 @@ function getQueueSummary() {
     // `complete` above is the raw count and includes these; subtracting them is
     // the only way to read a success rate that is not misleading.
     completedButFailed: completedButFailed.length,
-    verifiedComplete: completedTasks.length - completedButFailed.length,
+    verifiedComplete: verifiedTasks.length,
+    unverifiedComplete,
+    // BLOCKED is a real resting state: the dependency engine parks a task until
+    // its prerequisite produces a result, and without these the task vanishes
+    // between QUEUED and claimable. The reason is reported only when the record
+    // carries one — a cause is never invented to fill the column.
+    blocked: (byStatus.BLOCKED || 0),
+    blockedTasks: tasks
+      .filter(task => String(task.status || '').toUpperCase() === 'BLOCKED')
+      .slice(0, 50)
+      .map(task => ({
+        task_id: task.task_id,
+        title: task.title,
+        reason: blockedReason(task),
+        assigned_agent: task.assigned_agent || null,
+        blocked_since: task.blocked_since || task.updated_at || task.created_at || null,
+      })),
     byStatus,
     inProgressTasks: inProgress.slice(0, 50).map(task => ({
       task_id: task.task_id,

@@ -52,13 +52,29 @@ const VOLATILE = new Set([
   'heartbeat_age_sec', 'latencyMs', 'ageMs', 'startedAt', 'endedAt',
 ]);
 
-function normalise(value) {
-  if (Array.isArray(value)) return value.map(normalise);
+/**
+ * Subtrees that are a live probe of this machine rather than part of the
+ * payload contract.
+ *
+ * `launchdState` reports the real launchd services right now, so a service
+ * starting or stopping between two calls changes `running`, `pid`, `status` and
+ * the derived `counts`. That is not payload drift — it is the host doing
+ * something — and asserting on it made this suite flaky roughly 1 run in 8,
+ * which is how a real regression here would get dismissed as noise.
+ *
+ * Dropping the subtree rather than adding `running`/`pid` to VOLATILE keeps the
+ * exclusion honest: those key names recur in payloads that *should* be compared,
+ * and masking them by name would quietly weaken every other row above.
+ */
+const VOLATILE_SUBTREES = new Set(['launchdState']);
+
+function normalise(value, key) {
+  if (Array.isArray(value)) return value.map((entry) => normalise(entry));
   if (value && typeof value === 'object') {
     const out = {};
-    for (const key of Object.keys(value).sort()) {
-      if (VOLATILE.has(key)) continue;
-      out[key] = normalise(value[key]);
+    for (const k of Object.keys(value).sort()) {
+      if (VOLATILE.has(k) || VOLATILE_SUBTREES.has(k)) continue;
+      out[k] = normalise(value[k], k);
     }
     return out;
   }

@@ -80,10 +80,23 @@ test('liveness: a COMPLETE task whose record says the LLM failed is subtracted',
     1,
     'the llm_error task must be detected as a false completion',
   );
+  // The original assertion here was `verifiedComplete + completedButFailed ===
+  // complete`, which cannot coexist with the truthfulness property above: that
+  // identity only holds when verifiedComplete means "complete minus failures",
+  // which is the arithmetic this file exists to replace. Under an evidence-backed
+  // definition the residue is t-empty — stored COMPLETE, not flagged as failed,
+  // and backed by nothing — so the decomposition has three terms, not two. The
+  // identity is preserved rather than dropped; it just accounts for the bucket
+  // that the old two-term version silently absorbed into "verified".
   assert.equal(
-    q.verifiedComplete + q.completedButFailed,
+    q.verifiedComplete + q.completedButFailed + q.unverifiedComplete,
     q.complete,
-    'verified + failed-discrepancies must reconstruct the raw complete count',
+    'verified + failed-discrepancies + unverified must reconstruct the raw complete count',
+  );
+  assert.equal(
+    q.unverifiedComplete,
+    1,
+    't-empty is completed, unflagged and unbacked — it must be reported, not folded into verified',
   );
 });
 
