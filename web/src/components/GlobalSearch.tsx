@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useLive, type Agent, type LedgerEvent, type Summary } from '../api';
 
 interface Props {

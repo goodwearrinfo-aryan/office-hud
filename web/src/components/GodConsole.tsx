@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useLive } from '../api';
-import { Agent } from '../api';
+import type { Agent } from '../api';
 
 interface Props {
   onClose: () => void;
@@ -29,19 +28,30 @@ export default function GodConsole({ onClose, agents }: Props) {
     setPrompt('');
     setLoading(true);
     try {
-      const res = await fetch('/api/llm/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: userPrompt,
-          agentId: 'god',
-          taskType: 'reasoning',
-          provider: 'nvidia',
-          model: 'nvidia/nemotron-3-ultra-550b-a55b',
-        }),
-      });
-      const data = await res.json();
-      setHistory(h => [...h, { role: 'assistant', content: data.ok ? data.result?.content : 'Error: ' + data.error }]);
+        // Was POSTing to /api/llm/test, which is the provider smoke test: it ran a
+        // reasoning call and returned the model's answer, so the transcript showed a
+        // reply as though the selected floor had answered. Nothing was delivered, and
+        // selectedFloor never left the browser. /api/jarvis/command is the endpoint
+        // that actually enqueues work for a target, and it is rate limited, which is
+        // the right shape for a button an operator can press repeatedly.
+        const res = await fetch('/api/jarvis/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: userPrompt,
+            target: selectedFloor === 'all' ? null : selectedFloor.toUpperCase(),
+            priority: 'normal',
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          const why = data?.error?.message || data?.error || `HTTP ${res.status}`;
+          setHistory(h => [...h, { role: 'assistant', content: 'Error: ' + why }]);
+        } else if (data.task) {
+          setHistory(h => [...h, { role: 'assistant', content: `Queued ${data.task.type || 'command'}${data.task.id ? ` · ${data.task.id}` : ''}` }]);
+        } else {
+          setHistory(h => [...h, { role: 'assistant', content: 'Command accepted.' }]);
+        }
     } catch (e) {
       setHistory(h => [...h, { role: 'assistant', content: 'Error: ' + (e as Error).message }]);
     } finally {
@@ -49,14 +59,8 @@ export default function GodConsole({ onClose, agents }: Props) {
     }
   };
 
-  const sendToFloor = (floorId: string) => {
-    setHistory(h => [...h, { role: 'user', content: `[GOD → ${floorId.toUpperCase()}] ${prompt}` }]);
-    // TODO: send actual message via API
-    setPrompt('');
-  };
 
   const floors = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12'];
-  const floorAgents = agents.filter(a => a.id.startsWith('f') || a.id.startsWith('specialist') || a.id.startsWith('worker'));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
