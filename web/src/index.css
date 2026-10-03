@@ -22,6 +22,7 @@
   --hud-green-soft: rgba(52, 211, 153, 0.12);
   --hud-red-soft: rgba(248, 113, 113, 0.12);
   --hud-cyan-soft: rgba(34, 211, 238, 0.12);
+  --hud-amber-soft: rgba(245, 166, 35, 0.12);
   --hud-edge-strong: #2f3949;
   --hud-panel-rgb: 18 22 31;
   --hud-edge-rgb: 35 42 56;
@@ -43,6 +44,7 @@
   --hud-green-soft: rgba(5, 150, 105, 0.10);
   --hud-red-soft: rgba(220, 38, 38, 0.10);
   --hud-cyan-soft: rgba(6, 182, 212, 0.10);
+  --hud-amber-soft: rgba(217, 119, 6, 0.10);
   --hud-edge-strong: #cbd5e1;
   --hud-panel-rgb: 255 255 255;
   --hud-edge-rgb: 226 232 240;
@@ -1492,4 +1494,110 @@ body {
 
 .text-blue {
   color: var(--hud-blue) !important;
+}
+
+/* ---- native shell chrome ----------------------------------------------------
+   Rendered only by NativeTitleStrip, which returns null unless the preload
+   bridge marked the document native. So none of this applies to a browser, and
+   the padding rule is scoped to html[data-native='1'] to keep the browser
+   window frame intact. The strip carries hive identity and push-layer state:
+   "live" and "stale" look identical in the body, which is exactly the case an
+   operator serving the HUD from a machine whose forward is down needs to see. */
+
+html[data-native='1'] body {
+  /* Reserve room for the inset traffic lights. */
+  padding-top: 28px;
+}
+
+html[data-native='1'] .hud-topbar {
+  -webkit-app-region: drag;
+}
+
+html[data-native='1'] .hud-topbar button,
+html[data-native='1'] .hud-topbar input,
+html[data-native='1'] .hud-topbar select {
+  /* A drag region swallows clicks, so every control inside it opts back out. */
+  -webkit-app-region: no-drag;
+}
+
+.hud-native-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0 0.75rem 0 5.25rem;
+  background: var(--hud-panel);
+  border-bottom: 1px solid var(--hud-edge);
+  font-family: ui-monospace, monospace;
+  font-size: 0.65rem;
+  color: var(--hud-dim);
+  z-index: 40;
+}
+
+.hud-native-strip-title {
+  color: var(--hud-amber);
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+.hud-native-strip-hive {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hud-connection {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--hud-edge);
+  border-radius: 999px;
+  background: var(--hud-surface);
+}
+
+.hud-connection-dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.hud-connection.is-live {
+  border-color: color-mix(in srgb, var(--hud-green) 32%, var(--hud-edge));
+  background: var(--hud-green-soft);
+  color: var(--hud-green);
+}
+
+.hud-connection.is-offline,
+.hud-connection.is-connecting {
+  border-color: color-mix(in srgb, var(--hud-amber) 32%, var(--hud-edge));
+  background: var(--hud-amber-soft);
+  color: var(--hud-amber);
+}
+
+.hud-connection.is-error {
+  border-color: color-mix(in srgb, var(--hud-red) 36%, var(--hud-edge));
+  background: var(--hud-red-soft);
+  color: var(--hud-red);
+}
+
+/* Referenced by the ported JarvisConsole rules below and by the native strip,
+   but never defined anywhere, so every one of those animations was a silent
+   no-op. Defined here rather than at each use site. */
+@keyframes hudPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.hud-connection.is-live .hud-connection-dot {
+  /* pulseDot, not the undefined hudPulse this referenced before: the dot is the
+     only live cue in the strip, so it has to actually move. */
+  box-shadow: 0 0 0 3px var(--hud-green-soft);
+  animation: pulseDot 2s ease-in-out infinite;
 }

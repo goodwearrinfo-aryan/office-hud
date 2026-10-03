@@ -28,6 +28,9 @@ import AutonomyPanel from './components/AutonomyPanel';
 import JarvisConsole from './components/JarvisConsole';
 import AlertRail from './components/AlertRail';
 import ExportButton from './components/ExportButton';
+import NativeTitleStrip, { type NativeConnectionTone } from './components/NativeTitleStrip';
+import { markNative, onShellCommand, parseDeepLink } from './native';
+import { useConnectionStatus } from './api';
 
 type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16';
 
@@ -48,6 +51,41 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  // Native shell: enable the titlebar drag region and route the menu's
+  // commands into the same state the keyboard handlers below already drive.
+  // Everything here is a no-op in a browser, where isNative() is false.
+  const connection = useConnectionStatus();
+  useEffect(() => {
+    if (!markNative()) return;
+    return onShellCommand((command, payload) => {
+      if (command === 'navigate' || command === 'focus-floor') {
+        const floor = (payload as { floor?: string } | null)?.floor;
+        if (floor) setFloor(floor as FloorId);
+        return;
+      }
+      if (command === 'command-palette') { setShowCommandPalette(true); return; }
+      if (command === 'toggle-theme') { setTheme(prev => prev === 'dark' ? 'light' : 'dark'); return; }
+      if (command === 'help') { setShowHelp(true); return; }
+      if (command === 'deep-link') {
+        const link = parseDeepLink(String(payload));
+        if (link?.floor) setFloor(link.floor as FloorId);
+        if (link?.agentId) setDrawerId(link.agentId);
+      }
+    });
+  }, []);
+
+  // The strip reports the push layer, not the last successful poll. A stale
+  // payload and a dead socket look identical in the body, and they are exactly
+  // the cases an operator serving the HUD locally needs to tell apart.
+  const connectionTone: NativeConnectionTone =
+    connection.state === 'live' ? 'is-live'
+    : connection.state === 'connecting' ? 'is-connecting'
+    : 'is-offline';
+  const connectionLabel =
+    connection.state === 'live' ? 'LIVE'
+    : connection.state === 'connecting' ? 'CONNECTING'
+    : 'OFFLINE';
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -153,6 +191,13 @@ export default function App() {
     <div className="h-screen w-screen flex flex-col bg-hud-bg text-hud-text font-ui">
       {/* Reachability: unreachable server, or serving cache */}
       <OfflineBanner />
+
+      {/* Native shell chrome. Null in a browser, so the web build is unchanged. */}
+      <NativeTitleStrip
+        label={summary?.label ?? null}
+        tone={connectionTone}
+        connectionLabel={connectionLabel}
+      />
 
       {/* Top Bar */}
       <header className="h-12 flex items-center justify-between px-4 border-b border-hud-edge bg-hud-panel">
