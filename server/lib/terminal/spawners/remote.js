@@ -169,7 +169,57 @@ function validateForPeer(command, cwd, peer, options = {}) {
  * without a second round trip. The record therefore reflects the ssh session,
  * which is what this host actually controls.
  */
-function spawn({ peer, argv, cwd, logFile, env, onExit }) {
+/**
+ * Discover a PATH on the PEER that can find development tools.
+ *
+ * Two facts make this necessary, both found by running it:
+ *
+ *  1. A non-interactive ssh session gets the login shell's default PATH, not the
+ *     operator's. On this laptop that is /Users/aryanagarwal/bin:/usr/bin:/bin:
+ *     /usr/sbin:/sbin -- no Homebrew, no Python framework -- so `pytest` and
+ *     `ruff` fail with exit 127 even though both are installed. Setting PATH on
+ *     the LOCAL ssh client does not help; ssh only forwards variables with
+ *     SendEnv, which is not configured, and the remote shell picks its own.
+ *
+ *  2. The PATH cannot be built from this machine's prefixes either. The two Macs
+ *     install different Python framework versions (3.9 here, 3.14 there), so a
+ *     locally-assembled PATH names directories the peer does not have.
+ *
+ * So the peer is asked, once, and the answer cached briefly.
+ */
+const pathCache = new Map(); // peer -> { at, path }
+const PEER_PATH_TTL_MS = 5 * 60 * 1000;
+
+function probePeerPath(peer, options = {}) {
+  const cached = pathCache.get(peer.name);
+  if (cached && Date.now() - cached.at < PEER_PATH_TTL_MS) return Promise.resolve(cached.path);
+  const probe = ['-o', 'BatchMode=yes', '-o', `ConnectTimeout=${options.timeoutSec || 10}`,
+    '-o', 'StrictHostKeyChecking=yes', peer.sshHost,
+    'echo "$PATH"; ls -d /Library/Frameworks/Python.framework/Versions/*/bin 2>/dev/null; ls -d /opt/homebrew/bin /usr/local/bin /opt/local/bin 2>/dev/null'];
+  return new Promise((resolve) => {
+    const child = spawnProcess('ssh', probe, { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } }, 15000);
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      const lines = out.split('\n').map((l) => l.trim()).filter(Boolean);
+      // Line 0 is the peer's own PATH; the rest are discovered bin dirs. The
+      // peer's PATH comes first so a tool the user already prefers wins.
+      const peerPath = lines[0] || '/usr/bin:/bin:/usr/sbin:/sbin';
+      const discovered = lines.slice(1).filter((l) => l.startsWith('/'));
+      const merged = [...new Set([...peerPath.split(':'), ...discovered, '/usr/bin', '/bin', '/usr/sbin', '/sbin'])]
+        .filter(Boolean).join(':');
+      if (code === 0) pathCache.set(peer.name, { at: Date.now(), path: merged });
+      resolve(merged);
+    });
+    child.on('error', () => { clearTimeout(timer); resolve('/usr/bin:/bin:/usr/sbin:/sbin'); });
+  });
+}
+
+function resetPathCache() { pathCache.clear(); }
+
+function spawn({ peer, argv, cwd, logFile, env, onExit, resolvedPath }) {
   if (!Array.isArray(argv) || !argv.length) throw new Error('remote spawn requires an argv array');
 
   const args = ['-F', String(process.env.REMOTE_SSH_CONFIG || path.join(os.homedir(), '.ssh', 'config'))];
@@ -185,7 +235,13 @@ function spawn({ peer, argv, cwd, logFile, env, onExit }) {
   // unquoted script arrives with no positional parameters at all ("shift count
   // must be <= $#"). Hence an explicit `sh -c`, the script quoted as one word,
   // then $0/cwd/argv each quoted so nothing becomes syntax.
+  // PATH is set on the REMOTE side. Setting it on the local ssh client does
+  // nothing: ssh forwards no environment without SendEnv, and the remote login
+  // shell would overwrite it anyway. `env PATH=... sh -c` sets it where it is
+  // actually read.
   const remoteCommand = [
+    'env',
+    `PATH=${shellQuote(resolvedPath || '/usr/bin:/bin:/usr/sbin:/sbin')}`,
     'sh',
     '-c',
     shellQuote(REMOTE_RUNNER),
@@ -210,10 +266,10 @@ function spawn({ peer, argv, cwd, logFile, env, onExit }) {
 
   const child = spawnProcess('ssh', args, {
     stdio: ['ignore', stream ? 'pipe' : 'ignore', stream ? 'pipe' : 'ignore'],
-    // The env is NOT forwarded wholesale: an ssh client needs very little, and
-    // passing this process's environment on would leak provider keys to a login
-    // shell on the peer.
-    env: { PATH: process.env.PATH || '/usr/bin/bin:/usr/sbin:/sbin', HOME: os.homedir() },
+    // Only PATH and HOME cross the wire: passing this process's environment on
+    // would leak provider keys into a login shell on the peer. PATH is built by
+    // peerPath() rather than forwarded, because the daemon's own PATH is bare.
+    env: { PATH: process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin', HOME: os.homedir() },
   });
 
   if (stream) {
@@ -272,6 +328,8 @@ async function probe(peer, options = {}) {
 module.exports = {
   REMOTE_RUNNER,
   shellQuote,
+  probePeerPath,
+  resetPathCache,
   DEFAULT_SSH,
   loadPeers,
   resetCache,

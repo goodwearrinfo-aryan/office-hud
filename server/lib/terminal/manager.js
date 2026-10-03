@@ -453,12 +453,20 @@ class TerminalManager {
     };
     this.registry.set(id, record);
     try {
+      // Ask the peer for a PATH that can find its own tools. A non-interactive
+      // ssh session gets the login shell's default PATH, which on this fleet has
+      // no Homebrew and no Python framework, so `pytest` and `ruff` would exit
+      // 127 despite being installed. Probed per peer and cached briefly, because
+      // the two Macs install different Python versions and a locally-built PATH
+      // would name directories the peer does not have.
+      const resolvedPath = await remoteSpawner.probePeerPath(peer);
       const child = remoteSpawner.spawn({
         peer,
         argv: verdict.argv,
         cwd: verdict.cwd,
         logFile,
         env: {},
+        resolvedPath,
         onExit: ({ code, signal: sig }) => {
           const live = this.registry.get(id);
           if (!live || live.status === 'killed') return;
