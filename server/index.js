@@ -2260,14 +2260,34 @@ function getVerifyState() {
   if (!st) return { present: false };
   const tally = st.verdict_tally || {};
   const scanned = (tally.OK || 0) + (tally.DODGE || 0) + (tally.SHORT || 0) + (tally.FAIL || 0) + (tally.EMPTY || 0);
-  const realWorkRatePct = scanned > 0 ? Math.round(((tally.OK || 0) / scanned) * 1000) / 10 : null;
+  // This ratio measures what fraction of scanned verdicts were OK -- that is all.
+  // It was previously published as realWorkRatePct, which claimed something it does
+  // not measure: whether a task did real work needs an independent verifier and a
+  // durable artifact, and this pipeline has neither. A pipeline that never emits
+  // junk scored 100% "real work" while verifying nothing.
+  //
+  // Named for what it is, with the denominator published alongside it, because a
+  // rate you cannot reason about is decoration. null when nothing was scanned:
+  // zero would claim nothing was OK, and a number would claim a measurement that
+  // never happened.
+  const outputQualityRatePct = scanned > 0 ? Math.round(((tally.OK || 0) / scanned) * 1000) / 10 : null;
   return {
     present: true,
     at: st.at,
     verdict_tally: tally,
+    verdict_tally_total: scanned,
     requeued: st.requeued || [],
     quarantined: st.quarantined || [],
-    realWorkRatePct,
+    outputQualityRatePct,
+    // Verified work is NOT MEASURED by this pipeline, and saying so is the point.
+    // All four are null rather than 0 or a number: 0 claims nothing was verified,
+    // and any figure would claim a measurement that never happened. The basis is
+    // published so a reader can tell "not measured" from "value missing".
+    verifiedWork: null,
+    verifiedWorkDenominator: null,
+    verificationCoverage: null,
+    verificationBasis: 'no independent verifier and no artifact ledger: verdict '
+      + 'tallies measure output quality, not whether work was real',
   };
 }
 

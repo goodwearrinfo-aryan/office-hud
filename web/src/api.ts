@@ -623,11 +623,22 @@ export interface PortalResponse {
 export interface VerifyState {
   present: boolean;
   at?: string;
-  verdict_tally?: { OK?: number; DODGE?: number; SHORT?: number; FAIL?: number; EMPTY?: number };
-  requeued?: Array<[string, string]>;
-  quarantined?: Array<[string, string]>;
-  realWorkRatePct?: number | null;
-}
+verdict_tally?: { OK?: number; DODGE?: number; SHORT?: number; FAIL?: number; EMPTY?: number };
+    verdict_tally_total?: number;
+    requeued?: Array<[string, string]>;
+    quarantined?: Array<[string, string]>;
+    /** Fraction of scanned verdicts that were OK. Measures output quality only. */
+    outputQualityRatePct?: number | null;
+    /**
+     * Verified work is not measured by this pipeline and is published as null.
+     * 0 would claim nothing was verified and a number would claim a measurement
+     * that never happened, so the honest value is "not measured" plus a reason.
+     */
+    verifiedWork?: number | null;
+    verifiedWorkDenominator?: number | null;
+    verificationCoverage?: number | null;
+    verificationBasis?: string;
+  }
 
 export interface AgentDetail {
   agent: Agent;
