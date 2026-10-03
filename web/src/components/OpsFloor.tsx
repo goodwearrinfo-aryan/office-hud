@@ -1,4 +1,6 @@
 import { useLive } from '../api';
+import AutopilotPanel from './AutopilotPanel';
+import FleetPerformancePanel from './FleetPerformancePanel';
 
 export default function OpsFloor() {
   return (
@@ -82,6 +84,17 @@ export default function OpsFloor() {
             <span className="badge badge-warning">MISSING</span>
           </div>
         </div>
+      </div>
+
+      {/*
+        The 24/7 self-improvement loop and the fleet roll-up. Both were built
+        earlier and had no surface anywhere in the UI, so neither could be seen
+        or operated from the HUD at all — this floor is where an operator acts on
+        them.
+      */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4">
+        <AutopilotPanel />
+        <FleetPerformancePanel />
       </div>
     </div>
   );

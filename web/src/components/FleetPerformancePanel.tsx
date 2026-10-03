@@ -4,12 +4,12 @@ import { useLive } from '../api';
  * Types are local to this panel so it adds nothing to ../api, which other
  * sessions edit.
  *
- * Note on the numbers below: quarantined tasks are shown as their own column
- * and are never folded into the completion rate. On the current hive roughly a
- * third of all tasks are quarantined, and averaging that into "completion" would
- * report a comfortable ~56% for a fleet that is in fact failing a third of what
- * it touches. If you find yourself wanting to merge those two numbers, that is
- * the reason this component is shaped this way.
+ * NOTE ON THE NUMBERS: quarantined tasks get their own column and are never
+ * folded into the completion rate. On the current hive roughly a third of all
+ * tasks are quarantined, and averaging that into "completion" would report a
+ * comfortable ~56% for a fleet that is in fact failing a third of what it
+ * touches. If you find yourself wanting to merge those two numbers, that is the
+ * reason this is shaped this way.
  */
 
 interface FleetAgentRow {
@@ -18,12 +18,10 @@ interface FleetAgentRow {
   complete: number;
   quarantined: number;
   inProgress: number;
-  preserved: number;
-  queued: number;
   completionRate: number | null;
   quarantineRate: number | null;
   lastActivityAt: string | null;
-  sessions: { healthy: number; stale: number; starting: number; unknown: number };
+  sessions: { healthy: number; stale: number };
 }
 
 interface FleetPerformance {
@@ -37,9 +35,8 @@ interface FleetPerformance {
     queued: number;
     completionRate: number | null;
     quarantineRate: number | null;
-    note: string;
   };
-  sessions: { total: number; healthy: number; stale: number; starting: number; staleRate: number | null };
+  sessions: { total: number; healthy: number; stale: number; staleRate: number | null };
   cost: { records: number; pricedRecords: number; unpricedRecords: number; totalUsd: number };
   agents: FleetAgentRow[];
 }
@@ -61,15 +58,15 @@ function ago(iso: string | null | undefined): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-/** Bar whose width is the rate, tinted by how bad the number is. */
+/** Proportional bar. `invert` tints by how BAD the number is, not how good. */
 function RateBar({ value, invert = false }: { value: number | null | undefined; invert?: boolean }) {
   const width = value === null || value === undefined ? 0 : Math.round(value * 100);
   const tone = invert
-    ? (value !== null && value > 0.25 ? 'is-bad' : 'is-ok')
-    : (value !== null && value < 0.5 ? 'is-warn' : 'is-ok');
+    ? (value !== null && value > 0.25 ? 'bg-hud-red' : 'bg-hud-green')
+    : (value !== null && value < 0.5 ? 'bg-hud-amber' : 'bg-hud-green');
   return (
-    <span className="fleetperf__bar" role="presentation">
-      <span className={`fleetperf__bar-fill ${tone}`} style={{ width: `${Math.max(0, Math.min(100, width))}%` }} />
+    <span className="block h-1.5 bg-hud-surface rounded-full overflow-hidden">
+      <span className={`block h-full ${tone}`} style={{ width: `${Math.max(0, Math.min(100, width))}%` }} />
     </span>
   );
 }
@@ -79,19 +76,19 @@ export default function FleetPerformancePanel() {
 
   if (loading && !data) {
     return (
-      <section className="fleetperf" aria-label="Fleet performance">
-        <h2 className="fleetperf__title">FLEET PERFORMANCE</h2>
-        <p className="fleetperf__hint">Reading…</p>
-      </section>
+      <div className="panel p-4">
+        <h3 className="font-mono text-hud-amber text-sm mb-3">FLEET PERFORMANCE</h3>
+        <p className="text-hud-dim text-sm">Reading…</p>
+      </div>
     );
   }
 
   if (error && !data) {
     return (
-      <section className="fleetperf" aria-label="Fleet performance">
-        <h2 className="fleetperf__title">FLEET PERFORMANCE</h2>
-        <p className="fleetperf__hint">Unavailable: {error}</p>
-      </section>
+      <div className="panel p-4">
+        <h3 className="font-mono text-hud-amber text-sm mb-3">FLEET PERFORMANCE</h3>
+        <p className="text-hud-red text-sm">Unavailable: {error}</p>
+      </div>
     );
   }
 
@@ -101,109 +98,114 @@ export default function FleetPerformancePanel() {
   const worst = agents.filter((a) => (a.quarantineRate ?? 0) > 0.25).slice(0, 8);
 
   return (
-    <section className="fleetperf" aria-label="Fleet performance">
-      <div className="fleetperf__head">
-        <h2 className="fleetperf__title">FLEET PERFORMANCE</h2>
-        <button type="button" onClick={() => { void refresh(); }}>Refresh</button>
+    <div className="panel p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-mono text-hud-amber text-sm">FLEET PERFORMANCE</h3>
+        <button type="button" className="badge badge-neutral cursor-pointer" onClick={() => { void refresh(); }}>
+          REFRESH
+        </button>
       </div>
 
-      <p className="fleetperf__blurb">
-        Rolled up from the hive at {ago(data.generatedAt)}. Read-only — nothing here changes fleet state.
+      <p className="text-hud-dim text-xs mb-3">
+        Rolled up from the hive {ago(data.generatedAt)}. Read-only — nothing here changes fleet state.
       </p>
 
-      <dl className="fleetperf__stats">
-        <div>
-          <dt>tasks</dt>
-          <dd>{numberFmt.format(tasks.total)}</dd>
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
+        <div className="panel p-3">
+          <div className="text-hud-dim text-xs">tasks</div>
+          <div className="text-lg">{numberFmt.format(tasks.total)}</div>
         </div>
-        <div>
-          <dt>complete</dt>
-          <dd>{numberFmt.format(tasks.complete)} <small>{pct(tasks.completionRate)}</small></dd>
+        <div className="panel p-3">
+          <div className="text-hud-dim text-xs">complete</div>
+          <div className="text-lg">
+            {numberFmt.format(tasks.complete)}{' '}
+            <span className="text-xs text-hud-dim">{pct(tasks.completionRate)}</span>
+          </div>
         </div>
-        <div className="is-alert">
-          <dt>quarantined</dt>
-          <dd>{numberFmt.format(tasks.quarantined)} <small>{pct(tasks.quarantineRate)}</small></dd>
+        <div className="panel p-3">
+          <div className="text-hud-dim text-xs">quarantined</div>
+          <div className="text-lg text-hud-red">
+            {numberFmt.format(tasks.quarantined)}{' '}
+            <span className="text-xs">{pct(tasks.quarantineRate)}</span>
+          </div>
         </div>
-        <div>
-          <dt>in progress</dt>
-          <dd>{numberFmt.format(tasks.inProgress)}</dd>
+        <div className="panel p-3">
+          <div className="text-hud-dim text-xs">in progress</div>
+          <div className="text-lg">{numberFmt.format(tasks.inProgress)}</div>
         </div>
-        <div>
-          <dt>sessions stale</dt>
-          <dd>{numberFmt.format(sessions.stale)} <small>{pct(sessions.staleRate)}</small></dd>
+        <div className="panel p-3">
+          <div className="text-hud-dim text-xs">sessions stale</div>
+          <div className="text-lg">
+            {numberFmt.format(sessions.stale)}{' '}
+            <span className="text-xs text-hud-dim">{pct(sessions.staleRate)}</span>
+          </div>
         </div>
-        <div>
-          <dt>spend</dt>
-          <dd>
+        <div className="panel p-3">
+          <div className="text-hud-dim text-xs">spend</div>
+          <div className="text-lg">
             ${cost.totalUsd.toFixed(2)}
-            <small>{cost.unpricedRecords > 0 ? `${cost.unpricedRecords} unpriced` : ''}</small>
-          </dd>
+            {cost.unpricedRecords > 0 && (
+              <span className="text-xs text-hud-dim block">{cost.unpricedRecords} unpriced</span>
+            )}
+          </div>
         </div>
-      </dl>
+      </div>
 
       {tasks.quarantineRate !== null && tasks.quarantineRate > 0.2 && (
-        <p className="fleetperf__warn">
-          {pct(tasks.quarantineRate)} of all tasks are quarantined. That is counted separately from completion
-          on purpose — it is not part of the {pct(tasks.completionRate)} completion rate above.
+        <p className="panel p-3 mb-3 text-sm border-l-2 border-hud-red">
+          <span className="text-hud-red">{pct(tasks.quarantineRate)}</span> of all tasks are
+          quarantined. That is counted separately from completion on purpose — it is not part of the{' '}
+          {pct(tasks.completionRate)} completion rate above.
         </p>
       )}
 
-      <h3 className="fleetperf__subtitle">Agents ({agents.length})</h3>
-      <table className="fleetperf__table">
-        <thead>
-          <tr>
-            <th scope="col">agent</th>
-            <th scope="col">tasks</th>
-            <th scope="col">done</th>
-            <th scope="col">quar</th>
-            <th scope="col">quarantine rate</th>
-            <th scope="col">sessions</th>
-            <th scope="col">last activity</th>
-          </tr>
-        </thead>
-        <tbody>
-          {agents.slice(0, 20).map((agent) => (
-            <tr key={agent.agentId}>
-              <th scope="row">{agent.agentId}</th>
-              <td>{numberFmt.format(agent.assigned)}</td>
-              <td>{numberFmt.format(agent.complete)}</td>
-              <td className={agent.quarantined > 0 ? 'is-alert' : undefined}>
-                {numberFmt.format(agent.quarantined)}
-              </td>
-              <td className="fleetperf__rate">
-                <RateBar value={agent.quarantineRate} invert />
-                <span>{pct(agent.quarantineRate)}</span>
-              </td>
-              <td>
-                <span className="fleetperf__sessions">
-                  {agent.sessions.healthy} ok / {agent.sessions.stale} stale
-                </span>
-              </td>
-              <td>{ago(agent.lastActivityAt)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {agents.length > 20 && (
-        <p className="fleetperf__hint">Showing the 20 busiest of {agents.length} agents with recorded tasks.</p>
+      <div className="text-hud-dim text-xs mb-2">AGENTS ({agents.length})</div>
+      <div className="space-y-1 mb-3">
+        {agents.slice(0, 15).map((agent) => (
+          <div key={agent.agentId} className="panel p-2">
+            <div className="flex items-center justify-between text-xs mb-1">
+              <span className="font-mono">{agent.agentId}</span>
+              <span className="text-hud-dim">
+                {numberFmt.format(agent.assigned)} tasks · {numberFmt.format(agent.complete)} done
+                {agent.quarantined > 0 && (
+                  <span className="text-hud-red"> · {numberFmt.format(agent.quarantined)} quar</span>
+                )}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <RateBar value={agent.quarantineRate} invert />
+              <span className="text-hud-dim text-xs whitespace-nowrap">
+                {pct(agent.quarantineRate)} quar · {agent.sessions.healthy}ok/{agent.sessions.stale}stale
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {agents.length > 15 && (
+        <p className="text-hud-dim text-xs mb-3">
+          Showing the 15 busiest of {agents.length} agents with recorded tasks.
+        </p>
       )}
 
       {worst.length > 0 && (
         <>
-          <h3 className="fleetperf__subtitle">Highest quarantine rates</h3>
-          <ul className="fleetperf__worst">
+          <div className="text-hud-dim text-xs mb-2">HIGHEST QUARANTINE RATES</div>
+          <div className="space-y-1 mb-2">
             {worst.map((agent) => (
-              <li key={agent.agentId}>
-                <strong>{agent.agentId}</strong> — {agent.quarantined} of {agent.assigned} quarantined
-                {' '}({pct(agent.quarantineRate)})
-              </li>
+              <div key={agent.agentId} className="flex items-center justify-between text-xs">
+                <span className="font-mono">{agent.agentId}</span>
+                <span className="text-hud-red">
+                  {agent.quarantined}/{agent.assigned} ({pct(agent.quarantineRate)})
+                </span>
+              </div>
             ))}
-          </ul>
-          <p className="fleetperf__hint">
-            Worth a look, not a verdict: a high rate can mean a noisy agent or a broken task source feeding it.
+          </div>
+          <p className="text-hud-dim text-xs">
+            Worth a look, not a verdict: a high rate can mean a noisy agent or a broken task source
+            feeding it.
           </p>
         </>
       )}
-    </section>
+    </div>
   );
 }
