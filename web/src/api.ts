@@ -127,13 +127,22 @@ export interface QueueSummary {
   verifiedComplete?: number;
   unverifiedComplete?: number;
   blocked?: number;
+  /**
+   * A task parked on an unmet dependency.
+   *
+   * `blocked_since` is what the server actually sends. This shape previously
+   * declared `waiting_on` and `blocked_at`, which the server has never emitted —
+   * so both resolved to undefined at runtime while type-checking cleanly, which
+   * is worse than not having declared them. `reason` is derived server-side and
+   * is honest about its own limits: when the record carries no cause it says
+   * "blocked with no reason recorded" rather than inventing one.
+   */
   blockedTasks?: Array<{
     task_id: string;
     title: string;
     assigned_agent: string | null;
-    waiting_on: string[] | null;
-    reason: string | null;
-    blocked_at: string | null;
+    reason: string;
+    blocked_since: string | null;
   }>;
   staleInProgress: number;
   byStatus: Record<string, number>;
