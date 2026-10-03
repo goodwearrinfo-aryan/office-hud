@@ -320,6 +320,86 @@ export interface ApiErrorBody {
   details?: unknown;
 }
 
+/**
+ * Runtime status of the managed Polymarket engine, from /api/polymarket/status.
+ *
+ * This payload had no TypeScript type at all, so it was fetched as an untyped
+ * blob. Every field below is required because the server builds them from a
+ * single object literal with no conditional spread — all thirteen are present on
+ * every response, whether or not the engine is installed. Optionality would be a
+ * lie here in the other direction: it would let a consumer treat "the engine is
+ * not installed" as "the server did not tell me".
+ *
+ * Nullability is not optionality. `paper_only`, `managed`, `running` and
+ * `execution_allowed` are required booleans, never null: the server derives them
+ * from `plistValid && !configResult.error && ...`, which always yields a boolean.
+ * A consumer gating on them is gating on a fact, not on missing data.
+ *
+ * The three error/identity fields that CAN be null are typed `| null` because the
+ * server genuinely sends null: a missing launchd service has no pid and no path,
+ * and an unreadable config reports `error: null` rather than omitting itself.
+ *
+ * `paper_only` and `execution_allowed` are the paper/testnet boundary. The server
+ * requires paper_only before it will start anything
+ * (`POST /api/polymarket/start` returns paper_only_required otherwise) and
+ * execution_allowed is only true when the plist, config and loaded state all
+ * hold. Both are typed as plain required booleans so that fact cannot be lost in
+ * an optional chain.
+ */
+export interface PolymarketStatus {
+  /** ISO timestamp of the probe. */
+  checked_at: string;
+  /** Absolute path the server expects the engine script at. */
+  engine_path: string;
+  /** Same path, reported separately so a mismatch is visible rather than inferred. */
+  expected_engine_path: string;
+  /** The plist the server expects to be loaded from. */
+  expected_plist_path: string;
+  /**
+   * True only when the plist is valid, carries `--paper`, has no unsafe
+   * (--live/--real/--mainnet/--testnet) argument, and the config agrees.
+   */
+  paper_only: boolean;
+  /** The engine has a valid plist and a readable config. */
+  managed: boolean;
+  /** A process matching the engine path was found. */
+  running: boolean;
+  /** PID of the first matching process, or null when not running. */
+  pid: number | null;
+  /** Every matching pid and its command line. Empty when not running. */
+  process: {
+    pids: number[];
+    commands: (string | null)[];
+  };
+  /** What launchctl reports for the managed label, plus what was expected. */
+  launchd: {
+    loaded: boolean;
+    state: string;
+    pid: number | null;
+    path: string | null;
+    error: string | null;
+    expected_path: string;
+    expected_loaded: boolean;
+  };
+  /** polymarket_config.json as read, if any. */
+  config: {
+    present: boolean;
+    path: string;
+    error: string | null;
+  };
+  /** The installed plist, validated against the expected shape. */
+  plist: {
+    valid: boolean;
+    error: string | null;
+    path: string;
+  };
+  /**
+   * True only when paper-only is satisfied AND the expected plist is loaded.
+   * False here means no live order path is authorised.
+   */
+  execution_allowed: boolean;
+}
+
 export interface ApiErrorResponse {
   ok?: boolean;
   error?: ApiErrorBody | string;
