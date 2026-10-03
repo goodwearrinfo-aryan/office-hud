@@ -13,6 +13,10 @@ const FLOORS = [
   { id: 'f10', label: 'F10', name: 'Knowledge', badge: (_s: Summary, _q: QueueSummary | null) => 0 },
   { id: 'f11', label: 'F11', name: 'Risk Metrics', badge: (_s: Summary, _q: QueueSummary | null) => 0 },
   { id: 'f12', label: 'F12', name: 'Knowledge Graph', badge: (_s: Summary, _q: QueueSummary | null) => 0 },
+  { id: 'f13', label: 'F13', name: 'Time Machine', badge: (_s: Summary, _q: QueueSummary | null) => 0 },
+  { id: 'f14', label: 'F14', name: 'Validation', badge: (_s: Summary, _q: QueueSummary | null) => 0 },
+  { id: 'f15', label: 'F15', name: 'Combined Portfolio', badge: (_s: Summary, _q: QueueSummary | null) => 0 },
+  { id: 'f16', label: 'F16', name: 'Overview', badge: (_s: Summary, _q: QueueSummary | null) => 0 },
 ] as const;
 
 type FloorId = typeof FLOORS[number]['id'];
@@ -57,7 +61,7 @@ export default function FloorNav({ current, onChange, summary }: Props) {
         ))}
       </div>
       <div className="p-3 border-t border-hud-edge text-[10px] font-mono text-hud-dim">
-        <kbd className="bg-hud-edge px-1.5 py-0.5 rounded mr-1">1</kbd>–<kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">0</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">-</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">=</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">Bksp</kbd> switch floors
+        <kbd className="bg-hud-edge px-1.5 py-0.5 rounded mr-1">1</kbd>–<kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">0</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">-</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">=</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">Bksp</kbd> switch floors · <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">[</kbd>+<kbd className="bg-hud-edge px-1.5 py-0.5 rounded">3</kbd>–<kbd className="bg-hud-edge px-1.5 py-0.5 rounded">6</kbd> for F13–F16
       </div>
     </nav>
   );

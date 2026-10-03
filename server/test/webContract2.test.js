@@ -135,13 +135,27 @@ test('ServicePort now declares attempts, which the server sends', () => {
 
 // ---------------------------------------------------------------- verify tree
 
-test('/api/verify: VerifyState agrees with the payload', () => {
+test('/api/verify: VerifyState agrees with the payload', (t) => {
+  // getVerifyState() answers `{ present: false }` and nothing else when the hive
+  // has no verify_state.json. That is not a contract violation -- it is the route
+  // correctly reporting absence -- so comparing it against VerifyState would fail
+  // for a machine with no fleet on it, and the tempting "fix" (dropping at,
+  // verdict_tally, requeued and quarantined from api.ts) would delete the real
+  // contract to match an empty directory.
+  if (live['/api/verify'].present === false) {
+    t.skip('live hive has no verify_state.json, so /api/verify reports absence rather than a payload');
+    return;
+  }
   assertAgrees('VerifyState', live['/api/verify']);
 });
 
-test('verdict_tally is a real tally, not an empty stub', () => {
+test('verdict_tally is a real tally, not an empty stub', (t) => {
   // Guards against the vacuous case: an empty object would satisfy every
   // structural assertion above while proving nothing.
+  if (live['/api/verify'].present === false) {
+    t.skip('live hive has no verify_state.json, so there is no tally to inspect');
+    return;
+  }
   const tally = live['/api/verify'].verdict_tally;
   assert.ok(tally && typeof tally === 'object', 'verdict_tally must be an object');
   const total = Object.values(tally).reduce((n, v) => n + (Number(v) || 0), 0);

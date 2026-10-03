@@ -37,6 +37,7 @@ const FLEET_ROOT = path.dirname(HIVE);
 const { isLocalRequest } = require('./lib/local_only');
 const { TerminalManager } = require('./lib/terminal/manager');
 const { redactCommand, redactEntry, redactAll } = require('./lib/redact');
+const alphaInsiderStats = require('./alphainsider_stats_route');
 
 const terminalManager = new TerminalManager({ hive: HIVE });
 const POLYMARKET_ROOT = '/Users/a/polymarket';
@@ -1965,8 +1966,12 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.get('/api/alphainsider/status', (_req, res) => proxyFreeHarnessJson('/alphainsider/status', res));
-app.get('/api/alphainsider/strategies', (_req, res) => proxyFreeHarnessJson('/alphainsider/strategies', res));
-app.get('/api/alphainsider/positions', (req, res) => proxyFreeHarnessJson('/alphainsider/positions', res, { strategy_id: req.query.strategy_id }));
+  app.get('/api/alphainsider/strategies', (_req, res) => proxyFreeHarnessJson('/alphainsider/strategies', res));
+  app.get('/api/alphainsider/positions', (req, res) => proxyFreeHarnessJson('/alphainsider/positions', res, { strategy_id: req.query.strategy_id }));
+
+  // The poller/trader stats feed lives in its own file precisely so a rewrite of
+  // this one cannot silently drop it. AlphaInsiderPanel still reads it.
+  alphaInsiderStats.register(app);
 
 app.get('/api/summary', (_req, res) => {
   res.json(buildSnapshot('summary'));
