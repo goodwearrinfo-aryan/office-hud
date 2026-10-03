@@ -310,7 +310,28 @@ function getFleet() {
   return readJsonCached(path.join(HIVE, 'fleet.json'), { ts: null, agents: [] });
 }
 
-function getRegistry() {
+// How old a roster reading may be before it stops being evidence about now.
+// Fifteen minutes is comfortably longer than the collector cadence, so a
+// slightly late write is still fresh and a genuinely frozen file is not.
+const ROSTER_STALE_SECONDS = 900;
+
+function rosterFreshness(fleet) {
+  const recorded = fleet ? (fleet.ts ?? fleet.updated_at) : null;
+  const observedAt = timestampMs(recorded);
+  if (observedAt == null) {
+    // Unmeasurable is not fresh. A roster whose age cannot be established is
+    // reported stale and not live rather than given the benefit of the doubt,
+    // which is the exact failure this contract exists to prevent.
+    return { stale: true, live: false, age_seconds: null, observed_at: null,
+             stale_after_seconds: ROSTER_STALE_SECONDS };
+  }
+const age = Math.max(0, Math.round((Date.now() - observedAt) / 1000));
+    const stale = age > ROSTER_STALE_SECONDS;
+    return { stale, live: !stale, age_seconds: age, observed_at: observedAt,
+             stale_after_seconds: ROSTER_STALE_SECONDS };
+  }
+
+  function getRegistry() {
   return readJsonCached(path.join(HIVE, 'registry.json'), { godId: null, agents: {} });
 }
 
@@ -2930,7 +2951,19 @@ function build(name, produce, options = {}) {
 const RESOURCES = {
   summary: build('summary', () => {
     const agents = mergedAgents();
-    return { ...hiveStatus(), fleet: getFleet(), godId: getRegistry().godId, agents, floors: rollupFloors(agents) };
+    const roster = getFleet();
+    const rosterAge = rosterFreshness(roster);
+    // Each agent inherits breaker and the counters from this roster, so each row
+    // carries the age of the observation it inherited them from. Same measurement as
+    // fleet.stale, surfaced where it is used -- not a second contract. It
+    // deliberately does not touch status or display, which stay live-derived.
+    for (const a of agents) {
+      if (!a) continue;
+      a.rosterStale = rosterAge.stale;
+      a.rosterAgeSeconds = rosterAge.age_seconds;
+      a.rosterObservedAt = rosterAge.observed_at;
+    }
+    return { ...hiveStatus(), fleet: { ...roster, ...rosterAge }, godId: getRegistry().godId, agents, floors: rollupFloors(agents) };
   }),
   agents: build('agents', () => ({ agents: mergedAgents() })),
   queue: build('queue', () => getQueueSummary()),
