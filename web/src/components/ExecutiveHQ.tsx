@@ -28,6 +28,13 @@ export default function ExecutiveHQ() {
   const alerts = [
     queue?.staleInProgress ? `${queue.staleInProgress} stale task claims` : null,
     queue?.failedLastHour ? `${queue.failedLastHour} failed LLM completions this hour` : null,
+    // Unverified completions are the number an operator needs in order to
+    // distrust a completion rate. A COMPLETE status is a claim, not proof, and
+    // `complete` above counts claims.
+    queue && queue.unverifiedComplete
+      ? `${queue.unverifiedComplete} completion(s) recorded with no durable evidence`
+      : null,
+    queue?.blocked ? `${queue.blocked} task(s) blocked on an unmet dependency` : null,
     harness && !harness.ok ? `Free harness offline: ${harness.error ?? 'health check failed'}` : null,
     officeManager && !officeManager.running ? 'Office Manager has no live session' : null,
   ].filter(Boolean) as string[];
@@ -44,7 +51,28 @@ export default function ExecutiveHQ() {
         <div className="panel p-4">
           <div className="text-xs text-hud-dim">TASK QUEUE</div>
           <div className="text-3xl font-mono font-bold text-hud-blue">{queue?.queued ?? 0}</div>
-          <div className="text-xs text-hud-dim">{queue?.inProgress ?? 0} in progress · {queue?.complete ?? 0} complete</div>
+          {/*
+            `complete` is the raw count of tasks whose status says COMPLETE, which
+            is a claim by the executor rather than proof of work. `verified` is
+            the subset with durable recorded output, so it is the only one of the
+            two that means "done". Both are shown because hiding either is how a
+            56% headline turns out to be a third of the work quarantined.
+          */}
+          <div className="text-xs text-hud-dim">
+            {queue?.inProgress ?? 0} in progress · {queue?.complete ?? 0} claimed complete
+          </div>
+          <div className="text-xs text-hud-dim">
+            <span className="text-hud-green">{queue?.verifiedComplete ?? 0} verified</span>
+            {queue?.unverifiedComplete
+              ? ` · ${queue.unverifiedComplete} unverified`
+              : ''}
+          </div>
+          {queue?.quarantined ? (
+            <div className="text-xs text-hud-red">{queue.quarantined} quarantined</div>
+          ) : null}
+          {queue?.blocked ? (
+            <div className="text-xs text-hud-amber">{queue.blocked} blocked</div>
+          ) : null}
         </div>
         <div className="panel p-4">
           <div className="text-xs text-hud-dim">SESSIONS</div>

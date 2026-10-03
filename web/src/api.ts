@@ -117,6 +117,15 @@ export interface QueueSummary {
   complete: number;
   failed: number;
   quarantined?: number;
+  /**
+   * COMPLETE is a status the executor writes, so it is a claim rather than
+   * proof. `verifiedComplete` is the subset carrying durable recorded output and
+   * `unverifiedComplete` is the residue; they and `completedButFailed` partition
+   * `complete`. None of these are inferred from the absence of a failure marker.
+   */
+  completedButFailed?: number;
+  verifiedComplete?: number;
+  unverifiedComplete?: number;
   blocked?: number;
   blockedTasks?: Array<{
     task_id: string;
