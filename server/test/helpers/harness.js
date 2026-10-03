@@ -132,8 +132,19 @@ function makeFixtureHive(options = {}) {
 function loadServer(hive) {
   process.env.OFFICE_HUD_HIVE = hive;
   process.env.PORT = '0';
+  // Bust the require cache for index.js and everything it pulls in. HIVE is
+  // captured at module scope, so a second loadServer() that reuses the cached
+  // module returns the FIRST instance and every fixture is silently served hive
+  // A's data. Measured before this: hives holding 11 and 77 events both reported
+  // 11 completions, with nothing failing loudly.
+  const root = path.join(__dirname, '..', '..');
+  for (const key of Object.keys(require.cache)) {
+    if (key.startsWith(root) && !key.includes(`${path.sep}test${path.sep}`)) {
+      delete require.cache[key];
+    }
+  }
   // eslint-disable-next-line global-require
-  return require(path.join(__dirname, '..', '..', 'index.js'));
+  return require(path.join(root, 'index.js'));
 }
 
 /** Boot the app on an ephemeral port and return a fetch helper. */
