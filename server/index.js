@@ -2846,7 +2846,19 @@ app.post('/api/terminals/:id/signal', async (req, res) => {
   }
 });
 
-function getProcesses() {
+app.post('/api/terminals/:id/input', async (req, res) => {
+    if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'typing into a terminal happens on this machine; available only from the local HUD');
+    if (terminalGuard(req, res)) return;
+    try {
+      const body = req.body || {};
+      const terminal = await terminalManager.writeInput(req.params.id, body.text, { enter: body.enter !== false });
+      res.json({ ok: true, terminal });
+    } catch (error) {
+      sendError(res, error.statusCode || 500, 'TERMINAL_INPUT_FAILED', error.message);
+    }
+  });
+
+  function getProcesses() {
   const doc = readJson(path.join(HIVE, 'processes.json'), { processes: [] });
   // Same reasoning as terminalSnapshot: the hive keeps the real command line,
   // the served copy does not. These are real process command lines, so a token

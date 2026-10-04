@@ -35,6 +35,9 @@ const remoteSpawner = require('./spawners/remote');
 const STATE_FILE = 'spawned_terminals.json';
 const TYPES = ['tmux', 'background', 'orchestrate', 'remote'];
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP'];
+// A keystroke burst is a line of typing, not a file upload. Bounded so one
+// request cannot push an unbounded string into a pane.
+const MAX_INPUT_BYTES = 8 * 1024;
 const DEFAULTS = {
   maxConcurrent: 100,
   reapAfterHours: 24,
@@ -592,7 +595,43 @@ class TerminalManager {
     return record;
   }
 
-  // ------------------------------------------------------------------- output
+  /**
+     * Deliver typed input to a running terminal.
+     *
+     * Only tmux terminals accept input. A background terminal is a one-shot
+     * command whose stdin this process does not keep a handle on, and the
+     * allowlist deliberately refuses to spawn an interactive shell -- so the
+     * interactive surface is a tmux session running a command that was already
+     * validated at spawn time. This widens what you can *type*, never what can
+     * be *started*.
+     *
+     * `enter` defaults to true so a submitted line behaves the same whether it
+     * came through the route or straight from a caller; pass enter:false to
+     * type without submitting (partial input, or a program that needs the key).
+     */
+    async writeInput(id, text, { enter = true } = {}) {
+      const record = this.registry.get(id);
+      if (!record) throw Object.assign(new Error(`unknown terminal ${id}`), { statusCode: 404 });
+      if (record.status !== 'running' && record.status !== 'starting') {
+        throw Object.assign(new Error(`terminal ${id} is ${record.status}, not accepting input`), { statusCode: 409 });
+      }
+      const value = String(text ?? '');
+      if (!value) throw Object.assign(new Error('input text is required'), { statusCode: 400 });
+      if (value.length > MAX_INPUT_BYTES) {
+        throw Object.assign(new Error(`input exceeds ${MAX_INPUT_BYTES} bytes`), { statusCode: 413 });
+      }
+      if (record.type !== 'tmux') {
+        throw Object.assign(
+          new Error(`input is not supported for ${record.type} terminals; spawn a tmux terminal to type into it`),
+          { statusCode: 400 },
+        );
+      }
+      if (enter) await tmuxSpawner.sendLine(record.tmuxSession, value);
+      else await tmuxSpawner.sendText(record.tmuxSession, value);
+      return record;
+    }
+
+    // ------------------------------------------------------------------- output
 
   logs(id, options = {}) {
     const record = this.registry.get(id);
