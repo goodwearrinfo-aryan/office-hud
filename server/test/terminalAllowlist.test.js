@@ -181,6 +181,30 @@ test('an explicit NVM_BIN outranks the generic prefixes', () => {
   }
 });
 
+test('the pinned node is promoted even when PATH already lists it later', () => {
+  // The real shape of the bug: PATH already contains the pinned directory, but
+  // behind an install prefix. A rule that skips "what is already present" leaves
+  // the pin there, so a different node wins. /usr/bin is on PATH and is NOT one
+  // of the generic prefixes, which makes it a clean stand-in for the pin.
+  const savedPath = process.env.PATH;
+  const savedBin = process.env.NVM_BIN;
+  process.env.PATH = '/opt/homebrew/bin:/usr/bin:/bin';
+  process.env.NVM_BIN = '/usr/bin';
+  try {
+    const env = allowlist.buildEnv({}, { hive: path.join(ok, 'hive') });
+    const dirs = env.PATH.split(':');
+    assert.equal(dirs[0], '/usr/bin', 'the pin is promoted to the front');
+    assert.equal(dirs.filter((d) => d === '/usr/bin').length, 1, 'listed exactly once');
+    // The operator's other entries survive, in their original relative order.
+    const kept = dirs.filter((d) => ['/opt/homebrew/bin', '/bin'].includes(d));
+    assert.deepEqual(kept, ['/opt/homebrew/bin', '/bin'], 'original order preserved');
+  } finally {
+    process.env.PATH = savedPath;
+    if (savedBin === undefined) delete process.env.NVM_BIN;
+    else process.env.NVM_BIN = savedBin;
+  }
+});
+
 test('a launched shell can find the toolchain even when PATH came from launchd', () => {
   // What launchd actually hands this server. A child that inherits it cannot
   // run `node`, `opencode` or `gh`, so a working terminal looks broken.
