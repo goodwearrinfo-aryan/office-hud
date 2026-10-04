@@ -150,12 +150,39 @@ export interface TerminalHost {
   processes: HostProcessRow[];
 }
 
+/**
+ * Whether the HUD can start a terminal on the machine serving it.
+ *
+ * Reported because the alternative is invisible. The policy file travels with the
+ * hive, so its `cwdPrefixes` are absolute paths on whichever machine wrote them,
+ * and a policy synced to a machine it does not describe refuses every spawn while
+ * looking identical to "spawning is disabled". The audit is read-only and loosens
+ * nothing.
+ */
+export interface SpawnPolicyAudit {
+  source: string;
+  policy_path: string;
+  policy_file_present: boolean;
+  readable?: boolean;
+  error?: string | null;
+  this_machine: string;
+  home: string;
+  permitted_trees: string[];
+  missing_trees: string[];
+  /** Trees that exist but sit outside this machine's home: legal, and named apart. */
+  foreign_trees?: string[];
+  /** The only field a UI should branch on. */
+  effect: 'permitted' | 'partial' | 'none_permitted' | 'no_policy_file' | 'unreadable_policy';
+  summary: string;
+}
+
 export interface TerminalsPayload {
   hosts: TerminalHost[];
   /** Hosts currently flagged stale, by name. */
   stale_hosts: string[];
   terminals: Array<Record<string, unknown>>;
   sessions: Array<Record<string, unknown>>;
+  spawn_policy?: SpawnPolicyAudit;
 }
 
 /**
