@@ -177,6 +177,29 @@ async function sendLine(session, text, options = {}) {
   return true;
 }
 
+/**
+ * Send text to the pane as literal keystrokes.
+ *
+ * `sendKeys` splits its argument on spaces, which is right for a key name
+ * (`C-c`) and wrong for typed text: a space in the input would become an
+ * argument separator, and any shell metacharacter would be interpreted by tmux
+ * rather than typed. `-l` is tmux's literal mode -- the string is delivered to
+ * the pane exactly as given.
+ */
+async function sendText(session, text, options = {}) {
+  const value = String(text ?? '');
+  if (!value) return false;
+  await tmux(['send-keys', '-t', `=${session}`, '-l', '--', value], options);
+  return true;
+}
+
+/** Deliver `text` followed by a Return, i.e. submit the line. */
+async function sendLine(session, text, options = {}) {
+  await sendText(session, text, options);
+  await tmux(['send-keys', '-t', `=${session}`, 'Enter'], options);
+  return true;
+}
+
 const capture = (session, lines = 200) =>
   tmux(['capture-pane', '-p', '-t', session, '-S', `-${Math.max(1, Number(lines) || 200)}`]);
 
