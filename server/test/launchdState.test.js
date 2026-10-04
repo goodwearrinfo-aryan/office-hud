@@ -4,9 +4,14 @@
 // the HTTP surface.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadServer } = require('./helpers/harness');
+const { loadServer, makeFixtureHive } = require('./helpers/harness');
 
-const server = loadServer();
+// loadServer() with no argument used to set OFFICE_HUD_HIVE to the truthy
+// string "undefined", pointing the server at ./undefined/ -- so these
+// assertions silently ran against an empty hive. The harness now
+// refuses that; pass a real fixture even though these suites only
+// exercise pure functions.
+const server = loadServer(makeFixtureHive().hive);
 const { parseLaunchctlList } = server.internals;
 
 const HEADER = 'PID\tStatus\tLabel';

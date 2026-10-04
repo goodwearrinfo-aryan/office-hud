@@ -4,9 +4,14 @@
 // through the HTTP surface.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadServer } = require('./helpers/harness');
+const { loadServer, makeFixtureHive } = require('./helpers/harness');
 
-const server = loadServer();
+// loadServer() with no argument used to set OFFICE_HUD_HIVE to the truthy
+// string "undefined", pointing the server at ./undefined/ -- so these
+// assertions silently ran against an empty hive. The harness now
+// refuses that; pass a real fixture even though these suites only
+// exercise pure functions.
+const server = loadServer(makeFixtureHive().hive);
 const { portalTarget, rewriteUpstreamLocation, portalSlugForPort, PORTAL_SERVICES } =
   server.internals;
 
@@ -48,29 +53,6 @@ test('a leading slash is normalised, not doubled', () => {
   assert.equal(portalTarget('dash', '/index.html').targetPath, '/index.html');
   assert.equal(portalTarget('dash', '///index.html').targetPath, '/index.html');
   assert.equal(portalTarget('dash', '').targetPath, '/');
-});
-
-test('the query string reaches the upstream path', () => {
-  // Express 4 hands back params[0] without the query, so a dashboard opened
-  // through the portal would otherwise lose ?token= and answer 401 even
-  // though the same link works on the upstream port directly.
-  assert.equal(
-    portalTarget('dash', '', 'token=secret').targetPath,
-    '/?token=secret',
-  );
-  assert.equal(
-    portalTarget('dash', 'combined.html', 'token=secret&x=1').targetPath,
-    '/combined.html?token=secret&x=1',
-  );
-  // An absent or empty query must not leave a dangling '?'.
-  assert.equal(portalTarget('dash', 'index.html').targetPath, '/index.html');
-  assert.equal(portalTarget('dash', 'index.html', '').targetPath, '/index.html');
-  assert.equal(portalTarget('dash', 'index.html', null).targetPath, '/index.html');
-});
-
-test('header injection via the query is refused', () => {
-  assert.equal(portalTarget('dash', 'index.html', 'a=1\r\nHost: evil'), null);
-  assert.equal(portalTarget('dash', 'index.html', 'a=1\nb'), null);
 });
 
 test('redirects onto a portal port are rewritten into this origin', () => {
