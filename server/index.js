@@ -3127,18 +3127,45 @@ function resolveResource(name) {
   };
 }
 
-function buildSnapshot(name) {
-  const resource = resolveResource(name);
-  if (!resource) throw requestError(`Unknown resource ${name}`, 404);
-  try {
-    return resource.produce();
-  } catch (error) {
-    // A hive missing a library (llm/, recovery/) must degrade to a payload the
-    // UI can render, not a 500 for the whole panel.
-    if (resource.onError) return resource.onError(error);
-    throw error;
+// Probed resources -- the ones declared with an explicit signature -- are
+  // memoised briefly. They cost a network round trip each: /health is a 2s-timeout
+  // fetch, so two reads of the same resource in quick succession can straddle that
+  // timeout and return different payloads. Under the full suite the harness has
+  // been observed answering in 2.578s, which is what makes resources.test.js's
+  // "/api/harness/health and /api/live/harness agree" fail intermittently and never
+  // when that file runs alone. That is a HUD lying about its own contract: the same
+  // resource changing shape depending on latency.
+  //
+  // Only signature-bearing resources are memoised. Everything else is read from the
+  // hive on every call, which is what the write-then-read tests depend on -- and
+  // build() already declares minIntervalMs and signature for exactly this purpose.
+  const probeCache = new Map();
+  const PROBE_CACHE_MS = 5000;
+
+  function buildSnapshot(name) {
+    const resource = resolveResource(name);
+    if (!resource) throw requestError(`Unknown resource ${name}`, 404);
+    if (!resource.signature) {
+      try {
+        return resource.produce();
+      } catch (error) {
+        // A hive missing a library (llm/, recovery/) must degrade to a payload the
+        // UI can render, not a 500 for the whole panel.
+        if (resource.onError) return resource.onError(error);
+        throw error;
+      }
+    }
+    const hit = probeCache.get(name);
+    if (hit && Date.now() - hit.at < PROBE_CACHE_MS) return hit.value;
+    try {
+      const value = resource.produce();
+      probeCache.set(name, { at: Date.now(), value });
+      return value;
+    } catch (error) {
+      if (resource.onError) return resource.onError(error);
+      throw error;
+    }
   }
-}
 
 const buildSnapshotAsync = (name) => Promise.resolve(buildSnapshot(name));
 
