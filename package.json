@@ -1,14 +1,14 @@
 {
   "name": "office-hud",
   "version": "0.1.0",
-  "description": "Your own agent office \u2014 live HUD over an openalice-fleet hive",
+  "description": "Your own agent office — live HUD over an openalice-fleet hive",
   "private": true,
   "scripts": {
     "dev": "concurrently \"npm run -w server dev\" \"npm run -w web dev\"",
     "build": "npm run -w web build",
     "start": "node server/index.js",
     "make:app": "node scripts/make-app.js",
-    "test": "node --test --experimental-strip-types \"server/test/*.test.js\" \"server/test/*.test.ts\"",
+    "test": "node --test --experimental-strip-types --test-timeout=100000 \"server/test/*.test.js\" \"server/test/*.test.ts\"",
     "test:watch": "node --test --watch \"server/test/*.test.js\"",
     "test:server": "node --test \"server/test/*.test.js\"",
     "test:store": "node --test --experimental-strip-types server/test/store.test.ts",
