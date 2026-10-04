@@ -360,7 +360,7 @@ function augmentedPath(current, policy) {
     if (!isDir(dir)) return;
     lead.push(dir);
   };
-  // nvm installs node under a version directory, so it cannot be named as a
+// nvm installs node under a version directory, so it cannot be named as a
   // literal prefix. An explicit NVM_BIN goes FIRST: it is a deliberate pin, and
   // it must outrank the generic prefixes below. Homebrew ships its own node, so
   // putting /opt/homebrew/bin ahead of the pin silently runs spawned code on a
