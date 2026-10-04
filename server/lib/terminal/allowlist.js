@@ -360,10 +360,11 @@ function augmentedPath(current, policy) {
     if (!isDir(dir)) return;
     lead.push(dir);
   };
-  for (const dir of policy.pathPrefixes || DEFAULTS.pathPrefixes) add(dir);
-  // nvm installs node under a version directory, so it cannot be named as a
-  // literal prefix. Prefer the shell's own NVM_BIN; otherwise take the newest
-  // installed version. Only one, or PATH would depend on install order.
+// nvm installs node under a version directory, so it cannot be named as a
+  // literal prefix. An explicit NVM_BIN goes FIRST: it is a deliberate pin, and
+  // it must outrank the generic prefixes below. Homebrew ships its own node, so
+  // putting /opt/homebrew/bin ahead of the pin silently runs spawned code on a
+  // different runtime than the one this server was tested on.
   const home = os.homedir();
   if (process.env.NVM_BIN) {
     add(process.env.NVM_BIN);
@@ -376,6 +377,7 @@ function augmentedPath(current, policy) {
       if (newest) add(`${home}/.nvm/versions/node/${newest}/bin`);
     } catch { /* nvm is not installed on this machine */ }
   }
+  for (const dir of policy.pathPrefixes || DEFAULTS.pathPrefixes) add(dir);
   return [...lead, ...existing].join(':');
 }
 

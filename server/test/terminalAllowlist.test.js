@@ -159,6 +159,28 @@ test('the child environment carries no provider keys', () => {
   delete process.env.SOME_FAKE_PROVIDER_KEY;
 });
 
+test('an explicit NVM_BIN outranks the generic prefixes', () => {
+  // Homebrew ships its own node. If /opt/homebrew/bin is prepended ahead of the
+  // pin, spawned code silently runs on a different runtime than the server.
+  const savedPath = process.env.PATH;
+  const savedBin = process.env.NVM_BIN;
+  process.env.PATH = '/usr/bin:/bin';
+  process.env.NVM_BIN = '/opt/homebrew/bin'; // stands in for a pinned dir
+  try {
+    const env = allowlist.buildEnv({}, { hive: path.join(ok, 'hive') });
+    assert.equal(env.PATH.split(':')[0], '/opt/homebrew/bin', 'the pin comes first');
+    assert.equal(
+      env.PATH.split(':').filter((d) => d === '/opt/homebrew/bin').length,
+      1,
+      'and is not also repeated as a generic prefix',
+    );
+  } finally {
+    process.env.PATH = savedPath;
+    if (savedBin === undefined) delete process.env.NVM_BIN;
+    else process.env.NVM_BIN = savedBin;
+  }
+});
+
 test('a launched shell can find the toolchain even when PATH came from launchd', () => {
   // What launchd actually hands this server. A child that inherits it cannot
   // run `node`, `opencode` or `gh`, so a working terminal looks broken.
