@@ -609,3 +609,125 @@ test('health surfaces timeouts and the ceiling without opening each record', asy
   assert.equal(health.timed_out, 1, 'a timeout is countable without inspecting records');
   assert.equal(health.command_timeout_ms, 90000, 'the ceiling in force is visible');
 });
+
+// ------------------------------------------------------------------ input
+
+test('writeInput refuses an unknown terminal with 404', async () => {
+  const manager = make();
+  await assert.rejects(
+    () => manager.writeInput('term_nope', 'hello'),
+    (error) => error.statusCode === 404,
+  );
+});
+
+test('writeInput refuses a terminal that is no longer running', async () => {
+  const manager = make();
+  manager.registry.set('term_dead', { id: 'term_dead', type: 'tmux', status: 'exited', tmuxSession: 'x' });
+  await assert.rejects(
+    () => manager.writeInput('term_dead', 'hello'),
+    (error) => error.statusCode === 409,
+  );
+});
+
+test('writeInput refuses empty text and oversized text', async () => {
+  const manager = make();
+  manager.registry.set('term_ok', { id: 'term_ok', type: 'tmux', status: 'running', tmuxSession: 'x' });
+  await assert.rejects(() => manager.writeInput('term_ok', ''), (error) => error.statusCode === 400);
+  await assert.rejects(
+    () => manager.writeInput('term_ok', 'x'.repeat(9 * 1024)),
+    (error) => error.statusCode === 413,
+  );
+});
+
+test('writeInput is tmux-only and says so for a background terminal', async () => {
+  // A background terminal is a one-shot command; this process keeps no stdin
+  // handle for it. The error has to name the way out rather than just refusing.
+  const manager = make();
+  manager.registry.set('term_bg', { id: 'term_bg', type: 'background', status: 'running', pid: 1 });
+  await assert.rejects(
+    () => manager.writeInput('term_bg', 'hello'),
+    (error) => error.statusCode === 400 && /tmux/.test(error.message),
+  );
+});
+
+// A fake tmux binary. `tmux.js` reads OFFICE_HUD_TMUX once at require time and
+// execs it, so pointing that at a recorder exercises the real argument-building
+// path -- patching module.exports would not, because the internal calls go
+// through a module-local function rather than the export.
+async function withFakeTmux(run) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hud-faketmux-'));
+  const record = path.join(dir, 'argv.jsonl');
+  const fake = path.join(dir, 'tmux');
+  fs.writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" >> ${JSON.stringify(record)}\nexit 0\n`);
+  fs.chmodSync(fake, 0o755);
+  const saved = process.env.OFFICE_HUD_TMUX;
+  process.env.OFFICE_HUD_TMUX = fake;
+  const resolved = require.resolve('../lib/terminal/spawners/tmux');
+  delete require.cache[resolved];
+  const fresh = require(resolved);
+  try {
+    // Awaited: the callers are async, and a sync teardown would delete the fake
+    // binary out from under the still-running exec.
+    return await run(fresh, () => fs.readFileSync(record, 'utf8').split('\n').filter(Boolean));
+  } finally {
+    if (saved === undefined) delete process.env.OFFICE_HUD_TMUX;
+    else process.env.OFFICE_HUD_TMUX = saved;
+    delete require.cache[resolved];
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('typed text is delivered literally, not split on spaces', async () => {
+  // The bug this guards: sendKeys splits its argument on spaces, so a typed
+  // sentence would arrive as several tmux arguments and any metacharacter would
+  // be interpreted by tmux instead of reaching the pane as typed.
+  const payload = 'git commit -m "fix: don\'t split me" && echo done';
+  await withFakeTmux(async (tmux, argv) => {
+    await tmux.sendText('sess', payload);
+    const args = argv();
+    assert.deepEqual(args, ['send-keys', '-t', '=sess', '-l', '--', payload]);
+    assert.ok(args.includes(payload), 'the whole string is one argument');
+    assert.ok(args.includes('-l'), 'literal mode is set so tmux does not interpret it');
+  });
+});
+
+test('sendLine types the text and then presses Enter', async () => {
+  await withFakeTmux(async (tmux, argv) => {
+    await tmux.sendLine('sess', 'ls -la');
+    const calls = argv().join('\n').split('\n');
+    assert.ok(calls.includes('ls -la'), 'the line was typed as one literal argument');
+    assert.ok(calls.includes('Enter'), 'and then Enter was sent');
+    const enterIndex = calls.indexOf('Enter');
+    assert.ok(enterIndex > calls.indexOf('ls -la'), 'Enter comes after the text');
+  });
+});
+
+test('writeInput reaches a tmux pane and submits the line', async () => {
+  // The manager binds tmuxSpawner at require time, so the fake has to be in
+  // place before the *manager* is loaded too -- re-requiring tmux.js alone would
+  // leave the manager pointing at the real binary.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hud-faketmux-'));
+  const record = path.join(dir, 'argv.jsonl');
+  const fake = path.join(dir, 'tmux');
+  fs.writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' "$@" >> ${JSON.stringify(record)}\nexit 0\n`);
+  fs.chmodSync(fake, 0o755);
+  const saved = process.env.OFFICE_HUD_TMUX;
+  process.env.OFFICE_HUD_TMUX = fake;
+  const mgrPath = require.resolve('../lib/terminal/manager');
+  delete require.cache[mgrPath];
+  try {
+    const { TerminalManager: FreshManager } = require(mgrPath);
+    const manager = new FreshManager({ hive, logDir, maxConcurrent: 5 });
+    manager.registry.set('term_t', { id: 'term_t', type: 'tmux', status: 'running', tmuxSession: 'hud-test' });
+    await manager.writeInput('term_t', 'npm test');
+    const calls = fs.readFileSync(record, 'utf8').split('\n').filter(Boolean);
+    assert.ok(calls.includes('npm test'), 'the text reached tmux verbatim');
+    assert.ok(calls.includes('Enter'), 'submit was requested by default');
+    assert.ok(calls.includes('-l'), 'delivered literally');
+  } finally {
+    if (saved === undefined) delete process.env.OFFICE_HUD_TMUX;
+    else process.env.OFFICE_HUD_TMUX = saved;
+    delete require.cache[mgrPath];
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
