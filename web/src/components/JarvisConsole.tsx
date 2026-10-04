@@ -153,7 +153,7 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
     queue?.failedLastHour ? `${queue.failedLastHour} LLM failures this hour` : null,
     harness && !harness.ok ? 'Free harness unavailable' : null,
     officeManager && !officeManager.running ? 'Office Manager session missing' : null,
-    verify?.realWorkRatePct != null && verify.realWorkRatePct < 95 ? `Real-work rate ${verify.realWorkRatePct}%` : null,
+    verify?.outputQualityRatePct != null && verify.outputQualityRatePct < 95 ? `Output quality ${verify.outputQualityRatePct}%` : null,
   ].filter(Boolean) as string[];
   const completionMax = Math.max(...(queue?.completionsByHour.map(item => item.count) ?? [0]), 1);
   const filteredAgents = useMemo(() => {
@@ -345,7 +345,7 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
           <div className="jarvis-alert-list">
             {activeAlerts.length ? activeAlerts.map(alert => <div className="jarvis-alert" key={alert}><span>!</span><p>{alert}</p><time>NOW</time></div>) : <div className="jarvis-clear-state"><span>✓</span><p>All systems nominal</p><small>No active operational alerts</small></div>}
           </div>
-          <div className="jarvis-panel-footer"><span>VERDICT TALLY</span><strong>{verify?.realWorkRatePct != null ? `${verify.realWorkRatePct}% real work` : 'verification pending'}</strong></div>
+          <div className="jarvis-panel-footer"><span>VERDICT TALLY</span><strong>{verify?.outputQualityRatePct != null ? `${verify.outputQualityRatePct}% output quality` : 'verification pending'}</strong></div>
         </section>
       </div>
 

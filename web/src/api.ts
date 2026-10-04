@@ -224,6 +224,15 @@ export interface QueueSummary {
   byStatus: Record<string, number>;
   inProgressTasks: Array<TaskRecord & { heartbeat_age_sec: number | null }>;
   completionsLastHour: number;
+  /**
+   * True when the count is a floor rather than the rate: the log exceeded the
+   * window that was read, so older completions exist that this cannot see.
+   */
+  completionsLastHourLowerBound?: boolean;
+  /** Bytes of events.log the rate and the chart were computed from. */
+  completionsWindowBytes?: number | null;
+  /** Why the throughput read failed, if it did. Null means it succeeded. */
+  completionsError?: string | null;
   failedLastHour: number;
   completionsByHour: Array<{ hour: string; count: number }>;
   recentCompletions: FleetEvent[];
@@ -623,11 +632,22 @@ export interface PortalResponse {
 export interface VerifyState {
   present: boolean;
   at?: string;
-  verdict_tally?: { OK?: number; DODGE?: number; SHORT?: number; FAIL?: number; EMPTY?: number };
-  requeued?: Array<[string, string]>;
-  quarantined?: Array<[string, string]>;
-  realWorkRatePct?: number | null;
-}
+verdict_tally?: { OK?: number; DODGE?: number; SHORT?: number; FAIL?: number; EMPTY?: number };
+    verdict_tally_total?: number;
+    requeued?: Array<[string, string]>;
+    quarantined?: Array<[string, string]>;
+    /** Fraction of scanned verdicts that were OK. Measures output quality only. */
+    outputQualityRatePct?: number | null;
+    /**
+     * Verified work is not measured by this pipeline and is published as null.
+     * 0 would claim nothing was verified and a number would claim a measurement
+     * that never happened, so the honest value is "not measured" plus a reason.
+     */
+    verifiedWork?: number | null;
+    verifiedWorkDenominator?: number | null;
+    verificationCoverage?: number | null;
+    verificationBasis?: string;
+  }
 
 export interface AgentDetail {
   agent: Agent;

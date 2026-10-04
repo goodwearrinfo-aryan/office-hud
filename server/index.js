@@ -38,6 +38,16 @@ const { isLocalRequest } = require('./lib/local_only');
 const { TerminalManager } = require('./lib/terminal/manager');
 const { redactCommand, redactEntry, redactAll } = require('./lib/redact');
 const alphaInsiderStats = require('./alphainsider_stats_route');
+// Route modules kept in their own files so a rewrite of this one cannot silently
+// drop them -- the failure mode that lost the AlphaInsider stats routes twice.
+const strategySearchRoute = require('./strategy_search_route');
+const liveDigestRoute = require('./live_digest_route');
+const openaliceStatus = require('./openaliceStatus');
+const frozenFeedsRoute = require('./frozen_feeds_route');
+const { registerEvidenceRoutes } = require('./evidenceRoutes');
+const { registerWedgedRoutes } = require('./lib/wedgedProcesses');
+const { classifyTaskTruth, summarizeTasks } = require('./taskTruth.js');
+const { processView, redactRecord } = require('./processTruth');
 
 const terminalManager = new TerminalManager({
   hive: HIVE,
@@ -300,7 +310,28 @@ function getFleet() {
   return readJsonCached(path.join(HIVE, 'fleet.json'), { ts: null, agents: [] });
 }
 
-function getRegistry() {
+// How old a roster reading may be before it stops being evidence about now.
+// Fifteen minutes is comfortably longer than the collector cadence, so a
+// slightly late write is still fresh and a genuinely frozen file is not.
+const ROSTER_STALE_SECONDS = 900;
+
+function rosterFreshness(fleet) {
+  const recorded = fleet ? (fleet.ts ?? fleet.updated_at) : null;
+  const observedAt = timestampMs(recorded);
+  if (observedAt == null) {
+    // Unmeasurable is not fresh. A roster whose age cannot be established is
+    // reported stale and not live rather than given the benefit of the doubt,
+    // which is the exact failure this contract exists to prevent.
+    return { stale: true, live: false, age_seconds: null, observed_at: null,
+             stale_after_seconds: ROSTER_STALE_SECONDS };
+  }
+const age = Math.max(0, Math.round((Date.now() - observedAt) / 1000));
+    const stale = age > ROSTER_STALE_SECONDS;
+    return { stale, live: !stale, age_seconds: age, observed_at: observedAt,
+             stale_after_seconds: ROSTER_STALE_SECONDS };
+  }
+
+  function getRegistry() {
   return readJsonCached(path.join(HIVE, 'registry.json'), { godId: null, agents: {} });
 }
 
@@ -1141,9 +1172,17 @@ function mergedAgents() {
 function rollupFloors(agents) {
   const byFloor = new Map();
   for (const agent of agents) {
-    const floor = agent.floor || null;
-    if (!floor) continue;
-    if (!byFloor.has(floor)) {
+const floor = agent.floor || null;
+      if (!floor) continue;
+      // An agent's `floor` attribute is not reserved for floors. It is also used
+      // for organisational groups (command, office, operations, polymarket,
+      // specialists, workers), so grouping by it emitted those groups as if they
+      // were floors: 18 rows for 12 floors, six of them with no manager, no state
+      // and no liveness. A floor id is f<digits>; anything else is an agent group
+      // and belongs in the agent view. The groups are not removed from the roster,
+      // they simply stop being reported as floors.
+      if (!/^f\d+$/i.test(String(floor))) continue;
+      if (!byFloor.has(floor)) {
       byFloor.set(floor, {
         floor,
         lead: null,
@@ -1181,14 +1220,19 @@ function rollupFloors(agents) {
     if (nb != null) return 1;
     return a.floor.localeCompare(b.floor);
   });
-  for (const row of floors) {
-    row.health = row.working > 0 ? 'working'
-      : row.stale > 0 ? 'stale'
-      : row.breaker > 0 ? 'breaker'
-      : row.offline > 0 && row.offline === row.agents ? 'offline'
-      : row.idle > 0 ? 'idle'
-      : 'unknown';
-  }
+for (const row of floors) {
+      // Named `state`, with an explicit UNKNOWN rather than null or blank: a panel
+      // reading this has to be able to tell "cannot establish" from "no value".
+      row.state = row.working > 0 ? 'working'
+        : row.stale > 0 ? 'stale'
+        : row.breaker > 0 ? 'breaker'
+        : row.offline > 0 && row.offline === row.agents ? 'offline'
+        : row.idle > 0 ? 'idle'
+        : 'UNKNOWN';
+      // `health` is kept alongside it so readers written against the old field do
+      // not break in the same deploy that introduces `state`.
+      row.health = row.state === 'UNKNOWN' ? 'unknown' : row.state;
+    }
   return floors;
 }
 
@@ -1683,12 +1727,15 @@ const hasDurableEvidence = (task) => {
       if (String(event.result || '').startsWith('[LLM call failed')) failedLastHour++;
     }
   }
-  return {
-    total: tasks.length,
-    queued: byStatus.QUEUED || 0,
-    inProgress: inProgress.length,
-    complete: byStatus.COMPLETE || 0,
-    failed: byStatus.FAILED || 0,
+const throughput = require('./throughput');
+      const unbiased = throughput.completionsLastHour(HIVE);
+      const hourly = throughput.completionsByHour(HIVE);
+      return {
+        total: tasks.length,
+        queued: byStatus.QUEUED || 0,
+        inProgress: inProgress.length,
+        complete: byStatus.COMPLETE || 0,
+        failed: byStatus.FAILED || 0,
     quarantined: byStatus.QUARANTINED || 0,
     staleInProgress: staleInProgress.length,
     // Recorded as COMPLETE but the record itself says the model call failed.
@@ -1723,10 +1770,16 @@ const hasDurableEvidence = (task) => {
         ? null
         : Math.max(0, Math.floor((now - timestampMs(task.heartbeat || task.claimed_at)) / 1000)),
     })),
-    completionsLastHour,
-    failedLastHour,
-    completionsByHour: [...completionHour.entries()].map(([hour, count]) => ({ hour: new Date(hour).toISOString(), count })),
-    recentCompletions: completions.slice(0, 20),
+// Read through throughput.js rather than off a 5000-event fetch: that fetch
+      // silently truncated the log, so the rate was a floor presented as a rate,
+      // and the payload never said which window the chart was read from.
+      completionsLastHour: unbiased.completionsLastHour,
+      completionsLastHourLowerBound: Boolean(unbiased.lower_bound),
+      completionsWindowBytes: unbiased.window_bytes,
+      completionsError: unbiased.error || null,
+      failedLastHour,
+      completionsByHour: hourly.hours,
+      recentCompletions: completions.slice(0, 20),
   };
 }
 
@@ -1983,6 +2036,15 @@ app.get('/api/alphainsider/status', (_req, res) => proxyFreeHarnessJson('/alphai
   // this one cannot silently drop it. AlphaInsiderPanel still reads it.
   alphaInsiderStats.register(app);
 
+  // Route modules that live in their own files. Each register() is idempotent,
+  // so a re-registration during a hot reload is safe.
+  strategySearchRoute.register(app);
+  liveDigestRoute.register(app);
+  openaliceStatus.register(app);
+  frozenFeedsRoute.register(app);
+  registerEvidenceRoutes(app);
+  registerWedgedRoutes(app, HIVE);
+
 app.get('/api/summary', (_req, res) => {
   res.json(buildSnapshot('summary'));
 });
@@ -2096,17 +2158,35 @@ function getTaskBoard(perColumn = 25) {
       count += 1;
       if (rows.length >= perColumn) continue;
       claimed.add(task.task_id);
-      rows.push(Object.fromEntries(BOARD_TASK_FIELDS.filter((field) => task[field] !== undefined).map((field) => [field, task[field]])));
+      const row = Object.fromEntries(BOARD_TASK_FIELDS.filter((field) => task[field] !== undefined).map((field) => [field, task[field]]));
+      // Only rows in the completion column carry a truth label. Labelling QUEUED
+      // or IN_PROGRESS work would imply a completion claim that does not exist yet.
+      if (column.id === 'done') {
+        const verdict = classifyTaskTruth(task);
+        row.completion_truth = verdict.truth;
+        row.evidence_score = verdict.score === undefined ? null : verdict.score;
+        row.evidence_reason = verdict.reason || null;
+      }
+      rows.push(row);
     }
     groups[column.id] = rows;
     counts[column.id] = count;
   }
 
-  return {
-    groups,
-    counts,
-    total: all.length,
-    perColumn,
+// counts.done is the raw COMPLETE count and stays that way: it is what the
+    // pipeline asserts. completion states how many of those are actually supported
+    // by evidence, so a reader is never left to assume the two agree.
+    const claimedComplete = all.filter((task) => {
+      const status = String(task.status || '').toUpperCase();
+      return status === 'COMPLETE' || status === 'DONE';
+    });
+
+    return {
+      groups,
+      counts,
+      completion: summarizeTasks(claimedComplete),
+      total: all.length,
+      perColumn,
     // Tasks in a status the board does not draw, so the UI can say so.
     unclassified: all.length - [...claimed].length - Object.values(counts).reduce((a, b) => a + b, 0) + [...claimed].length,
   };
@@ -2207,14 +2287,34 @@ function getVerifyState() {
   if (!st) return { present: false };
   const tally = st.verdict_tally || {};
   const scanned = (tally.OK || 0) + (tally.DODGE || 0) + (tally.SHORT || 0) + (tally.FAIL || 0) + (tally.EMPTY || 0);
-  const realWorkRatePct = scanned > 0 ? Math.round(((tally.OK || 0) / scanned) * 1000) / 10 : null;
+  // This ratio measures what fraction of scanned verdicts were OK -- that is all.
+  // It was previously published as realWorkRatePct, which claimed something it does
+  // not measure: whether a task did real work needs an independent verifier and a
+  // durable artifact, and this pipeline has neither. A pipeline that never emits
+  // junk scored 100% "real work" while verifying nothing.
+  //
+  // Named for what it is, with the denominator published alongside it, because a
+  // rate you cannot reason about is decoration. null when nothing was scanned:
+  // zero would claim nothing was OK, and a number would claim a measurement that
+  // never happened.
+  const outputQualityRatePct = scanned > 0 ? Math.round(((tally.OK || 0) / scanned) * 1000) / 10 : null;
   return {
     present: true,
     at: st.at,
     verdict_tally: tally,
+    verdict_tally_total: scanned,
     requeued: st.requeued || [],
     quarantined: st.quarantined || [],
-    realWorkRatePct,
+    outputQualityRatePct,
+    // Verified work is NOT MEASURED by this pipeline, and saying so is the point.
+    // All four are null rather than 0 or a number: 0 claims nothing was verified,
+    // and any figure would claim a measurement that never happened. The basis is
+    // published so a reader can tell "not measured" from "value missing".
+    verifiedWork: null,
+    verifiedWorkDenominator: null,
+    verificationCoverage: null,
+    verificationBasis: 'no independent verifier and no artifact ledger: verdict '
+      + 'tallies measure output quality, not whether work was real',
   };
 }
 
@@ -2271,6 +2371,7 @@ app.get('/api/terminals/spawned', (_req, res) => {
 });
 
 app.post('/api/terminals/spawn', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   try {
     const terminal = await terminalManager.spawnOne(req.body || {});
@@ -2282,6 +2383,7 @@ app.post('/api/terminals/spawn', async (req, res) => {
 });
 
 app.post('/api/terminals/bulk', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   const body = req.body || {};
   try {
@@ -2312,6 +2414,7 @@ app.post('/api/terminals/bulk', async (req, res) => {
 // /spawn, /bulk, /reap and /health -- answering a spawn attempt as "unknown
 // terminal 404" and a POST as 405. Keep every literal name above this line.
 app.post('/api/terminals/reap', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   const body = req.body || {};
   res.json({ ok: true, ...terminalManager.reap({
@@ -2390,6 +2493,7 @@ app.get('/api/autopilot/proposals', (_req, res) => {
 // Land/dismiss are operator decisions. The autopilot can propose all it likes;
 // this is the only way a proposal ever changes state, and it is loopback-only.
 app.post('/api/autopilot/proposals/:id/land', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (autopilotGuard(req, res)) return;
   try {
     const note = typeof req.body?.note === 'string' ? req.body.note.slice(0, 200) : 'landed by operator';
@@ -2402,6 +2506,7 @@ app.post('/api/autopilot/proposals/:id/land', (req, res) => {
 });
 
 app.post('/api/autopilot/proposals/:id/dismiss', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (autopilotGuard(req, res)) return;
   try {
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 200) : 'dismissed by operator';
@@ -2414,6 +2519,7 @@ app.post('/api/autopilot/proposals/:id/dismiss', (req, res) => {
 });
 
 app.post('/api/autopilot/policy', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (autopilotGuard(req, res)) return;
   try {
     const policy = autopilot.updatePolicy(req.body || {});
@@ -2426,6 +2532,7 @@ app.post('/api/autopilot/policy', (req, res) => {
 
 // One manual tick, for the operator who does not want to wait for the interval.
 app.post('/api/autopilot/tick', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (autopilotGuard(req, res)) return;
   const verdict = await autopilot.tick();
   autopilotRunner.persist(autopilot);
@@ -2520,6 +2627,7 @@ app.get('/api/terminals/:id/follow', (req, res) => {
 });
 
 app.post('/api/terminals/:id/kill', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   try {
     const terminal = await terminalManager.kill(req.params.id, { signal: (req.body || {}).signal });
@@ -2531,6 +2639,7 @@ app.post('/api/terminals/:id/kill', async (req, res) => {
 });
 
 app.post('/api/terminals/:id/signal', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   try {
     const terminal = await terminalManager.signal(req.params.id, (req.body || {}).signal);
@@ -2545,7 +2654,14 @@ function getProcesses() {
   // Same reasoning as terminalSnapshot: the hive keeps the real command line,
   // the served copy does not. These are real process command lines, so a token
   // passed as an argument would otherwise be readable by any HUD viewer.
-  return { ...doc, processes: redactAll(doc.processes) };
+  //
+  // processView adds the provenance this payload was missing: where the rows came
+  // from and how old they are. Without them an on-disk file frozen since yesterday
+  // renders identically to one written a minute ago, which is a cache pretending to
+  // be live. stored_status keeps what was actually recorded so a view can show what
+  // it claimed, and a stale observation is served as STALE rather than under its own
+  // status.
+  return processView({ ...doc, source: doc.source || 'hive/processes.json' });
 }
 
 app.get('/api/processes', (_req, res) => {
@@ -2911,7 +3027,19 @@ function build(name, produce, options = {}) {
 const RESOURCES = {
   summary: build('summary', () => {
     const agents = mergedAgents();
-    return { ...hiveStatus(), fleet: getFleet(), godId: getRegistry().godId, agents, floors: rollupFloors(agents) };
+    const roster = getFleet();
+    const rosterAge = rosterFreshness(roster);
+    // Each agent inherits breaker and the counters from this roster, so each row
+    // carries the age of the observation it inherited them from. Same measurement as
+    // fleet.stale, surfaced where it is used -- not a second contract. It
+    // deliberately does not touch status or display, which stay live-derived.
+    for (const a of agents) {
+      if (!a) continue;
+      a.rosterStale = rosterAge.stale;
+      a.rosterAgeSeconds = rosterAge.age_seconds;
+      a.rosterObservedAt = rosterAge.observed_at;
+    }
+    return { ...hiveStatus(), fleet: { ...roster, ...rosterAge }, godId: getRegistry().godId, agents, floors: rollupFloors(agents) };
   }),
   agents: build('agents', () => ({ agents: mergedAgents() })),
   queue: build('queue', () => getQueueSummary()),
@@ -3035,18 +3163,45 @@ function resolveResource(name) {
   };
 }
 
-function buildSnapshot(name) {
-  const resource = resolveResource(name);
-  if (!resource) throw requestError(`Unknown resource ${name}`, 404);
-  try {
-    return resource.produce();
-  } catch (error) {
-    // A hive missing a library (llm/, recovery/) must degrade to a payload the
-    // UI can render, not a 500 for the whole panel.
-    if (resource.onError) return resource.onError(error);
-    throw error;
+// Probed resources -- the ones declared with an explicit signature -- are
+  // memoised briefly. They cost a network round trip each: /health is a 2s-timeout
+  // fetch, so two reads of the same resource in quick succession can straddle that
+  // timeout and return different payloads. Under the full suite the harness has
+  // been observed answering in 2.578s, which is what makes resources.test.js's
+  // "/api/harness/health and /api/live/harness agree" fail intermittently and never
+  // when that file runs alone. That is a HUD lying about its own contract: the same
+  // resource changing shape depending on latency.
+  //
+  // Only signature-bearing resources are memoised. Everything else is read from the
+  // hive on every call, which is what the write-then-read tests depend on -- and
+  // build() already declares minIntervalMs and signature for exactly this purpose.
+  const probeCache = new Map();
+  const PROBE_CACHE_MS = 5000;
+
+  function buildSnapshot(name) {
+    const resource = resolveResource(name);
+    if (!resource) throw requestError(`Unknown resource ${name}`, 404);
+    if (!resource.signature) {
+      try {
+        return resource.produce();
+      } catch (error) {
+        // A hive missing a library (llm/, recovery/) must degrade to a payload the
+        // UI can render, not a 500 for the whole panel.
+        if (resource.onError) return resource.onError(error);
+        throw error;
+      }
+    }
+    const hit = probeCache.get(name);
+    if (hit && Date.now() - hit.at < PROBE_CACHE_MS) return hit.value;
+    try {
+      const value = resource.produce();
+      probeCache.set(name, { at: Date.now(), value });
+      return value;
+    } catch (error) {
+      if (resource.onError) return resource.onError(error);
+      throw error;
+    }
   }
-}
 
 const buildSnapshotAsync = (name) => Promise.resolve(buildSnapshot(name));
 
@@ -3806,8 +3961,58 @@ if (require.main === module) {
   bootstrap();
 }
 
+// A day plus a two-hour budget: the sync runs daily, so a run is still
+// trustworthy a couple of hours past its nominal window.
+const PUBLIC_SYNC_STALE_SECONDS = 26 * 60 * 60;
+const PUBLIC_SYNC_STATUS_PATH = process.env.OPENALICE_PUBLIC_SYNC_STATUS
+  || path.join(__dirname, '..', '..', 'state', 'public_sync_status.json');
+function readPublicSyncStatus(now = Date.now(), statusPath = PUBLIC_SYNC_STATUS_PATH) {
+  let raw;
+  try {
+    raw = fs.readFileSync(statusPath, 'utf8');
+  } catch (err) {
+    const missing = err && err.code === 'ENOENT';
+    return {
+      present: false,
+      status: missing ? 'no_status_file' : 'unreadable',
+      error: missing ? null : String((err && err.message) || err).slice(0, 160),
+      last_run_at: null,
+      age_seconds: null,
+      stale: true,
+    };
+  }
+  let record;
+  try {
+    record = JSON.parse(raw);
+  } catch (err) {
+    return {
+      present: false,
+      status: 'unreadable',
+      error: String((err && err.message) || err).slice(0, 160),
+      last_run_at: null,
+      age_seconds: null,
+      stale: true,
+    };
+  }
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    return { present: false, status: 'unreadable', error: 'status file is not an object',
+             last_run_at: null, age_seconds: null, stale: true };
+  }
+  const ranAt = Date.parse(record.last_run_at || '');
+  const ageSeconds = Number.isFinite(ranAt) ? Math.max(0, Math.floor((now - ranAt) / 1000)) : null;
+  return {
+    ...record,
+    present: true,
+    // A missing or unparseable timestamp is itself stale: we cannot claim the
+    // job ran. Silence must never read as health.
+    age_seconds: ageSeconds,
+    stale: ageSeconds === null || ageSeconds > PUBLIC_SYNC_STALE_SECONDS,
+  };
+}
+
 module.exports = {
   app,
+
   bootstrap,
   createServer,
   startServer,
@@ -3821,6 +4026,14 @@ module.exports = {
     getFloorTaskCounts, getTaskBoard, getGraphifyCommunities, withHiveFileLock,
     getAgentDetail, getLedger, resolveResource, PARAMETERIZED,
     mergedAgents, sessionRows, rollupFloors, getWorkEvents, getQueueSummary,
+    classifyTaskTruth, summarizeTasks, processView, redactRecord,
+    // Exported so harnessHealthShape.test.js can compare the success and catch
+    // branches without a network round trip. The bug it pins is real: the catch
+    // branch used to omit degradedProviders, so the same resource changed shape
+    // depending on whether the probe answered inside its 2s timeout.
+    getHarnessHealth,
+    readPublicSyncStatus, PUBLIC_SYNC_STALE_SECONDS,
+    openaliceStatus, frozenFeedsRoute, liveDigestRoute, strategySearchRoute,
     isLocalRequest, isIdentifier, requestError, sendError, buildSnapshot,
     portalTarget, rewriteUpstreamLocation, portalSlugForPort, PORTAL_SERVICES,
     parseLaunchctlList, getFleetLaunchdState,
