@@ -1,4 +1,4 @@
-import { useLive, type JarvisAuditResponse, type JarvisTasksResponse, type QueueSummary, type TaskRecord, type VerifyState } from '../api';
+import { useLive, type JarvisAuditResponse, type JarvisTasksResponse, type QueueSummary, type TaskRecord, type VerifyState, type TerminalsPayload } from './api';
 import type { AutonomyState } from '../live/store';
 import CommandCompose from './CommandCompose';
 import { claimLabel, dispatchSummary, headroomLine, historyLabel, mayDrawCapacity, verifyTally } from '../deskTruth';
@@ -98,6 +98,19 @@ export default function DeskFloor() {
   const pendingProposals = proposals.filter(p => p.status === 'pending');
   const rows = board?.rows ?? [];
   const inFlight = rows.filter(r => r.claimed_by || r.status === 'IN_PROGRESS' || r.status === 'CLAIMED');
+  // Your machines: collect shell terminals from all hosts
+  const { data: terminalsData } = useLive<TerminalsPayload>('/api/terminals');
+  const allTerminals = (terminalsData?.terminals ?? []) as any;
+  const staleHosts = new Set(terminalsData?.stale_hosts ?? []);
+  const shells = allTerminals.filter((t) => t.kind === 'shell');
+  const hostTerminals: Record<string, typeof shells> = {};
+  for (const shell of shells) {
+    const host = shell.host ?? 'unknown';
+    if (!hostTerminals[host]) hostTerminals[host] = [];
+    hostTerminals[host].push(shell);
+  }
+  const totalTerminals = shells.length
+
 
   return (
     <div className="floor desk-floor">
@@ -232,6 +245,13 @@ export default function DeskFloor() {
         <p className="panel-note">{headroomLine(headroom)}</p>
       </section>
 
+      {/* ---------- your machines ---------- */}
+      <section className="panel">
+        <div className="panel-head">
+          <h3>Your machines</h3>
+          <p className="panel-note">TODO: Terminals panel to be implemented.</p>
+        </div>
+      </section>
       {/* ---------- outcomes ---------- */}
       <section className="panel">
         <div className="panel-head">
