@@ -1229,7 +1229,7 @@ function usePolled<T>(path: string) {
     return () => { alive.current = false; clearInterval(timer); };
   }, [refresh, path]);
 
-   return { data, error, loading, refresh, updatedAt: null as unknown as number | null };
+  return { data, error, loading, refresh };
 }
 
 /**

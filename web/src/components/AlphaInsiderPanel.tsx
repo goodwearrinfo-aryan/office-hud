@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useLive, type AlphaInsiderPosition, type AlphaInsiderStatus, type AlphaInsiderStrategy } from './api';
+import { useLive, type AlphaInsiderPosition, type AlphaInsiderStatus, type AlphaInsiderStrategy } from '../api';
 
 type StrategyPayload = { response?: Array<Record<string, unknown>> };
 type PositionPayload = { response?: Array<Record<string, unknown>> };

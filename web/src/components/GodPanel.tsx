@@ -1,4 +1,4 @@
-import { useLive, type Summary } from './api';
+import { useLive, type Summary } from '../api';
 
 type AgentDetail = {
   agent?: AgentFields;

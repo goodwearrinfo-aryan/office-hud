@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { type Agent } from './api';
+import { type Agent } from '../api';
 
 interface Props {
   onClose: () => void;

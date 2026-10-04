@@ -1,4 +1,4 @@
-import { useLive, type LiveMetrics } from './api';
+import { useLive, type LiveMetrics } from '../api';
 
 type Breaker = { state?: string; failures?: number; available?: boolean };
 type BreakerResponse = { breakers: Record<string, Breaker> };

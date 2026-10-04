@@ -1,4 +1,4 @@
-import { useLive, type BacktestData, type LiveMetrics, type StrategyFile } from './api';
+import { useLive, type BacktestData, type LiveMetrics, type StrategyFile } from '../api';
 
 type StrategiesResponse = {
   strategies: StrategyFile[];
