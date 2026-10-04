@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from 'react';
 import { reachableCount } from '../displayStates';
 import { previewJarvisCommand, riskLabel, needsTypeConfirmation, canDispatch, ownerLabel, routingLabel, routeJarvisCommand, writeErrorReason } from '../jarvisPreview';
+import { useVoiceDictation } from '../useVoiceDictation';
 import { useLive, useConnectionStatus, type FleetEvent, type HarnessHealth, type JarvisPreview, type JarvisTasksResponse, type OfficeManagerStatus, type ProcessRecord, type ProjectRecord, type QueueSummary, type ServiceHealth, type SessionRecord, type Summary, type VerifyState } from '../api';
 import AlphaInsiderPanel from './AlphaInsiderPanel';
 
@@ -102,6 +103,10 @@ function taskTone(status: string) {
 export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps) {
   const [filter, setFilter] = useState('');
   const [prompt, setPrompt] = useState('');
+  // Dictation writes into the prompt and nothing more. It deliberately does not
+  // submit: preview -> confirm -> dispatch stays the only path to a command, so
+  // speaking cannot skip the gate that typing has to pass.
+  const voice = useVoiceDictation(text => setPrompt(current => (current.trim() ? `${current.trim()} ${text}` : text)));
   const [target, setTarget] = useState('');
   const [priority, setPriority] = useState('high');
   const [pendingCommand, setPendingCommand] = useState<PendingCommand | null>(null);
@@ -283,7 +288,20 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
 
       <form className="jarvis-commandbar" onSubmit={openCommandConfirmation} aria-label="Route a command to JEV">
         <span className="jarvis-command-prefix" aria-hidden="true">⌁</span>
-        <input ref={commandInputRef} value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="Tell JEV what to do…" aria-label="JEV command" />
+        <input ref={commandInputRef} value={prompt} onChange={event => setPrompt(event.target.value)} placeholder={voice.listening ? 'Listening…' : 'Tell JEV what to do…'} aria-label="JEV command" />
+          {voice.supported && (
+            <button
+              type="button"
+              className="jarvis-command-mic"
+              onClick={voice.listening ? voice.stop : voice.start}
+              aria-pressed={voice.listening}
+              aria-label={voice.listening ? 'Stop listening' : 'Dictate the command'}
+              title={voice.listening ? 'Stop listening' : 'Dictate the command (does not send — review before routing)'}
+            >
+              {voice.listening ? '■' : '●'}
+            </button>
+          )}
+          {!voice.supported && <span className="jarvis-command-mic-missing" title="This browser has no Web Speech API. Type the command instead." aria-hidden="true">🎙̸</span>}
         <select value={target} onChange={event => setTarget(event.target.value)} aria-label="Target floor or agent">
           <option value="">JEV auto-route</option>
           {FLOORS.map(floor => <option key={floor.id} value={floor.id.toUpperCase()}>{floor.label} · {floor.name}</option>)}
@@ -301,6 +319,7 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
       </form>
       <div className="jarvis-command-status" aria-live="polite">
         {commandError && <span className="text-alert">{commandError}</span>}
+        {voice.error && <span className="text-alert">{voice.error}</span>}
         {commandMessage && <span className="text-green">{commandMessage}</span>}
       </div>
       <div className="flex flex-wrap items-center gap-2 mt-3 mb-1">
