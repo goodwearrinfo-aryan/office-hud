@@ -159,6 +159,89 @@ test('the child environment carries no provider keys', () => {
   delete process.env.SOME_FAKE_PROVIDER_KEY;
 });
 
+test('an explicit NVM_BIN outranks the generic prefixes', () => {
+  // Homebrew ships its own node. If /opt/homebrew/bin is prepended ahead of the
+  // pin, spawned code silently runs on a different runtime than the server.
+  const savedPath = process.env.PATH;
+  const savedBin = process.env.NVM_BIN;
+  process.env.PATH = '/usr/bin:/bin';
+  process.env.NVM_BIN = '/opt/homebrew/bin'; // stands in for a pinned dir
+  try {
+    const env = allowlist.buildEnv({}, { hive: path.join(ok, 'hive') });
+    assert.equal(env.PATH.split(':')[0], '/opt/homebrew/bin', 'the pin comes first');
+    assert.equal(
+      env.PATH.split(':').filter((d) => d === '/opt/homebrew/bin').length,
+      1,
+      'and is not also repeated as a generic prefix',
+    );
+  } finally {
+    process.env.PATH = savedPath;
+    if (savedBin === undefined) delete process.env.NVM_BIN;
+    else process.env.NVM_BIN = savedBin;
+  }
+});
+
+test('the pinned node is promoted even when PATH already lists it later', () => {
+  // The real shape of the bug: PATH already contains the pinned directory, but
+  // behind an install prefix. A rule that skips "what is already present" leaves
+  // the pin there, so a different node wins. /usr/bin is on PATH and is NOT one
+  // of the generic prefixes, which makes it a clean stand-in for the pin.
+  const savedPath = process.env.PATH;
+  const savedBin = process.env.NVM_BIN;
+  process.env.PATH = '/opt/homebrew/bin:/usr/bin:/bin';
+  process.env.NVM_BIN = '/usr/bin';
+  try {
+    const env = allowlist.buildEnv({}, { hive: path.join(ok, 'hive') });
+    const dirs = env.PATH.split(':');
+    assert.equal(dirs[0], '/usr/bin', 'the pin is promoted to the front');
+    assert.equal(dirs.filter((d) => d === '/usr/bin').length, 1, 'listed exactly once');
+    // The operator's other entries survive, in their original relative order.
+    const kept = dirs.filter((d) => ['/opt/homebrew/bin', '/bin'].includes(d));
+    assert.deepEqual(kept, ['/opt/homebrew/bin', '/bin'], 'original order preserved');
+  } finally {
+    process.env.PATH = savedPath;
+    if (savedBin === undefined) delete process.env.NVM_BIN;
+    else process.env.NVM_BIN = savedBin;
+  }
+});
+
+test('a launched shell can find the toolchain even when PATH came from launchd', () => {
+  // What launchd actually hands this server. A child that inherits it cannot
+  // run `node`, `opencode` or `gh`, so a working terminal looks broken.
+  const launchdPath = '/usr/bin:/bin:/usr/sbin:/sbin';
+  const saved = process.env.PATH;
+  process.env.PATH = launchdPath;
+  try {
+    const env = allowlist.buildEnv({}, { hive: path.join(ok, 'hive') });
+    const dirs = env.PATH.split(':');
+    assert.ok(dirs.length > launchdPath.split(':').length, 'the install prefixes are added');
+    assert.equal(env.PATH.includes('/usr/bin'), true, 'the original entries survive');
+    // The operator's ordering is not rewritten behind their back.
+    assert.deepEqual(
+      env.PATH.split(':').filter((d) => launchdPath.split(':').includes(d)),
+      launchdPath.split(':'),
+      'the original PATH keeps its order, at the tail',
+    );
+    for (const dir of dirs) {
+      assert.ok(fs.existsSync(dir), `${dir} is a real directory, not a dangling entry`);
+    }
+  } finally {
+    process.env.PATH = saved;
+  }
+});
+
+test('PATH augmentation never duplicates a prefix that is already present', () => {
+  const saved = process.env.PATH;
+  process.env.PATH = '/opt/homebrew/bin:/usr/bin:/bin';
+  try {
+    const env = allowlist.buildEnv({}, { hive: path.join(ok, 'hive') });
+    const dirs = env.PATH.split(':');
+    assert.equal(dirs.filter((d) => d === '/opt/homebrew/bin').length, 1);
+  } finally {
+    process.env.PATH = saved;
+  }
+});
+
 test('a corrupt policy file falls back to the built-in defaults, not to allow-all', () => {
   const hive = path.join(ok, 'hive');
   fs.mkdirSync(hive, { recursive: true });

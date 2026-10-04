@@ -1,4 +1,4 @@
-import { useLive, type JarvisAuditResponse, type JarvisTasksResponse, type QueueSummary, type TaskRecord, type VerifyState, type TerminalsPayload } from './api';
+import { useLive, type JarvisAuditResponse, type JarvisTasksResponse, type QueueSummary, type TaskRecord, type VerifyState } from '../api';
 import type { AutonomyState } from '../live/store';
 import CommandCompose from './CommandCompose';
 import { claimLabel, dispatchSummary, headroomLine, historyLabel, mayDrawCapacity, verifyTally } from '../deskTruth';
