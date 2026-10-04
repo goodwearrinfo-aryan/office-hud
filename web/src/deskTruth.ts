@@ -234,3 +234,47 @@ export function dispatchSummary(preview: PreviewLike | null | undefined): {
   }
   return { available: true, label: 'DISPATCH AVAILABLE', reason: null, host };
 }
+export interface RateLimitLike {
+  ok?: boolean;
+  status?: 'observed' | 'unobserved' | 'unavailable' | string | null;
+  reason?: string | null;
+  headroom?: number | null;
+  reset_in_ms?: number | null;
+  requested?: { key?: string | null; rpm?: number | null } | null;
+  checked_at?: string | null;
+}
+
+/**
+ * The one sentence the desk says about rate-limit headroom.
+ *
+ * The floor this replaces would have drawn a green bar. There is no bar here, and
+ * that is the finding rather than an omission: the limiter keeps its buckets in a
+ * private map and reports a full bucket for any key it has never seen, so a bar
+ * would have been drawn from the default that was just filled in.
+ *
+ * An unobserved scope gets its own wording, kept distinct from an exhausted one.
+ * "No record" and "no capacity" are different facts and an operator pressing Route it
+ * acts on the difference.
+ */
+export function headroomLine(report: RateLimitLike | null | undefined): string {
+  if (!report || typeof report !== 'object') return 'Rate-limit headroom has not been reported.';
+  if (report.status === 'observed' && typeof report.headroom === 'number') {
+    const reset = report.reset_in_ms == null ? '' : `, resets in ${Math.ceil(report.reset_in_ms / 1000)}s`;
+    return `${report.headroom} of ${report.requested?.rpm ?? '?'} requests available${reset}.`;
+  }
+  if (report.status === 'unavailable') return report.reason || 'The rate limiter could not be loaded, so no headroom is claimed.';
+  if (report.status === 'unobserved') return report.reason || 'No rate-limit record exists for this scope.';
+  return report.reason || 'Rate-limit headroom is in a state this floor does not recognise, so nothing is claimed.';
+}
+
+/**
+ * Whether a floor may draw a capacity indicator at all.
+ *
+ * Only a proven reading. This is the restraint borrowed from pixel-agents (MIT), whose
+ * lane indicators appear on real signals rather than on defaults — and whose own
+ * roadmap still lists rate-limit health bars as unbuilt, so nothing was copied but the
+ * discipline.
+ */
+export function mayDrawCapacity(report: RateLimitLike | null | undefined): boolean {
+  return report?.status === 'observed' && typeof report.headroom === 'number';
+}

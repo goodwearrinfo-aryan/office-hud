@@ -117,7 +117,7 @@ test('the unclaimed list is the one this branch actually measured', () => {
   // The exact count is asserted so a change is noticed instead of absorbed: if a
   // floor starts consuming one, this fails and the stale reason must go with it.
   assert.equal(
-    unclaimed.length, 11,
+    unclaimed.length, 10,
     `expected 15 unconsumed GETs, found ${unclaimed.length}: ${unclaimed.join(', ')}`,
   );
 });

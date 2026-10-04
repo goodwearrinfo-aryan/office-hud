@@ -11,6 +11,8 @@ import assert from 'node:assert/strict';
 
 import {
   canClaimAbsence,
+  headroomLine,
+  mayDrawCapacity,
   claimLabel,
   dispatchSummary,
   historyLabel,
@@ -176,4 +178,36 @@ test('dispatch keeps the reason, because the reasons have different fixes', () =
 test('the host name is carried through so the banner can name whose office this is', () => {
   assert.equal(dispatchSummary({ ok: true, queue_available: true, dispatch: { available: true, host: 'As-Mac-mini' } }).host, 'As-Mac-mini');
   assert.equal(dispatchSummary(null).host, null);
+});
+test('headroom never draws a bar from an unobserved scope', () => {
+  // The limiter returns {available: rpm} for any key it has never seen, so a bar
+  // would be drawn from the default that was just filled in. The desk says NO BAR.
+  const unobserved = { ok: false, status: 'unobserved', headroom: null, reset_in_ms: null, reason: 'The rate limiter keeps its buckets in memory and does not list its keys, so this scope has no record.' };
+  assert.equal(mayDrawCapacity(unobserved), false);
+  assert.match(headroomLine(unobserved), /does not list its keys/);
+  assert.doesNotMatch(headroomLine(unobserved), /available/);
+});
+
+test('a proven reading is allowed to draw, and carries the limit it was asked about', () => {
+  const observed = { ok: true, status: 'observed', headroom: 3, reset_in_ms: 4200, requested: { key: 'pm-risk', rpm: 60 } };
+  assert.equal(mayDrawCapacity(observed), true);
+  assert.match(headroomLine(observed), /^3 of 60 requests available, resets in 5s\.$/);
+});
+
+test('no record is not the same claim as no capacity', () => {
+  const unavailable = { ok: false, status: 'unavailable', headroom: null, reason: 'The rate limiter could not be loaded: Cannot find module. No headroom is claimed.' };
+  assert.equal(mayDrawCapacity(unavailable), false);
+  assert.match(headroomLine(unavailable), /could not be loaded/);
+  assert.notEqual(headroomLine(unobservedHeadroom()), headroomLine(unavailable));
+});
+
+function unobservedHeadroom() {
+  return { ok: false, status: 'unobserved', headroom: null, reason: 'No rate-limit record exists for this scope.' };
+}
+
+test('an unrecognised state claims nothing rather than defaulting to a number', () => {
+  const weird = { status: 'something-new', headroom: 99 };
+  assert.equal(mayDrawCapacity(weird), false);
+  assert.match(headroomLine(weird), /does not recognise/);
+  assert.equal(headroomLine(null), 'Rate-limit headroom has not been reported.');
 });
