@@ -134,47 +134,8 @@ def _classify(procs: List[Dict[str, Any]]) -> tuple:
     return terminals, processes
 
 
-# A session whose heartbeat is older than this is not a live session. Matches
-# the HUD server's own SESSION_STALE_MS so the two agree on the boundary.
-SESSION_STALE_SEC = 300
-
-# Statuses that already mean "not running". Never upgraded: if a record says
-# STOPPED it stays STOPPED regardless of how recent its heartbeat looks.
-_TERMINAL_STATUS = frozenset({"STOPPED", "DEAD", "ERROR", "FAILED", "STALE"})
-
-
-def _age_sec(timestamp: Any) -> float:
-    """Seconds since an ISO-8601 timestamp. Large if unparseable/absent.
-
-    Returning a large number rather than None means an unparseable or missing
-    heartbeat reads as stale, which is the honest answer: a record whose age
-    cannot be established is not evidence that anything is running.
-    """
-    if not isinstance(timestamp, str) or not timestamp:
-        return float("inf")
-    try:
-        moment = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-    except ValueError:
-        return float("inf")
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - moment).total_seconds()
-
-
 def _sessions(hive: Path) -> List[Dict[str, Any]]:
-    """Read the fleet hive's agent sessions, if this machine runs a fleet.
-
-    A session record is a claim made when it was written, not a measurement of
-    now, and this host does not write sessions.json -- it only reads it. So these
-    records age indefinitely while still carrying the status they had when last
-    written. Measured on this laptop: sessions.json was 71h old and 260 of its
-    763 records still declared HEALTHY, with heartbeats up to 3.2 days behind.
-
-    Downgrade anything whose heartbeat is older than SESSION_STALE_SEC to STALE
-    and record how old it is, so a stale record can never be published as a live
-    one. This only ever downgrades; a record already marked STOPPED/FAILED keeps
-    that status, because a fresh heartbeat does not resurrect a dead session.
-    """
+    """Read the fleet hive's agent sessions, if this machine runs a fleet."""
     path = hive / "sessions.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -183,28 +144,7 @@ def _sessions(hive: Path) -> List[Dict[str, Any]]:
     sessions = data.get("sessions") if isinstance(data, dict) else None
     if not isinstance(sessions, list):
         return []
-
-    stamped: List[Dict[str, Any]] = []
-    for session in sessions:
-        if not isinstance(session, dict):
-            continue
-        age = _age_sec(
-            session.get("last_heartbeat") or session.get("updated_at") or session.get("started_at")
-        )
-        declared = str(session.get("status") or "").upper()
-        row = dict(session)
-        row["heartbeat_age_sec"] = None if age == float("inf") else int(max(0, age))
-        if declared in _TERMINAL_STATUS:
-            # Already honestly marked; leave the author's own status alone.
-            pass
-        elif age > SESSION_STALE_SEC:
-            row["status"] = "STALE"
-            row["stale_reason"] = (
-                "no heartbeat" if age == float("inf")
-                else "heartbeat %ds old" % int(age)
-            )
-        stamped.append(row)
-    return stamped
+    return sessions
 
 
 def _processes(hive: Path) -> List[Dict[str, Any]]:
@@ -224,11 +164,7 @@ def collect(hive: Path) -> Dict[str, Any]:
         "fqn": socket.getfqdn(),
         "collected_at": _now(),
         "agent_sessions": _sessions(hive),
-        # Observe first, fall back to the cache only when observation yields
-        # nothing. The other order lets hive/processes.json shadow the live scan
-        # whenever that file is non-empty, and nothing rewrites it, so it freezes
-        # at whatever it held and every record in it keeps claiming RUNNING.
-        "processes": live_processes or _processes(hive),
+        "processes": _processes(hive) or live_processes,
         "shell_terminals": terminals,
     }
 

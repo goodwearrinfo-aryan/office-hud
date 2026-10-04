@@ -8,3 +8,10 @@ dist/
 .env
 .env.local
 office-hud.app/
+
+# Machine-local runtime state written by the floor guards, not source.
+floor_ledger.json
+floor_route_guard_state.json
+hud_guard_baseline.json
+hud_guard_state.json
+office-hud.err

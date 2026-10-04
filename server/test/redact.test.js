@@ -25,8 +25,11 @@ test('credential-shaped flags are masked', async () => {
   // processes to prove the redactor is wired into the served payload.
   const host = res.json.hosts.find(h => h.local);
   assert.ok(host, 'local host present');
+  // Secret values, not flag shapes: `api[-_]?key=\S+` also matches the masked
+  // `--api-key=***`, so it demanded that the redactor do nothing. The fixture
+  // now carries a canary, so this has something real to check.
   for (const p of host.processes) {
-    assert.doesNotMatch(String(p.command || ''), /(?:-|_)api[-_]?key=\S+/i);
+    assert.doesNotMatch(String(p.command || ''), /sk-[A-Za-z0-9]{8,}/);
   }
 });
 

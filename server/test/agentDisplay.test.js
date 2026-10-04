@@ -8,19 +8,72 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { loadServer } = require('./helpers/harness');
-
-const server = loadServer();
-const { mergedAgents } = server.internals;
+const { makeFixtureHive, loadServer } = require('./helpers/harness');
 
 const STALE_SEC = 60 * 60;
 
 /**
- * mergedAgents reads the real hive through module-level constants, so a fixture
- * cannot be injected wholesale. Instead these tests assert the invariants that
- * must hold for whatever the live hive contains — which is the property that
- * actually matters, and which a fixture could only ever assert about itself.
+ * These tests used to be written as invariants over "whatever the live hive
+ * contains", on the stated grounds that a fixture could not be injected. That
+ * premise was false in the worst way: loadServer() was called with no argument,
+ * `process.env.OFFICE_HUD_HIVE = undefined` coerced to the truthy string
+ * "undefined", and the server was pointed at ./undefined/. The "live hive" was
+ * never opened. Every loop below iterated an empty roster and every count came
+ * back 0, so the whole file passed without reading anything -- including the
+ * completion-split identity, which held as 0 + 0 === 0.
+ *
+ * The invariants are still the right thing to assert, and they are now asserted
+ * over a real hive: makeFixtureHive() builds one on disk, and loadServer() now
+ * refuses a missing or non-directory path instead of quietly producing "undefined".
  */
+
+// The completion-split assertions are only meaningful over a hive that actually
+// holds COMPLETE tasks, so the cases under test are declared here rather than
+// inherited from whatever makeFixtureHive happened to write. They are appended to
+// its task list so its own statuses stay in place.
+const fixture = makeFixtureHive();
+
+function completionTask(id, extra) {
+  return {
+    task_id: id,
+    title: `completion case ${id}`,
+    status: 'COMPLETE',
+    created_at: new Date(fixture.now - 3 * 3600000).toISOString(),
+    started_at: new Date(fixture.now - 2 * 3600000).toISOString(),
+    completed_at: new Date(fixture.now - 3600000).toISOString(),
+    claimed_by: 'worker-a',
+    ...extra,
+  };
+}
+
+const COMPLETION_CASES = [
+  // No result and no evidence block at all. Stored COMPLETE, not flagged as
+  // failed, backed by nothing -- the shape that must be reported as unverified
+  // rather than quietly absorbed into "verified".
+  completionTask('c-no-evidence'),
+  // Whitespace-only output. The result branch trims before judging, so this is
+  // also unverified; it pins the trim rather than only the missing key.
+  completionTask('c-blank-result', { result: '   \n\t  ' }),
+  // Liveness: stored COMPLETE while its own record says the model call failed.
+  // Must land in completedButFailed and must never be counted as verified.
+  completionTask('c-llm-error', {
+    result: '[executor ended: llm_error] all providers unavailable',
+    evidence: { status: 'llm_error' },
+  }),
+  // The one genuinely verified completion: real recorded output plus artifacts.
+  completionTask('c-backed', {
+    result: 'wrote the quarterly report',
+    evidence: { artifacts: ['reports/q3.md'], outcome: 'done' },
+  }),
+];
+
+const tasksPath = path.join(fixture.hive, 'tasks.json');
+const store = JSON.parse(fs.readFileSync(tasksPath, 'utf8'));
+store.tasks = store.tasks.concat(COMPLETION_CASES);
+fs.writeFileSync(tasksPath, JSON.stringify(store, null, 2));
+
+const server = loadServer(fixture.hive);
+const { mergedAgents } = server.internals;
 function labelFor(agent) {
   return agent.display;
 }
@@ -165,17 +218,30 @@ test('agents without a floor are excluded, and empty input is empty', () => {
 });
 
 test('numbered floors sort in numeric order, not lexicographically', () => {
-    // Only f<digits> reaches rollupFloors now: the floor attribute is also used
-    // for organisational groups like `command`, and emitting those as floors gave
-    // 18 rows for 12 floors (see summaryFloorsContract.test.js). So this asserts
-    // the numeric ordering directly, which is what lexicographic sorting breaks:
-    // f10 before f2.
+// Only f<digits> reaches rollupFloors now: the floor attribute is also used
+      // for organisational groups like `command`, and emitting those as floors gave
+      // 18 rows for 12 floors (see summaryFloorsContract.test.js). So this asserts
+      // the numeric ordering directly, which is what lexicographic sorting breaks:
+      // f10 before f2.
+      const rows = rollupFloors([
+        agent({ id: 'a', floor: 'f10' }),
+        agent({ id: 'b', floor: 'f2' }),
+        agent({ id: 'c', floor: 'f1' }),
+      ]);
+      assert.deepEqual(rows.map(r => r.floor), ['f1', 'f2', 'f10']);
+  });
+
+  test('organisational groups are not reported as floors', () => {
+    // `floor` doubles as an organisational group attribute (command, office,
+    // operations, ...). Reporting those as floors produced 18 rows for 12
+    // floors, six with no manager, no state and no liveness. A floor id is
+    // f<digits>; anything else belongs in the agent view, not the floor rollup.
     const rows = rollupFloors([
-      agent({ id: 'a', floor: 'f10' }),
-      agent({ id: 'b', floor: 'f2' }),
-      agent({ id: 'c', floor: 'f1' }),
+      agent({ id: 'a', floor: 'f2' }),
+      agent({ id: 'b', floor: 'command' }),
+      agent({ id: 'c', floor: 'office' }),
     ]);
-    assert.deepEqual(rows.map(r => r.floor), ['f1', 'f2', 'f10']);
+    assert.deepEqual(rows.map(r => r.floor), ['f2']);
   });
 
 // ---- completion integrity ---------------------------------------------------
@@ -184,18 +250,45 @@ test('numbered floors sort in numeric order, not lexicographically', () => {
 
 const { getQueueSummary } = server.internals;
 
-test('the queue separates raw COMPLETE from verified completions', () => {
+test('the queue partitions COMPLETE into verified, failed and unverified', () => {
   const q = getQueueSummary();
-  for (const key of ['complete', 'completedButFailed', 'verifiedComplete']) {
+  for (const key of ['complete', 'completedButFailed', 'verifiedComplete', 'unverifiedComplete']) {
     assert.equal(typeof q[key], 'number', `queue summary is missing ${key}`);
   }
-  // The raw count is whatever the store says; the verified count is the raw
-  // count minus the ones whose own record says they failed. They must agree.
+  // Precondition, and the reason this assertion used to be unfalsifiable: over an
+  // empty hive every term is 0 and the identity below holds as 0 + 0 + 0 === 0.
+  // If the fixture ever stops loading, this fails here instead of passing quietly.
+  assert.ok(q.complete > 0, `fixture hive exposed no COMPLETE tasks (complete=${q.complete})`);
+  assert.ok(
+    q.verifiedComplete >= 1,
+    `the artifact-backed completion was not counted as verified (verifiedComplete=${q.verifiedComplete})`,
+  );
+  // The raw count is whatever the store says. Every COMPLETE task lands in exactly
+  // one of the three buckets, so the three reconstruct the raw count. This used to
+  // be a TWO-term identity (verified + failed === complete), which cannot coexist
+  // with verified meaning "backed by durable evidence": a completion that is
+  // neither failed nor evidenced has nowhere to go and gets absorbed into
+  // "verified". The third term is what makes the arithmetic honest.
   assert.equal(
-    q.verifiedComplete + q.completedButFailed, q.complete,
-    'verified + failed-discrepancies must reconstruct the raw complete count',
+    q.verifiedComplete + q.completedButFailed + q.unverifiedComplete, q.complete,
+    'verified + failed-discrepancies + unverified must reconstruct the raw complete count',
   );
   assert.ok(q.verifiedComplete <= q.complete, 'verified cannot exceed the raw count');
+});
+
+test('a COMPLETE task with no durable evidence is reported, not counted as verified', () => {
+  const q = getQueueSummary();
+  assert.ok(q.complete > 0, `precondition: fixture hive has COMPLETE tasks (complete=${q.complete})`);
+  // c-no-evidence has no result and no evidence block; c-blank-result has only
+  // whitespace. Neither may be published as verified, and both must appear.
+  assert.ok(
+    q.unverifiedComplete >= 2,
+    `the two evidence-free completions must be reported; unverifiedComplete=${q.unverifiedComplete}`,
+  );
+  assert.equal(
+    q.verifiedComplete + q.completedButFailed + q.unverifiedComplete, q.complete,
+    'the partition must still reconstruct the raw complete count',
+  );
 });
 
 test('a COMPLETE task whose evidence records an llm_error is not a success', () => {
@@ -203,10 +296,19 @@ test('a COMPLETE task whose evidence records an llm_error is not a success', () 
   // result of "LLM call failed: All LLM providers failed" with no leading
   // bracket, which is why hive/lib/verify.py's "[LLM call failed" marker misses
   // it and the task is stored as a completion.
-  const { completedButFailed } = getQueueSummary();
+  const q = getQueueSummary();
+  assert.ok(q.complete > 0, `precondition: fixture hive has COMPLETE tasks (complete=${q.complete})`);
+  // Was `Number.isInteger(x) && x >= 0`, which is true of every value the server
+  // could ever return -- including every value produced by an unreadable hive, so
+  // the test passed whether or not the detector fired at all. There is exactly one
+  // failure-shaped record in the fixture, so the count is pinned.
+  assert.equal(
+    q.completedButFailed, 1,
+    'the llm_error record must be detected as a false completion and subtracted',
+  );
   assert.ok(
-    Number.isInteger(completedButFailed) && completedButFailed >= 0,
-    'completedButFailed must be a non-negative count',
+    q.completedButFailed <= q.complete,
+    'a discrepancy count cannot exceed the raw COMPLETE count',
   );
 });
 

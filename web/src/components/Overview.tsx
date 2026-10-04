@@ -1,47 +1,8 @@
 import { useLive, type BacktestData, type FleetLaunchdState, type LiveMetrics, type QueueSummary, type Summary } from '../api';
-import GodPanel from './GodPanel';
-import FloorTable from './FloorTable';
 
 type TradingOps = {
   launchdState?: FleetLaunchdState;
 };
-
-type HarnessHealth = {
-  ok?: boolean;
-  status?: string;
-  provider?: string;
-  model?: string;
-  degradedProviders?: string[];
-  error?: string | null;
-};
-
-type ProviderHealth = {
-  providers?: string[];
-  health?: Record<string, boolean>;
-};
-
-type BreakerState = {
-  state?: string;
-  failures?: number;
-  available?: boolean;
-};
-
-// The agent roster comes from hive/fleet.json, which is a static snapshot — the
-// writer for it no longer runs. Its own timestamp is published on /api/summary,
-// so the UI can say how old the roster is instead of implying it is live.
-type SummaryWithFleet = Summary & {
-  fleet?: { ts?: number; updated_at?: string } | null;
-};
-
-function rosterAgeLabel(fleet: SummaryWithFleet['fleet']): string | null {
-  const ms = typeof fleet?.ts === 'number' ? fleet.ts
-    : fleet?.updated_at ? Date.parse(fleet.updated_at) : NaN;
-  if (!Number.isFinite(ms)) return null;
-  const ageSec = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (ageSec < 3600) return `${Math.round(ageSec / 60)}m old`;
-  if (ageSec < 86400) return `${Math.round(ageSec / 3600)}h old`;
-  return `${Math.round(ageSec / 86400)}d old`;
-}
 
 type BacktestRow = {
   avg_test_sharpe?: number | null;
@@ -75,23 +36,11 @@ function Tile({ label, value, sub, toneClass }: { label: string; value: string; 
 }
 
 export default function Overview({ onNavigate }: { onNavigate: (floor: 'f6' | 'f9') => void }) {
-  const { data: summary, error: summaryError } = useLive<SummaryWithFleet>('/api/summary');
+  const { data: summary, error: summaryError } = useLive<Summary>('/api/summary');
   const { data: queue } = useLive<QueueSummary>('/api/queue');
   const { data: ops } = useLive<TradingOps>('/api/trading/ops');
   const { data: backtestData } = useLive<BacktestData>('/api/trading/backtests');
   const { data: live } = useLive<LiveMetrics>('/api/trading/live');
-  const { data: harness } = useLive<HarnessHealth>('/api/live/harness');
-  const { data: providerHealth } = useLive<ProviderHealth>('/api/live/providers');
-  // /api/live/breakers returns an object keyed by provider, not a list.
-  const { data: breakerData } = useLive<{ breakers: Record<string, BreakerState> }>('/api/live/breakers');
-  const { data: sessions } = useLive<{ sessions: Array<{ agent_id?: string; fresh?: boolean }> }>('/api/sessions');
-
-  const openBreakers = Object.entries(breakerData?.breakers ?? {})
-    .filter(([, b]) => b?.state && b.state !== 'closed')
-    .map(([provider, b]) => ({ provider, ...b }));
-
-  const rosterAge = rosterAgeLabel(summary?.fleet);
-  const liveSessionCount = (sessions?.sessions ?? []).filter(s => s.fresh && s.agent_id).length;
 
   const launchd = ops?.launchdState;
   // `failed` is a KeepAlive job that is down — always a real problem.
@@ -114,12 +63,6 @@ export default function Overview({ onNavigate }: { onNavigate: (floor: 'f6' | 'f
       <div className="flex items-center justify-between gap-4 mb-4">
         <h2 className="font-mono text-hud-amber text-lg">F16 · OVERVIEW</h2>
         <span className="badge badge-warning">READ ONLY · PAPER / TESTNET</span>
-      </div>
-
-      {/* God is the executive layer, so it leads the overview rather than
-          sitting in a list somewhere. */}
-      <div className="mb-4">
-        <GodPanel />
       </div>
 
       {/* 24/7 health first: a dead service outranks any metric. */}
@@ -195,80 +138,18 @@ export default function Overview({ onNavigate }: { onNavigate: (floor: 'f6' | 'f
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <Tile label="HIVE" value={summaryError ? 'FEED ERROR' : summary?.present ? 'LIVE' : 'OFFLINE'} toneClass={summaryError ? 'text-hud-red' : summary?.present ? 'text-hud-green' : 'text-hud-red'} sub={summary?.hive?.replace(/^\/Users\/[^/]+\//, '~/')} />
-        <Tile label="AGENTS" value={`${active} / ${agents.length}`} sub={rosterAge ? `roster ${rosterAge}` : 'active / total'} />
-        <Tile label="LIVE SESSIONS" value={sessions ? String(liveSessionCount) : '—'} sub="fresh heartbeats" />
+        <Tile label="AGENTS" value={`${active} / ${agents.length}`} sub="active / total" />
         <Tile label="QUEUE" value={queue ? `${queue.inProgress} in prog · ${queue.queued} queued` : '—'} />
         <Tile label="SESSION COST" value={summary ? `$${cost.toFixed(2)}` : '—'} />
-      </div>
-
-      {/* LLM health: the path most likely to break silently (quota, EOL
-          models, routing regressions), so it belongs beside process health. */}
-      <div className="panel p-4 mb-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-mono text-hud-amber text-sm">LLM PATH</h3>
-          {openBreakers.length > 0 && (
-            <span className="badge badge-warning">{openBreakers.length} breaker(s) open</span>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
-          <Tile
-            label="HARNESS"
-            value={!harness ? 'CHECKING' : harness.ok ? 'OK' : 'DOWN'}
-            toneClass={!harness ? 'text-hud-dim' : harness.ok ? 'text-hud-green' : 'text-hud-red'}
-            sub={harness?.error ? harness.error : (harness ? `${harness.provider}/${harness.model}` : undefined)}
-          />
-          <Tile
-            label="DEGRADED PROVIDERS"
-            value={harness ? String((harness.degradedProviders ?? []).length) : '—'}
-            toneClass={(harness?.degradedProviders ?? []).length > 0 ? 'text-hud-amber' : 'text-hud-green'}
-            sub={(harness?.degradedProviders ?? []).length > 0
-              ? (harness?.degradedProviders ?? []).join(', ')
-              : 'all ahead of the winner are usable'}
-          />
-          <Tile
-            label="PROVIDERS UP"
-            value={providerHealth ? `${Object.values(providerHealth.health ?? {}).filter(Boolean).length} / ${(providerHealth.providers ?? []).length}` : '—'}
-            sub="last known good"
-          />
-          <Tile
-            label="BREAKERS OPEN"
-            value={String(openBreakers.length)}
-            toneClass={openBreakers.length > 0 ? 'text-hud-amber' : 'text-hud-green'}
-            sub={openBreakers.length > 0 ? openBreakers.map(b => b.provider).join(', ') : 'all closed'}
-          />
-          <Tile label="TRADING LOG" value={live?.logExists ? `${(live.logSize / 1024 / 1024).toFixed(1)} MB` : live ? 'MISSING' : '—'} toneClass={live?.logExists ? 'text-hud-text' : 'text-hud-red'} />
-        </div>
-
-        {providerHealth?.providers?.length ? (
-          <div className="flex flex-wrap gap-2">
-            {providerHealth.providers.map(name => (
-              <span
-                key={name}
-                className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
-                  providerHealth.health?.[name]
-                    ? 'bg-hud-green/15 text-hud-green'
-                    : 'bg-hud-red/20 text-hud-red'
-                }`}
-              >
-                {name}
-              </span>
-            ))}
-          </div>
-        ) : (
-          <div className="text-hud-dim text-xs">No provider health reported yet.</div>
-        )}
-      </div>
-
-      <div className="mb-4">
-        <FloorTable />
+        <Tile label="TRADING LOG" value={live?.logExists ? `${(live.logSize / 1024 / 1024).toFixed(1)} MB` : live ? 'MISSING' : '—'} toneClass={live?.logExists ? 'text-hud-text' : 'text-hud-red'} />
       </div>
 
       <div className="panel p-4">
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-mono text-hud-amber text-sm">TOP STRATEGIES · BACKTEST</h3>
           <button type="button" className="btn btn-ghost text-xs" onClick={() => onNavigate('f6')}>Trading Lab →</button>
-        </div>        <div className="table-container">
+        </div>
+        <div className="table-container">
           <table className="table">
             <thead><tr><th>Strategy</th><th>Sharpe</th><th>Return</th><th>Win rate</th><th>PF</th><th>Trades</th></tr></thead>
             <tbody>
