@@ -26,9 +26,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { declaredMembers, hasInterface } = require('./helpers/interfaceMembers');
+const {
+  assertNoLiveOrderAdvertisement, assertExecutionImpliesPaperOnly,
+  assertPaperGateOnMutations, assertInertIfConfigured,
+} = require('./helpers/tradingSafety');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const REPO_ROOT = path.join(__dirname, '..', '..');
+const SERVER_SOURCE = fs.readFileSync(path.join(REPO_ROOT, 'server', 'index.js'), 'utf8');
 
 const API_TS = path.join(__dirname, '..', '..', 'web', 'src', 'api.ts');
 const LIVE_HIVE = path.join(os.homedir(), 'openalice-fleet', 'hive');
@@ -46,14 +53,6 @@ const NULLABLE_TOP_LEVEL = ['pid'];
 /** Boundary flags that must be booleans and must never be null. */
 const BOUNDARY_FLAGS = ['paper_only', 'managed', 'running', 'execution_allowed'];
 
-function declaredMembers(source, name) {
-  const body = new RegExp(`export interface ${name}\\s*\\{([\\s\\S]*?)\\n\\}`, 'm').exec(source);
-  assert.ok(body, `interface ${name} not found in api.ts`);
-  // Single-escaped: `\\s` in a regex literal means a literal backslash followed
-  // by "s", so this silently matched nothing and made every declared-member
-  // assertion below compare against an empty set.
-  return new Set([...body[1].matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]));
-}
 
 let http = null;
 let apiSource = '';
@@ -148,21 +147,27 @@ test('paper_only is declared as a required boolean', () => {
     'execution_allowed must be declared `execution_allowed: boolean` with no ? and no | null');
 });
 
-test('paper_only and execution_allowed are FALSE on this deployment', () => {
-  // ASSERTED, NEVER MODIFIED. Paper/testnet only.
-  assert.equal(status.paper_only, false, 'paper_only must be false — live orders are not permitted');
-  assert.equal(status.execution_allowed, false, 'execution_allowed must be false — no live order path');
+test('no live order path is advertised, on any machine', () => {
+  // Replaces an assertion that read `paper_only must be false -- live orders are
+  // not permitted`, which is inverted: the server derives paper_only from the
+  // bot's own config, so TRUE is the state meaning live orders are not
+  // permitted. See helpers/tradingSafety.js for the whole account; in short, it
+  // asserted a fact about the machine (does a bot run here?) and passed only
+  // where no bot ran, which is the least informative machine to ask.
+  assertNoLiveOrderAdvertisement(status, '/api/polymarket/status');
+  assertPaperGateOnMutations(REPO_ROOT);
 });
 
-test('execution_allowed cannot be true unless paper_only also holds', () => {
-  // The server computes execution_allowed as `... && paperOnly && ...`, so this
-  // implication is structural. Asserting it catches any future refactor that
-  // decouples the two, which would be exactly the wrong direction.
-  if (status.execution_allowed) {
-    assert.equal(status.paper_only, true,
-      'execution_allowed was true while paper_only was false');
-  }
+test('the paper gate holds: execution_allowed implies paper_only', () => {
+  assertExecutionImpliesPaperOnly(status, SERVER_SOURCE);
 });
+
+test('an inert deployment stays inert where that is required', () => {
+  // Opt-in, because "inert" is a property of some deployments and not others.
+  assertInertIfConfigured(status);
+});
+
+
 
 test('running and pid agree with each other', () => {
   if (status.running) {

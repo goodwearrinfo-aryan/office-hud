@@ -530,11 +530,22 @@ test('a command that outlives its timeout is killed and marked timedOut', async 
   await manager.load();
   const repo = path.join(os.homedir(), '.hud-timeout-fixture');
   fs.mkdirSync(repo, { recursive: true });
-  // `sleep` is not on the allowlist, so the long-running work is done by a
-  // permitted binary: pytest collecting a real (empty) suite still has to import
-  // the module, which is slower than the 300ms ceiling allows.
+  // `sleep` is not on the allowlist, so the blocking work is done by a target of
+  // a permitted binary: `make test` runs a shell, and the allowlist only ever
+  // sees the argv [make, test].
+  //
+  // This used to be `pytest --version`, on the theory that pytest's import was
+  // slower than the ceiling. pytest is NOT INSTALLED on the mini, so there the
+  // spawn failed instantly with "command not found" -- an error, not a timeout --
+  // and the test failed. It also passed `timeoutMs: 1`, which OVERRIDES
+  // commandTimeoutMs (manager.js: `spec.timeoutMs === undefined ?
+  // this.commandTimeoutMs : Number(spec.timeoutMs)`), so it was never testing
+  // the 300ms ceiling its own comment claimed to pin. A Makefile that sleeps is
+  // deterministic, exists on both machines, and passes no override, so the
+  // ceiling is genuinely what is under test.
+  fs.writeFileSync(path.join(repo, 'Makefile'), 'test:\n\t@echo working\n\tsleep 5\n');
   const record = await manager.spawnOne({
-    cmd: 'pytest --version', cwd: repo, type: 'background', timeoutMs: 1,
+    cmd: 'make test', cwd: repo, type: 'background',
   });
   const settled = await new Promise((resolve) => {
     const timer = setInterval(() => {

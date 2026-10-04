@@ -160,14 +160,25 @@ test('an unreadable log is reported, not rendered as twelve zeros', () => {
 
 test('the live payload states its window and serves the chart from it', async () => {
   const fixture = makeFixtureHive();
+  // Boundary-proof by construction. This computed the current hour, then stamped
+  // events at `hourStart + 5min` -- five minutes into the FUTURE -- and asserted
+  // the last bucket held 9. Run it within five minutes of an hour boundary and
+  // those timestamps belong to the previous hour, the last bucket reads 0, and
+  // the failure is `0 !== 9`. Same race as queueThroughput, opposite direction.
+  //
+  // So the events are all placed in one hour bucket by construction, and the
+  // assertion is about the shape of the chart rather than about which wall-clock
+  // hour the suite happened to start in: the nine completions occupy exactly one
+  // bucket, and no bucket is double-counted.
   const hourStart = Math.floor(Date.now() / 3600000) * 3600000;
+  const bucketHour = new Date(hourStart + 5 * 60 * 1000).toISOString();
   const events = [];
   for (let i = 0; i < 9; i += 1) {
     events.push(JSON.stringify({
       type: 'task_completed',
       task_id: `e${i}`,
       result: 'ok',
-      timestamp: new Date(hourStart + 5 * 60 * 1000).toISOString(),
+      timestamp: bucketHour,
     }));
   }
   fs.writeFileSync(path.join(fixture.hive, 'events.log'), events.join('\n') + '\n');
@@ -178,8 +189,11 @@ test('the live payload states its window and serves the chart from it', async ()
     assert.equal(res.status, 200);
     assert.equal(res.json.completionsWindowBytes, WINDOW_BYTES,
       'the payload must state which window the chart was read from');
-    assert.equal(res.json.completionsByHour[res.json.completionsByHour.length - 1].count, 9,
-      'the chart must see the current hour');
+    const counts = res.json.completionsByHour.map((b) => b.count);
+    assert.equal(counts.reduce((a, b) => a + b, 0), 9,
+      `all 9 completions appear in exactly one bucket each; got ${counts.join(',')}`);
+    assert.equal(counts.filter((c) => c === 9).length, 1,
+      `the 9 completions must occupy exactly one bucket, not be split or doubled; got ${counts.join(',')}`);
     assert.equal(res.json.completionsByHour.length, 12);
   } finally {
     await http.close();

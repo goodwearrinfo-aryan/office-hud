@@ -161,6 +161,18 @@ export interface Summary {
  */
 export interface ProcessRecord {
   status?: string;
+  /**
+   * What the observation concluded, and what was actually written down. These
+   * are not the same value and the difference is the point: a process recorded
+   * RUNNING whose last observation is hours old reports status STALE while
+   * stored_status stays RUNNING. The live hive shows exactly that pair
+   * ('RUNNING' / 'STALE'), so a view that renders only `status` is claiming
+   * more liveness than it measured. Both fields come from processTruth.js and
+   * neither was declared here, so nothing could render the distinction.
+   */
+  stored_status?: string | null;
+  /** Age of the observation `status` was derived from; null when unknown. */
+  observation_age_seconds?: number | null;
   command?: string;
   pid?: number;
   process_id?: string;
@@ -564,12 +576,26 @@ export interface PolymarketPortfolio {
  */
 export interface PolymarketMarketSummary {
   trades: number;
+  /**
+   * The server emits these seven; the type declared only the counts above, so a
+   * contract test reading the live payload found every one of them undeclared.
+   * The counts alone cannot answer the only questions anyone asks of a summary:
+   * how much of that activity is still open, how the trades were split, and what
+   * the money currently looks like.
+   */
+  open_trades?: number;
+  closed_trades?: number;
+  trade_sides?: Record<string, number>;
   signals: number;
+  signal_decisions?: Record<string, number>;
   orders: number;
+  order_statuses?: Record<string, number>;
   fills: number;
   open_positions: number;
   closed_positions: number;
   markets: number;
+  performance_metrics?: Record<string, unknown>;
+  portfolio?: PolymarketPortfolio;
 }
 
 export interface PolymarketMarketsResponse {
@@ -686,22 +712,22 @@ export interface PortalResponse {
 export interface VerifyState {
   present: boolean;
   at?: string;
-verdict_tally?: { OK?: number; DODGE?: number; SHORT?: number; FAIL?: number; EMPTY?: number };
-    verdict_tally_total?: number;
-    requeued?: Array<[string, string]>;
-    quarantined?: Array<[string, string]>;
-    /** Fraction of scanned verdicts that were OK. Measures output quality only. */
-    outputQualityRatePct?: number | null;
-    /**
-     * Verified work is not measured by this pipeline and is published as null.
-     * 0 would claim nothing was verified and a number would claim a measurement
-     * that never happened, so the honest value is "not measured" plus a reason.
+  verdict_tally?: { OK?: number; DODGE?: number; SHORT?: number; FAIL?: number; EMPTY?: number };
+  verdict_tally_total?: number;
+  requeued?: Array<[string, string]>;
+  quarantined?: Array<[string, string]>;
+  /** Fraction of scanned verdicts that were OK. Measures output quality only. */
+  outputQualityRatePct?: number | null;
+  /**
+   * Verified work is not measured by this pipeline and is published as null.
+   * 0 would claim nothing was verified and a number would claim a measurement
+   * that never happened, so the honest value is "not measured" plus a reason.
      */
-    verifiedWork?: number | null;
-    verifiedWorkDenominator?: number | null;
-    verificationCoverage?: number | null;
-    verificationBasis?: string;
-  }
+  verifiedWork?: number | null;
+  verifiedWorkDenominator?: number | null;
+  verificationCoverage?: number | null;
+  verificationBasis?: string;
+}
 
 export interface AgentDetail {
   agent: Agent;

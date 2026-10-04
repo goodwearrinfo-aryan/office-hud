@@ -17,17 +17,13 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { declaredMembers, declaredMemberInfo, hasInterface } = require('./helpers/interfaceMembers');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const API_TS = path.join(__dirname, '..', '..', 'web', 'src', 'api.ts');
 
 /** Top-level member names of an exported interface, minus `?`. */
-function declaredMembers(source, name) {
-  const body = new RegExp(`export interface ${name}\\s*\\{([\\s\\S]*?)\\n\\}`, 'm').exec(source);
-  assert.ok(body, `interface ${name} not found in api.ts`);
-  return new Set([...body[1].matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]));
-}
 
 /**
  * Load the server against the LIVE hive and read the real payloads.
@@ -88,14 +84,22 @@ test.after(async () => { await http?.close(); });
 /** Assert a declared type is a superset-free match of a live payload. */
 function assertAgrees(typeName, payload, { skip = [] } = {}) {
   if (!payload) return; // nothing live to compare; the type cannot be falsified here
-  const declared = declaredMembers(apiSource, typeName);
+  const info = declaredMemberInfo(apiSource, typeName);
   const sent = new Set(Object.keys(payload));
-  const phantom = [...declared].filter((k) => !sent.has(k) && !skip.includes(k));
-  const undeclared = [...sent].filter((k) => !declared.has(k));
-  assert.deepEqual(phantom, [], `${typeName} declares fields the server never sends`);
+  // Undeclared-but-sent is always a defect: a consumer has no type for that key.
+  const undeclared = [...sent].filter((k) => !info.has(k));
+  // A required member that never arrives is a defect. An OPTIONAL member that is
+  // absent is not, and that is what `skip` used to paper over: it listed fields by
+  // hand so this assertion could pass. On a hive with no backing data the server
+  // omits every optional field, so the same commit failed here and passed on the
+  // mini. Optionality is now read from the type instead of from a hand-kept list.
+  const missingRequired = [...info.entries()]
+    .filter(([, v]) => !v.optional)
+    .map(([k]) => k)
+    .filter((k) => !sent.has(k) && !skip.includes(k));
   assert.deepEqual(undeclared, [], `${typeName} omits fields the server sends`);
+  assert.deepEqual(missingRequired, [], `${typeName} requires fields the server never sends`);
 }
-
 // ------------------------------------------------------------------ Agent
 
 test('Agent agrees with the payload /api/agents serves', () => {
@@ -225,7 +229,7 @@ test('every interface declared in api.ts that names a live payload is covered he
   assert.equal(covered.length, 5);
   for (const name of covered) {
     assert.ok(
-      new RegExp(`export interface ${name}\\s*\\{`).test(apiSource),
+      hasInterface(apiSource, name),
       `${name} should still exist in api.ts`,
     );
   }

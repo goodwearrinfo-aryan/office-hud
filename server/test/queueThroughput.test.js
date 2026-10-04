@@ -68,9 +68,28 @@ test('completionsLastHour is one measurement, and the hourly chart still counts'
 
     // The chart is a separate output of the same loop and must be unaffected.
     assert.ok(Array.isArray(res.json.completionsByHour), 'the hourly chart must still be present');
-    const currentHour = Math.floor(Date.now() / 3600000) * 3600000;
-    const bucket = res.json.completionsByHour.find((b) => Date.parse(b.hour) === currentHour);
-    assert.equal(bucket && bucket.count, 40, 'the chart counts this hour correctly');
+    // Boundary-proof, deliberately. This used to recompute
+    // `Math.floor(Date.now() / 3600000) * 3600000` AFTER the HTTP round trip,
+    // while the events were stamped a minute BEFORE it. Run the suite across an
+    // hour boundary and "now" named a different bucket than the one the events
+    // had landed in: `0 !== 40`. It failed about once per hour of wall-clock time
+    // and passed on every other run, which is the worst kind of test to own.
+    //
+    // So assert the property that matters and cannot straddle a boundary: every
+    // completion appears in exactly one bucket, and the 40 recent ones share a
+    // single bucket -- which is exactly what a doubled tail loop breaks, by
+    // putting 80 in one bucket.
+    const counts = res.json.completionsByHour.map((b) => b.count);
+    assert.equal(
+      counts.reduce((a, b) => a + b, 0),
+      240,
+      `all 240 completions appear in exactly one bucket each; got ${counts.join(',')}`,
+    );
+    assert.equal(
+      counts.filter((c) => c === 40).length,
+      1,
+      `the 40 recent completions must occupy exactly one bucket, not be split or doubled; got ${counts.join(',')}`,
+    );
   } finally {
     await http.close();
     fixture.cleanup();
