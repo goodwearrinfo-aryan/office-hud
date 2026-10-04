@@ -1727,12 +1727,15 @@ const hasDurableEvidence = (task) => {
       if (String(event.result || '').startsWith('[LLM call failed')) failedLastHour++;
     }
   }
-  return {
-    total: tasks.length,
-    queued: byStatus.QUEUED || 0,
-    inProgress: inProgress.length,
-    complete: byStatus.COMPLETE || 0,
-    failed: byStatus.FAILED || 0,
+const throughput = require('./throughput');
+      const unbiased = throughput.completionsLastHour(HIVE);
+      const hourly = throughput.completionsByHour(HIVE);
+      return {
+        total: tasks.length,
+        queued: byStatus.QUEUED || 0,
+        inProgress: inProgress.length,
+        complete: byStatus.COMPLETE || 0,
+        failed: byStatus.FAILED || 0,
     quarantined: byStatus.QUARANTINED || 0,
     staleInProgress: staleInProgress.length,
     // Recorded as COMPLETE but the record itself says the model call failed.
@@ -1767,10 +1770,16 @@ const hasDurableEvidence = (task) => {
         ? null
         : Math.max(0, Math.floor((now - timestampMs(task.heartbeat || task.claimed_at)) / 1000)),
     })),
-    completionsLastHour,
-    failedLastHour,
-    completionsByHour: [...completionHour.entries()].map(([hour, count]) => ({ hour: new Date(hour).toISOString(), count })),
-    recentCompletions: completions.slice(0, 20),
+// Read through throughput.js rather than off a 5000-event fetch: that fetch
+      // silently truncated the log, so the rate was a floor presented as a rate,
+      // and the payload never said which window the chart was read from.
+      completionsLastHour: unbiased.completionsLastHour,
+      completionsLastHourLowerBound: Boolean(unbiased.lower_bound),
+      completionsWindowBytes: unbiased.window_bytes,
+      completionsError: unbiased.error || null,
+      failedLastHour,
+      completionsByHour: hourly.hours,
+      recentCompletions: completions.slice(0, 20),
   };
 }
 
@@ -2149,17 +2158,35 @@ function getTaskBoard(perColumn = 25) {
       count += 1;
       if (rows.length >= perColumn) continue;
       claimed.add(task.task_id);
-      rows.push(Object.fromEntries(BOARD_TASK_FIELDS.filter((field) => task[field] !== undefined).map((field) => [field, task[field]])));
+      const row = Object.fromEntries(BOARD_TASK_FIELDS.filter((field) => task[field] !== undefined).map((field) => [field, task[field]]));
+      // Only rows in the completion column carry a truth label. Labelling QUEUED
+      // or IN_PROGRESS work would imply a completion claim that does not exist yet.
+      if (column.id === 'done') {
+        const verdict = classifyTaskTruth(task);
+        row.completion_truth = verdict.truth;
+        row.evidence_score = verdict.score === undefined ? null : verdict.score;
+        row.evidence_reason = verdict.reason || null;
+      }
+      rows.push(row);
     }
     groups[column.id] = rows;
     counts[column.id] = count;
   }
 
-  return {
-    groups,
-    counts,
-    total: all.length,
-    perColumn,
+// counts.done is the raw COMPLETE count and stays that way: it is what the
+    // pipeline asserts. completion states how many of those are actually supported
+    // by evidence, so a reader is never left to assume the two agree.
+    const claimedComplete = all.filter((task) => {
+      const status = String(task.status || '').toUpperCase();
+      return status === 'COMPLETE' || status === 'DONE';
+    });
+
+    return {
+      groups,
+      counts,
+      completion: summarizeTasks(claimedComplete),
+      total: all.length,
+      perColumn,
     // Tasks in a status the board does not draw, so the UI can say so.
     unclassified: all.length - [...claimed].length - Object.values(counts).reduce((a, b) => a + b, 0) + [...claimed].length,
   };

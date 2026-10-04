@@ -224,6 +224,15 @@ export interface QueueSummary {
   byStatus: Record<string, number>;
   inProgressTasks: Array<TaskRecord & { heartbeat_age_sec: number | null }>;
   completionsLastHour: number;
+  /**
+   * True when the count is a floor rather than the rate: the log exceeded the
+   * window that was read, so older completions exist that this cannot see.
+   */
+  completionsLastHourLowerBound?: boolean;
+  /** Bytes of events.log the rate and the chart were computed from. */
+  completionsWindowBytes?: number | null;
+  /** Why the throughput read failed, if it did. Null means it succeeded. */
+  completionsError?: string | null;
   failedLastHour: number;
   completionsByHour: Array<{ hour: string; count: number }>;
   recentCompletions: FleetEvent[];
