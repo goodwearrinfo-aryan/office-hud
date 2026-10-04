@@ -1,3 +1,4 @@
+import type { CostVerdict } from '../costTruthTypes';
 import { useLive, type HarnessHealth, type OfficeManagerStatus, type QueueSummary, type SessionRecord, type Summary } from '../api';
 
 function timeAgo(value: string | null) {
@@ -17,12 +18,24 @@ export default function ExecutiveHQ() {
   const { data: sessionsData } = useLive<{ sessions: SessionRecord[] }>('/api/sessions');
   const { data: officeManager } = useLive<OfficeManagerStatus>('/api/office-manager');
   const { data: harness } = useLive<HarnessHealth>('/api/harness/health');
+  // Cost truth comes from the server, which computes it from the records. Measured on
+  // the live mini: 58 agents all reporting usd 0, and all 27 cost records carrying null
+  // token counts -- which the hive's cost lib multiplies into a zero. So the total is a
+  // silence, and `may_show_zero` is the difference between $0.00 as a measurement and
+  // $0.00 as a lie.
+  const { data: costs } = useLive<{ verdict?: CostVerdict | null; cost_label?: string | null; may_show_zero?: boolean }>('/api/llm/costs');
+  const showCostFigure = costs?.may_show_zero === true;
   const agents = summary?.agents ?? [];
   const sessions = sessionsData?.sessions ?? [];
   const liveAgents = agents.filter(agent => agent.display === 'busy' || agent.display === 'idle');
   const healthySessions = sessions.filter(session => session.fresh).length;
   const totalCost = agents.reduce((sum, agent) => sum + (agent.usd ?? 0), 0);
-  const topAgents = [...agents].sort((a, b) => (b.usd ?? 0) - (a.usd ?? 0)).slice(0, 8);
+  // Ranked by MEASURED spend from the records, not by `usd`, which is 0 for every
+  // agent on this hive. Sorting that would produce an arbitrary order and drawing bars
+  // for it would look like a cost ranking that was measured.
+  const topAgents = showCostFigure
+    ? [...agents].sort((a, b) => (b.usd ?? 0) - (a.usd ?? 0)).slice(0, 8)
+    : [];
   const maxCost = Math.max(...topAgents.map(agent => agent.usd ?? 0), 0.01);
   const completionMax = Math.max(...(queue?.completionsByHour.map(item => item.count) ?? [0]), 1);
   const alerts = [
@@ -91,8 +104,16 @@ export default function ExecutiveHQ() {
         </div>
         <div className="panel p-4">
           <div className="text-xs text-hud-dim">TOTAL COST</div>
-          <div className="text-3xl font-mono font-bold text-hud-amber">${totalCost.toFixed(2)}</div>
-          <div className="text-xs text-hud-dim">${queue?.completionsLastHour ?? 0} completions this hour</div>
+          {showCostFigure ? (
+            <div className="text-3xl font-mono font-bold text-hud-amber">${totalCost.toFixed(2)}</div>
+          ) : (
+            <div className="text-2xl font-mono font-bold text-hud-amber">NOT MEASURED</div>
+          )}
+          <div className="text-xs text-hud-dim">
+            {showCostFigure
+              ? `${queue?.completionsLastHour ?? 0} completions this hour`
+              : (costs?.cost_label ?? 'Cost has not been reported.')}
+          </div>
         </div>
       </div>
 
@@ -139,7 +160,11 @@ export default function ExecutiveHQ() {
               <span className="text-right font-mono text-xs text-hud-amber">${(agent.usd ?? 0).toFixed(2)}</span>
             </div>
           ))}
-          {topAgents.length === 0 && <div className="text-hud-dim text-xs text-center py-4">No agents registered</div>}
+          {topAgents.length === 0 && (
+            <div className="text-hud-dim text-xs text-center py-4">
+              {showCostFigure ? 'No agents registered' : 'No per-agent ranking: no call has reported a usable cost.'}
+            </div>
+          )}
         </div>
       </div>
     </div>
