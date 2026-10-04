@@ -159,6 +159,43 @@ test('the child environment carries no provider keys', () => {
   delete process.env.SOME_FAKE_PROVIDER_KEY;
 });
 
+test('a launched shell can find the toolchain even when PATH came from launchd', () => {
+  // What launchd actually hands this server. A child that inherits it cannot
+  // run `node`, `opencode` or `gh`, so a working terminal looks broken.
+  const launchdPath = '/usr/bin:/bin:/usr/sbin:/sbin';
+  const saved = process.env.PATH;
+  process.env.PATH = launchdPath;
+  try {
+    const env = allowlist.buildEnv({}, { hive: path.join(ok, 'hive') });
+    const dirs = env.PATH.split(':');
+    assert.ok(dirs.length > launchdPath.split(':').length, 'the install prefixes are added');
+    assert.equal(env.PATH.includes('/usr/bin'), true, 'the original entries survive');
+    // The operator's ordering is not rewritten behind their back.
+    assert.deepEqual(
+      env.PATH.split(':').filter((d) => launchdPath.split(':').includes(d)),
+      launchdPath.split(':'),
+      'the original PATH keeps its order, at the tail',
+    );
+    for (const dir of dirs) {
+      assert.ok(fs.existsSync(dir), `${dir} is a real directory, not a dangling entry`);
+    }
+  } finally {
+    process.env.PATH = saved;
+  }
+});
+
+test('PATH augmentation never duplicates a prefix that is already present', () => {
+  const saved = process.env.PATH;
+  process.env.PATH = '/opt/homebrew/bin:/usr/bin:/bin';
+  try {
+    const env = allowlist.buildEnv({}, { hive: path.join(ok, 'hive') });
+    const dirs = env.PATH.split(':');
+    assert.equal(dirs.filter((d) => d === '/opt/homebrew/bin').length, 1);
+  } finally {
+    process.env.PATH = saved;
+  }
+});
+
 test('a corrupt policy file falls back to the built-in defaults, not to allow-all', () => {
   const hive = path.join(ok, 'hive');
   fs.mkdirSync(hive, { recursive: true });

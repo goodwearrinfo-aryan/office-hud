@@ -97,6 +97,19 @@ const DEFAULTS = {
   // here is dropped: a spawned shell must not receive the provider API keys
   // that this process holds in its own environment.
   envPassthrough: ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TZ', 'SSH_AUTH_SOCK'],
+  // Directories prepended to a spawned shell's PATH when they are missing from
+  // it. launchd hands this server PATH=/usr/bin:/bin:/usr/sbin:/sbin, so PATH
+  // passes through by default and the child inherits that bare list -- which
+  // hides Homebrew and nvm, and with them opencode, gh, node and python. That
+  // makes a working terminal look broken: `which node` finds nothing. The same
+  // list the tmux spawner uses to resolve its own binary (EXTRA_PREFIXES), kept
+  // here so both agree on what "installed" means.
+  pathPrefixes: [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/opt/local/bin',
+    os.homedir() + '/.local/bin',
+  ],
   // Flags that invalidate every rule when present, whatever else matches.
   //
   // git's global options are the reason this list exists: `git -c
@@ -325,6 +338,48 @@ function validate(command, cwd, options = {}) {
 }
 
 /**
+ * The PATH a spawned shell should get: whatever this process holds, with the
+ * common install prefixes prepended if they are missing.
+ *
+ * Additive only. Nothing is removed, so an operator who narrowed PATH on
+ * purpose keeps their ordering; we only make sure the directories holding the
+ * toolchain are reachable at all. Directories that do not exist are skipped, so
+ * a machine without Homebrew gets exactly the PATH it had.
+ */
+function augmentedPath(current, policy) {
+  const fs = require('node:fs');
+  // The operator's own entries, preserved verbatim and in order.
+  const existing = String(current || '').split(':').filter(Boolean);
+  const have = new Set(existing);
+  const lead = [];
+  const isDir = (dir) => {
+    try { return fs.statSync(dir).isDirectory(); } catch { return false; }
+  };
+  const add = (dir) => {
+    if (!dir || have.has(dir) || lead.includes(dir)) return;
+    if (!isDir(dir)) return;
+    lead.push(dir);
+  };
+  for (const dir of policy.pathPrefixes || DEFAULTS.pathPrefixes) add(dir);
+  // nvm installs node under a version directory, so it cannot be named as a
+  // literal prefix. Prefer the shell's own NVM_BIN; otherwise take the newest
+  // installed version. Only one, or PATH would depend on install order.
+  const home = os.homedir();
+  if (process.env.NVM_BIN) {
+    add(process.env.NVM_BIN);
+  } else {
+    try {
+      const newest = fs.readdirSync(`${home}/.nvm/versions/node`)
+        .filter((v) => /^v\d+\./.test(v))
+        .sort()
+        .pop();
+      if (newest) add(`${home}/.nvm/versions/node/${newest}/bin`);
+    } catch { /* nvm is not installed on this machine */ }
+  }
+  return [...lead, ...existing].join(':');
+}
+
+/**
  * Build the child environment: only the passthrough names plus explicitly
  * requested extras, so a spawned shell never inherits this process's keys.
  */
@@ -335,6 +390,7 @@ function buildEnv(requested = {}, options = {}) {
   for (const name of policy.envPassthrough || DEFAULTS.envPassthrough) {
     if (process.env[name] !== undefined) env[name] = process.env[name];
   }
+  if (env.PATH !== undefined) env.PATH = augmentedPath(env.PATH, policy);
   for (const [name, value] of Object.entries(requested || {})) {
     const key = String(name);
     // Never let a caller inject a variable that would shadow the passthrough
