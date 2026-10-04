@@ -11,12 +11,34 @@ const path = require('node:path');
 const allowlist = require('../lib/terminal/allowlist');
 
 const HOME = os.homedir();
-const ok = fs.mkdtempSync(path.join(os.tmpdir(), 'hud-allow-'));
 
-// The policy allows cwd under $HOME, so a real directory inside it is needed.
-const CWD = path.join(HOME, '.hud-allowlist-fixture');
+// HERMETIC POLICY. This file used to call validate() with no policyPath, so it
+// silently inherited whatever terminal_allowlist.json happened to sit in the
+// host's default hive, and it put its fixture cwd under $HOME because the
+// default policy allows $HOME. Two machines, two verdicts:
+//
+//   laptop - no policy file, default [os.homedir()] = /Users/aryanagarwal,
+//            fixture under $HOME, everything behaves as written.
+//   mini   - a policy file EXISTS there, and its cwdPrefixes is
+//            ["/Users/aryanagarwal"]: a laptop path, on a machine whose home is
+//            /Users/a. So every cwd was "outside the allowed trees" and every
+//            command was refused.
+//
+// That second machine is worse than a red suite. `every known escape is refused`
+// passed there for the wrong reason: the cwd was rejected before the command was
+// ever examined, so the attack list below was not being tested AT ALL. A test
+// that cannot fail is worse than no test.
+//
+// So: build the policy here, from the shipped DEFAULTS, overriding only
+// cwdPrefixes, and pass policyPath to every call. The rules under test are now
+// the repo's; only the sandbox location is ours.
+const ok = fs.mkdtempSync(path.join(os.tmpdir(), 'hud-allow-'));
+const CWD = path.join(ok, 'cwd');
 fs.mkdirSync(CWD, { recursive: true });
-test.after(() => { fs.rmSync(CWD, { recursive: true, force: true }); fs.rmSync(ok, { recursive: true, force: true }); });
+const POLICY_PATH = path.join(ok, 'terminal_allowlist.json');
+fs.writeFileSync(POLICY_PATH, JSON.stringify({ ...allowlist.DEFAULTS, cwdPrefixes: [ok] }));
+const POLICY = { policyPath: POLICY_PATH };
+test.after(() => { fs.rmSync(ok, { recursive: true, force: true }); });
 
 const denied = [
   // -- direct interpreter / shell escapes
@@ -43,9 +65,18 @@ const denied = [
 
 test('every known escape is refused', () => {
   for (const command of denied) {
-    const verdict = allowlist.validate(command, CWD);
+    const verdict = allowlist.validate(command, CWD, POLICY);
     assert.equal(verdict.allowed, false, `should be DENIED: ${command}`);
     assert.ok(verdict.reason, `a rejection must carry a reason: ${command}`);
+    // Guards against the vacuous pass this file used to have on the mini: there
+    // the cwd itself was outside the policy, so every entry below was refused
+    // before the command was ever read and the attack list proved nothing. If
+    // the cwd is what got rejected, this case is not testing the command.
+    assert.doesNotMatch(
+      verdict.reason,
+      /outside the allowed trees|does not exist|not a directory/,
+      `refused for the cwd rather than the command, so this case proves nothing: ${command}`,
+    );
   }
 });
 
@@ -60,7 +91,7 @@ const allowed = [
 
 test('ordinary development commands are permitted', () => {
   for (const command of allowed) {
-    const verdict = allowlist.validate(command, CWD);
+    const verdict = allowlist.validate(command, CWD, POLICY);
     assert.equal(verdict.allowed, true, `should be ALLOWED: ${command} (${verdict.reason})`);
   }
 });
@@ -81,27 +112,27 @@ test('quotes group but never execute', () => {
 });
 
 test('an unbalanced quote is a 400, not a crash', () => {
-  const verdict = allowlist.validate('git commit -m "unterminated', CWD);
+  const verdict = allowlist.validate('git commit -m "unterminated', CWD, POLICY);
   assert.equal(verdict.allowed, false);
   assert.match(verdict.reason, /unbalanced/);
 });
 
 test('cwd containment rejects traversal and unrelated roots', () => {
   for (const cwd of ['/etc', '/tmp', '/private/etc', '/', `${HOME}/../etc`]) {
-    const verdict = allowlist.validate('git status', cwd);
+    const verdict = allowlist.validate('git status', cwd, POLICY);
     assert.equal(verdict.allowed, false, `cwd ${cwd} must be rejected`);
   }
 });
 
 test('cwd must be a real directory', () => {
   const missing = path.join(CWD, 'does-not-exist');
-  const verdict = allowlist.validate('git status', missing);
+  const verdict = allowlist.validate('git status', missing, POLICY);
   assert.equal(verdict.allowed, false);
   assert.match(verdict.reason, /does not exist/);
   // A file that exists is still not a cwd.
   const file = path.join(CWD, 'file.txt');
   fs.writeFileSync(file, 'x');
-  const onFile = allowlist.validate('git status', file);
+  const onFile = allowlist.validate('git status', file, POLICY);
   assert.equal(onFile.allowed, false);
   assert.match(onFile.reason, /not a directory/);
 });
@@ -109,13 +140,13 @@ test('cwd must be a real directory', () => {
 test('a path inside an allowed prefix is accepted, not just the prefix itself', () => {
   const nested = path.join(CWD, 'a', 'b');
   fs.mkdirSync(nested, { recursive: true });
-  assert.equal(allowlist.validate('git status', nested).allowed, true);
+  assert.equal(allowlist.validate('git status', nested, POLICY).allowed, true);
 });
 
 test('empty and oversized input is rejected cleanly', () => {
-  assert.equal(allowlist.validate('', CWD).allowed, false);
-  assert.equal(allowlist.validate('   ', CWD).allowed, false);
-  assert.equal(allowlist.validate('x'.repeat(5000), CWD).allowed, false);
+  assert.equal(allowlist.validate('', CWD, POLICY).allowed, false);
+  assert.equal(allowlist.validate('   ', CWD, POLICY).allowed, false);
+  assert.equal(allowlist.validate('x'.repeat(5000), CWD, POLICY).allowed, false);
 });
 
 test('the child environment carries no provider keys', () => {
@@ -146,7 +177,10 @@ test('a policy file can widen the allowlist deliberately', () => {
   const policyPath = path.join(hive, 'terminal_allowlist.json');
   fs.writeFileSync(policyPath, JSON.stringify({
     version: 1,
-    cwdPrefixes: [HOME],
+    // [ok], not [HOME]: this file's fixture cwd lives in the sandbox, so a
+    // policy rooted at $HOME refuses it and the test fails for a reason that
+    // has nothing to do with widening the allowlist.
+    cwdPrefixes: [ok],
     allow: [{ bin: ['jq'], subcommands: [] }],
     envPassthrough: ['PATH'],
     denyFlags: [],

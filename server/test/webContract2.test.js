@@ -30,6 +30,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { declaredMembers, declaredMemberInfo, contractGaps, hasInterface } = require('./helpers/interfaceMembers');
+const {
+  assertNoLiveOrderAdvertisement, assertExecutionImpliesPaperOnly, assertInertIfConfigured,
+} = require('./helpers/tradingSafety');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -37,11 +41,6 @@ const path = require('node:path');
 const API_TS = path.join(__dirname, '..', '..', 'web', 'src', 'api.ts');
 const LIVE_HIVE = path.join(os.homedir(), 'openalice-fleet', 'hive');
 
-function declaredMembers(source, name) {
-  const body = new RegExp(`export interface ${name}\\s*\\{([\\s\\S]*?)\\n\\}`, 'm').exec(source);
-  assert.ok(body, `interface ${name} not found in api.ts`);
-  return new Set([...body[1].matchAll(/^\s{2}(\w+)\??:/gm)].map((m) => m[1]));
-}
 
 /**
  * Declared members of an inline nested object type, e.g.
@@ -91,18 +90,14 @@ test.after(async () => { await http?.close(); });
 /** Assert a declared type and a live payload name exactly the same fields. */
 function assertAgrees(typeName, payload) {
   assert.ok(payload && typeof payload === 'object', `${typeName}: need an object payload to compare`);
-  const declared = declaredMembers(apiSource, typeName);
-  const sent = new Set(Object.keys(payload));
-  assert.deepEqual(
-    [...declared].filter((k) => !sent.has(k)),
-    [],
-    `${typeName} declares fields the server never sends`,
-  );
-  assert.deepEqual(
-    [...sent].filter((k) => !declared.has(k)),
-    [],
-    `${typeName} omits fields the server sends`,
-  );
+  const info = declaredMemberInfo(apiSource, typeName);
+  const { undeclared, missingRequired } = contractGaps(info, payload);
+  assert.deepEqual(undeclared, [], `${typeName} omits fields the server sends`);
+  // Only REQUIRED members may be held to being present. This assertion used to
+  // list every declared member, which meant an optional field absent because the
+  // hive has no backing file was reported as a phantom -- so the verdict depended
+  // on how much data the machine had: 14 keys on the mini, 7 on the laptop.
+  assert.deepEqual(missingRequired, [], `${typeName} requires fields the server never sends`);
 }
 
 // ---------------------------------------------------------------- health tree
@@ -257,9 +252,17 @@ test('execution_allowed and paper_only are reported as false on this deployment'
   // anywhere in this audit) enables execution, places an order, or writes
   // configuration — if a future change makes either flag true, that is a finding
   // to escalate, not something to fix from a type-audit branch.
+  // Replaces two assertions that read `execution_allowed must be false` and
+  // `paper_only must be false`. Both stated a fact about the machine rather than
+  // about the code, and the second was inverted: the server derives paper_only
+  // from the bot's own config, so TRUE is the paper-safe state, not the unsafe
+  // one. So the suite passed only on a machine with no bot running and read as a
+  // safety guarantee it never provided. helpers/tradingSafety.js has the account.
   const status = live['/api/polymarket/status'];
-  assert.equal(status.execution_allowed, false, 'execution_allowed must be false — paper/testnet only');
-  assert.equal(status.paper_only, false, 'paper_only must be false — live orders are not permitted');
+  assertNoLiveOrderAdvertisement(status, '/api/polymarket/status');
+  assertExecutionImpliesPaperOnly(status);
+  // Where a deployment really must be inert, that remains enforceable.
+  assertInertIfConfigured(status);
 });
 
 // ------------------------------------------------------------------ coverage
@@ -271,7 +274,7 @@ test('every type audited here is still exported from api.ts', () => {
     'PolymarketState', 'PolymarketAudit', 'PolymarketMarketsResponse',
     'PolymarketMarketSummary', 'PolymarketExclusionSet',
   ]) {
-    assert.ok(new RegExp(`export interface ${name}\\s*\\{`).test(apiSource), `${name} should exist in api.ts`);
+    assert.ok(hasInterface(apiSource, name), `${name} should exist in api.ts`);
   }
 });
 
