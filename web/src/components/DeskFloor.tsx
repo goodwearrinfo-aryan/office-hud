@@ -1,11 +1,11 @@
-import { useLive, type JarvisAuditResponse, type JarvisTasksResponse, type QueueSummary, type TaskRecord, type VerifyState } from './api';
-import type { AutonomyState } from './live/store';
+import { useLive, type JarvisAuditResponse, type JarvisTasksResponse, type QueueSummary, type TaskRecord, type VerifyState } from '../api';
+import type { AutonomyState } from '../live/store';
 import CommandCompose from './CommandCompose';
-import { claimLabel, dispatchSummary, headroomLine, historyLabel, mayDrawCapacity, verifyTally } from './deskTruth';
-import type { PreviewLike, RateLimitLike } from './deskTruth';
-import { previewJarvisCommand } from './jarvisPreview';
+import { claimLabel, dispatchSummary, headroomLine, historyLabel, mayDrawCapacity, verifyTally } from '../deskTruth';
+import type { PreviewLike, RateLimitLike } from '../deskTruth';
+import { previewJarvisCommand } from '../jarvisPreview';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { EMPTY_MODEL, emptyStateText, parseFrame, reduce, type FollowModel } from './terminalFollow';
+import { EMPTY_MODEL, emptyStateText, parseFrame, reduce, type FollowModel } from '../terminalFollow';
 
 /**
  * F18 — The Desk: what this office has been told, what it is doing, what became of

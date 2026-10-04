@@ -6,9 +6,9 @@ import {
   type Alert,
   type AlertSummary,
   type ResolvedAlert,
-} from './api';
-import StreamStatus from './components/StreamStatus';
-import AutonomyPanel from './components/AutonomyPanel';
+} from '../api';
+import StreamStatus from './StreamStatus';
+import AutonomyPanel from './AutonomyPanel';
 
 const SEVERITY_LABEL: Record<string, string> = {
   critical: 'CRIT',

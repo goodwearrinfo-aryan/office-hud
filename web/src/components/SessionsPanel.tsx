@@ -1,4 +1,4 @@
-import { useLive, type SessionRecord } from './api';
+import { useLive, type SessionRecord } from '../api';
 import { useMemo, useState } from 'react';
 
 function ageLabel(seconds: number | null) {

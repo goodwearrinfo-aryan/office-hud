@@ -4227,7 +4227,7 @@ function bootstrap() {
 // The engines exist as soon as the module is loaded, so every route is wired
 // whether or not this process went through bootstrap(). bootstrap() only starts
 // timers, watches the hive and binds a port.
-alertEngine = new AlertEngine({ read: readSnapshot, intervalMs: 30000, config: { stallMinutes: 18, staleHeartbeatMinutes: 7 } });
+alertEngine = new AlertEngine({ read: readSnapshot, intervalMs: 30000 });
 
 // The controller shares the snapshot reader and routes through the same JEV
 // enqueue a human uses, so an automated request is never privileged over a

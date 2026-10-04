@@ -1,9 +1,7 @@
 # Office HUD
 
 Your own agent office — a live HUD over an `openalice-fleet` hive.  
-Reads `~/openalice-fleet/hive/` (on this host a symlink to the deployment tree at
-`~/trading/openalice-fleet/hive`) and serves a dark mission-control dashboard at
-`http://localhost:4747`.
+Reads `~/openalice-fleet/hive/` and serves a dark mission-control dashboard at `http://localhost:4747`.
 
 ## Floors
 
@@ -13,18 +11,19 @@ Reads `~/openalice-fleet/hive/` (on this host a symlink to the deployment tree a
 | **F2 — Ledger** | `log.jsonl` timeline — spawns, messages, archives, filterable |
 | **F3 — Agents** ★ | Isometric pixel office: Michael in the corner office + workers at pods. Monitor color = live status. Click any desk → drawer with identity.md, memory.md, inbox/outbox |
 | **F4 — Projects** | Agents grouped by their cwd (worktree) |
-| **F5 — HQ** | KPI cards (active/archived, backlog, cost, events/24h, breakers), sparkline, roster table |
+| **F5 — Executive HQ** | KPI cards (active/archived, backlog, cost, events/24h, breakers), sparkline, roster table |
 | **F6 — Trading Lab** | Strategy backtesting UI, equity curves, Sharpe, win rate, profit factor |
 | **F7 — Strategy Lab** | Strategy development, parameter search, walk-forward analysis |
 | **F8 — Live Trading** | Paper/testnet trading interface, order execution, position monitoring |
 | **F9 — 24x7 Ops** | Service health, provider status, adherence logs, launchd services, Polymarket operations |
 | **F10 — Knowledge** | Document search, semantic index, graph explorer, communities |
 | **F11 — Risk Metrics** | Portfolio risk analytics, VaR, drawdown, exposure, correlation |
-| **F12 — Knowledge Graph** | Graph explorer over the hive's knowledge (Backspace jumps here) |
-| **F13 — Time Machine** | Placeholder (component renders null today) |
-| **F14 — Validation** | Placeholder (component renders null today) |
-| **F15 — Combined Portfolio** | Placeholder (component renders null today) |
+| **F12 — Knowledge Graph** | Interactive graph of knowledge nodes and links, community detection |
+| **F13 — Time Machine** | Historical audit log, replay, and comparison tools |
+| **F14 — Validation** | Strategy validation, signal backtesting, and performance attribution |
+| **F15 — Combined Portfolio** | Aggregated P&L, exposure, and risk across all strategies |
 | **F16 — Overview** | Fleet health, active agents, queue status, and top strategies |
+| **F17 — Fleet** | Complete agent roster, task queue, and system metrics |
 
 ## Quick start
 
@@ -41,19 +40,12 @@ npm start
 # open http://localhost:4747
 ```
 
-`npm start` binds `:4747` — on this host the server already runs under launchd
-(`com.aryan.office-hud`), so stop that job first or the new process retries
-with `EADDRINUSE` (8 backoff attempts) and then gives up.
-
 ## Dev mode (hot reload)
 
 ```bash
 npm run dev
 # starts Vite on :5174 (proxies /api → :4747) + Express on :4747
 ```
-
-Dev mode starts the server too, so the same `:4747` conflict with launchd
-applies.
 
 ## Launcher (macOS)
 
@@ -235,29 +227,6 @@ running.
 
 - Node 18+
 - An `openalice-fleet` hive at `~/openalice-fleet/hive/` (or set `OFFICE_HUD_HIVE`)
-
-## Floor managers
-
-The hive runs 12 floor managers (`f1`–`f12`), each a hive agent with a
-`hive/agents/<id>/bin/agent_manager.js` loop that claims a task from
-`hive/tasks.json` every 10 seconds, runs it through the LLM at `:8080`
-(`free-harness-auto` on `/v1/chat/completions`), and completes it with evidence.
-Health is reported by `hive/lib/floor_health.py` behind `/api/floors`:
-
-```bash
-python3 hive/lib/floor_health.py --json   # per-floor state
-curl -s localhost:4747/api/floors         # same, over HTTP
-```
-
-The two sources can disagree: the probe reads every floor's `status.json` file
-(all 12), while `/api/floors` rolls up from the live roster and only reports
-floors that currently have at least one live member. When they disagree, the
-probe is the authority — it reads the files the managers actually write.
-
-Floor states: `WORKING` (executing a task), `IDLE` (healthy, no claimable work),
-`BLOCKED` (healthy, but unowned tasks are sitting in the queue), `DEGRADED`
-(stale status file), `UNKNOWN` (unparseable status file), `FAILED` (dead). `com.aryan.idle-prompter` (launchd, every
-10 min) prompts any idle floor — and the opencode worker terminals — with work.
 
 ## License
 
