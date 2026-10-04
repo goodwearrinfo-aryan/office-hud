@@ -4,38 +4,38 @@ import { useLive, type Summary, type Agent } from './api';
 import FloorNav from './components/FloorNav';
 import AutopilotPanel from './components/AutopilotPanel';
 import FleetPerformancePanel from './components/FleetPerformancePanel';
-import GodPanel from './components/GodPanel';
+import GodPanel from './GodPanel';
 import FleetFloor from './components/FleetFloor';
-import DeskFloor from './components/DeskFloor';
+import DeskFloor from './DeskFloor';
 import FloorTable from './components/FloorTable';
 import FloorProbeStatus from './components/FloorProbeStatus';
 import OfficeScene from './components/OfficeScene';
 import AgentDrawer from './components/AgentDrawer';
 import LedgerTimeline from './components/LedgerTimeline';
 import ExecutiveHQ from './components/ExecutiveHQ';
-import SessionsPanel from './components/SessionsPanel';
+import SessionsPanel from './SessionsPanel';
 import ProjectsBoard from './components/ProjectsBoard';
-import TradingLab from './components/TradingLab';
+import TradingLab from './TradingLab';
 import StrategyLab from './components/StrategyLab';
-import LiveTrading from './components/LiveTrading';
+import LiveTrading from './LiveTrading';
 import OpsFloor from './components/OpsFloor';
 import KnowledgeFloor from './components/KnowledgeFloor';
-import RiskMetrics from './components/RiskMetrics';
+import RiskMetrics from './RiskMetrics';
 import KnowledgeGraph from './components/KnowledgeGraph';
 import GodConsole from './components/GodConsole';
-import CommandPalette from './components/CommandPalette';
+import CommandPalette from './CommandPalette';
 import TimeMachine from './components/TimeMachine';
 import ValidationFloor from './components/ValidationFloor';
 import CombinedPortfolioPanel from './components/CombinedPortfolioPanel';
-import Overview from './components/Overview';
-import OfflineBanner from './components/OfflineBanner';
+import Overview from './Overview';
+import OfflineBanner from './OfflineBanner';
 import StreamStatus from './components/StreamStatus';
 import GlobalSearch from './components/GlobalSearch';
-import AlphaInsiderPanel from './components/AlphaInsiderPanel';
+import AlphaInsiderPanel from './AlphaInsiderPanel';
 import AutonomyPanel from './components/AutonomyPanel';
 import JarvisConsole from './components/JarvisConsole';
-import AlertRail from './components/AlertRail';
-import ExportButton from './components/ExportButton';
+import AlertRail from './AlertRail';
+import ExportButton from './ExportButton';
 import NativeTitleStrip, { type NativeConnectionTone } from './components/NativeTitleStrip';
 import { markNative, onShellCommand, parseDeepLink } from './native';
 import { useConnectionStatus } from './api';
@@ -175,70 +175,136 @@ export default function App() {
   const activeCount = agents.filter((a) => a.display === 'busy' || a.display === 'idle').length;
 
   const floorContent = (
-     <ErrorBoundary>
-       <div className="flex-1 overflow-auto p-4">
+    <div className="flex-1 overflow-auto p-4">
       {floor === 'f1' && (
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex-1 min-w-0"><SessionsPanel onSelect={setDrawerId} /></div>
-          <ExportButton type="agents" label="Export roster" agents={agents} summary={summary ?? undefined} />
-        </div>
-      )}
-      {floor === 'f2' && <LedgerTimeline />}
-      {floor === 'f3' && (
-        <div className="h-full">
-          <OfficeScene
-            agents={agents}
-            onSelect={(id) => setDrawerId(id)}
-            selectedId={drawerId}
-          />
-        </div>
-      )}
-      {floor === 'f4' && <ProjectsBoard onSelect={(id) => setDrawerId(id)} />}
-      {floor === 'f5' && <ExecutiveHQ />}
-      {floor === 'f6' && <TradingLab />}
-      {floor === 'f7' && <StrategyLab />}
-      {floor === 'f8' && <LiveTrading />}
-      {floor === 'f9' && (
-        <div className="flex items-start gap-4">
-          <div className="flex-1 min-w-0">
-            <OpsFloor />
-            {/* The two floor views answer different questions and both belong on
-                the ops floor: FloorTable is the roster rollup (who claims a
-                floor), FloorProbeStatus is what the hive's own probe measured
-                (is the manager alive, is the status file fresh). Neither
-                substitutes for the other. */}
-            <div className="mt-6"><FloorTable /></div>
-            <div className="mt-4"><FloorProbeStatus /></div>
-            {/* Was written against /api/autopilot/snapshot and mounted nowhere, so
-                the proposals the autopilot raises had no surface at all. */}
-            <div className="mt-4"><AutopilotPanel /></div>
+        <ErrorBoundary>
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0"><SessionsPanel onSelect={setDrawerId} /></div>
+            <ExportButton type="agents" label="Export roster" agents={agents} summary={summary ?? undefined} />
           </div>
-          <AlertRail />
-        </div>
+        </ErrorBoundary>
       )}
-      {floor === 'f10' && <KnowledgeFloor />}
-      {floor === 'f11' && <RiskMetrics />}
-      {floor === 'f12' && <KnowledgeGraph />}
-      {floor === 'f13' && <TimeMachine />}
-      {floor === 'f14' && <ValidationFloor />}
-      {floor === 'f15' && <CombinedPortfolioPanel />}
-      {floor === 'f16' && <Overview onNavigate={setFloor} />}
-      {floor === 'f17' && <FleetFloor />}
-      {floor === 'f18' && <DeskFloor />}
+      {floor === 'f2' && (
+        <ErrorBoundary>
+          <LedgerTimeline />
+        </ErrorBoundary>
+      )}
+      {floor === 'f3' && (
+        <ErrorBoundary>
+          <div className="h-full">
+            <OfficeScene
+              agents={agents}
+              onSelect={(id) => setDrawerId(id)}
+              selectedId={drawerId}
+            />
+          </div>
+        </ErrorBoundary>
+      )}
+      {floor === 'f4' && (
+        <ErrorBoundary>
+          <ProjectsBoard onSelect={(id) => setDrawerId(id)} />
+        </ErrorBoundary>
+      )}
+      {floor === 'f5' && (
+        <ErrorBoundary>
+          <ExecutiveHQ />
+        </ErrorBoundary>
+      )}
+      {floor === 'f6' && (
+        <ErrorBoundary>
+          <TradingLab />
+        </ErrorBoundary>
+      )}
+      {floor === 'f7' && (
+        <ErrorBoundary>
+          <StrategyLab />
+        </ErrorBoundary>
+      )}
+      {floor === 'f8' && (
+        <ErrorBoundary>
+          <LiveTrading />
+        </ErrorBoundary>
+      )}
+      {floor === 'f9' && (
+        <ErrorBoundary>
+          <div className="flex items-start gap-4">
+            <div className="flex-1 min-w-0">
+              <OpsFloor />
+              {/* The two floor views answer different questions and both belong on
+                  the ops floor: FloorTable is the roster rollup (who claims a
+                  floor), FloorProbeStatus is what the hive's own probe measured
+                  (is the manager alive, is the status file fresh). Neither
+                  substitutes for the other. */}
+              <div className="mt-6"><FloorTable /></div>
+              <div className="mt-4"><FloorProbeStatus /></div>
+              {/* Was written against /api/autopilot/snapshot and mounted nowhere, so
+                  the proposals the autopilot raises had no surface at all. */}
+              <div className="mt-4"><AutopilotPanel /></div>
+            </div>
+            <AlertRail />
+          </div>
+        </ErrorBoundary>
+      )}
+      {floor === 'f10' && (
+        <ErrorBoundary>
+          <KnowledgeFloor />
+        </ErrorBoundary>
+      )}
+      {floor === 'f11' && (
+        <ErrorBoundary>
+          <RiskMetrics />
+        </ErrorBoundary>
+      )}
+      {floor === 'f12' && (
+        <ErrorBoundary>
+          <KnowledgeGraph />
+        </ErrorBoundary>
+      )}
+      {floor === 'f13' && (
+        <ErrorBoundary>
+          <TimeMachine />
+        </ErrorBoundary>
+      )}
+      {floor === 'f14' && (
+        <ErrorBoundary>
+          <ValidationFloor />
+        </ErrorBoundary>
+      )}
+      {floor === 'f15' && (
+        <ErrorBoundary>
+          <CombinedPortfolioPanel />
+        </ErrorBoundary>
+      )}
       {floor === 'f16' && (
-        <div className="mt-6 grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <AlphaInsiderPanel />
-          <AutonomyPanel />
-          {/* Both read live payloads and were mounted nowhere. GodPanel is the
-              leadership tile (the god agent's own detail); FleetPerformancePanel
-              is the per-agent efficiency rollup. */}
-          <GodPanel />
-          <FleetPerformancePanel />
-        </div>
+        <ErrorBoundary>
+          <Overview onNavigate={setFloor} />
+        </ErrorBoundary>
       )}
-    </div>
-    </ErrorBoundary>
-  );
+      {floor === 'f17' && (
+        <ErrorBoundary>
+          <FleetFloor />
+        </ErrorBoundary>
+      )}
+      {floor === 'f18' && (
+        <ErrorBoundary>
+          <DeskFloor />
+        </ErrorBoundary>
+      )}
+      {floor === 'f16' && (
+        <ErrorBoundary>
+          <div className="mt-6 grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <AlphaInsiderPanel />
+            <AutonomyPanel />
+            {/* Both read live payloads and were mounted nowhere. GodPanel is the
+                leadership tile (the god agent's own detail); FleetPerformancePanel
+                is the per-agent efficiency rollup. */}
+            <GodPanel />
+            <FleetPerformancePanel />
+          </div>
+        </ErrorBoundary>
+      )}
+     </div>
+   );
 
   return (
     <div className="h-screen w-screen flex flex-col bg-hud-bg text-hud-text font-ui">

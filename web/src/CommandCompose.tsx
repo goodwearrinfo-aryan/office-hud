@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { JarvisPreview, JarvisTask } from '../api';
-import { canDispatch, needsTypeConfirmation, ownerLabel, previewJarvisCommand, riskLabel, routingLabel, routeJarvisCommand, writeErrorReason } from '../jarvisPreview';
+import type { JarvisPreview, JarvisTask } from './api';
+import { canDispatch, needsTypeConfirmation, ownerLabel, previewJarvisCommand, riskLabel, routingLabel, routeJarvisCommand, writeErrorReason } from './jarvisPreview';
 
 /**
  * The one way a command gets sent from this codebase.

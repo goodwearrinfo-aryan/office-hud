@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useConnectionStatus } from '../api';
+import { useConnectionStatus } from './api';
 
 /**
  * Registers the service worker and reports reachability. Three states, because
