@@ -246,35 +246,80 @@ function readJsonl(file, limit) {
   }
 }
 
-function readTail(file, maxBytes) {
+// One read, two shapes.
+//
+// `text` is what the existing callers want and keeps readTail's original
+// contract exactly: a read that fails yields ''. The other fields exist because
+// '' is indistinguishable from "the file was there and held nothing", and a
+// route handed only the string cannot say which of the two it got. That is the
+// defect /api/jarvis/audit was found with: a missing file, an unreadable one,
+// and a genuinely empty log all arrived as the same empty array.
+//
+// readTail() keeps its exact behaviour and is now a one-liner over this, so the
+// routes that already treat '' as "nothing there" cannot regress.
+function readTailResult(file, maxBytes) {
+  let size;
   try {
-    const size = fs.statSync(file).size;
-    const start = Math.max(0, size - maxBytes);
-    const length = size - start;
+    size = fs.statSync(file).size;
+  } catch (error) {
+    return {
+      text: '',
+      source_bytes: null,
+      read_bytes: 0,
+      error: `${error.code || error.name}: ${error.message}`,
+    };
+  }
+  const start = Math.max(0, size - maxBytes);
+  const length = size - start;
+  try {
     const buffer = Buffer.alloc(length);
     const fd = fs.openSync(file, 'r');
+    let read = 0;
     try {
-      fs.readSync(fd, buffer, 0, length, start);
+      read = fs.readSync(fd, buffer, 0, length, start);
     } finally {
       fs.closeSync(fd);
     }
-    let text = buffer.toString('utf8');
+    // Decode only the bytes that were actually read. Buffer.alloc zero-fills, so
+    // a short read used to leave NUL padding inside the string; those lines then
+    // failed to parse and were dropped as though they had never been written.
+    // The parsed result is the same either way, but now it is right for the real
+    // reason instead of by accident.
+    let text = buffer.subarray(0, read).toString('utf8');
     if (start > 0) {
       const firstBreak = text.indexOf('\n');
       if (firstBreak >= 0) text = text.slice(firstBreak + 1);
     }
-    return text;
-  } catch {
-    return '';
+    return { text, source_bytes: size, read_bytes: read, error: null };
+  } catch (error) {
+    return {
+      text: '',
+      source_bytes: size,
+      read_bytes: 0,
+      error: `${error.code || error.name}: ${error.message}`,
+    };
   }
 }
 
-function parseJsonLines(text) {
+function readTail(file, maxBytes) {
+  return readTailResult(file, maxBytes).text;
+}
+
+// Reports what it could not read. A line that fails to parse is dropped in both
+// shapes; the difference is that only this one says how many were dropped, which
+// is the difference between "there are no events" and "these bytes were not
+// events". Both used to look identical from the outside.
+function parseJsonLinesCounted(text) {
   const out = [];
+  let unparsed = 0;
   for (const line of text.split('\n').filter(Boolean)) {
-    try { out.push(JSON.parse(line)); } catch {}
+    try { out.push(JSON.parse(line)); } catch { unparsed += 1; }
   }
-  return out;
+  return { items: out, unparsed };
+}
+
+function parseJsonLines(text) {
+  return parseJsonLinesCounted(text).items;
 }
 
 function timestampMs(value) {
@@ -425,9 +470,34 @@ function getJarvisTasks(limit = 50) {
     .map(jarvisTaskSummary);
 }
 
+// What the assistant was asked, and what it was told. Read from the same
+// events.log every other event route reads, bounded to the last EVENT_TAIL_BYTES.
+//
+// That bound is the entire reason this is an envelope rather than an array, and on
+// the live hive it was not theoretical. Measured before this change: events.log was
+// 11.6MB and held exactly one real jarvis_command, emitted 2026-10-03T00:19:14Z,
+// starting at byte 87,695. The 512KB tail window opens at byte 11,090,145, so the
+// only command ever issued sat far outside it and the route answered {"events":[]}
+// for it. That is worse than an ambiguous shape -- it reported "the assistant was
+// never asked anything" on the one occasion it had been asked something and the
+// read simply had not reached that far.
+//
+// So every outcome is named, `events` is still an array on all of them, and
+// reachable_window says out loud that this is a bounded read rather than the whole
+// history. Four states, and no two of them share a response:
+//
+//   ok          read succeeded and the window held events
+//   empty       read succeeded and the window held no events at all -> nothing to report
+//   unparsed    bytes were read but no line parsed as an event -> cannot be trusted
+//   unreadable  the source could not be opened or read        -> cannot be looked up
+//
+// `ok` is true only for the first two, so success-with-no-data and could-not-read
+// are never the same response.
 function getJarvisAudit(limit = 50) {
   const boundedLimit = Math.min(Math.max(Number(limit) || 50, 1), 100);
-  return getRecentEvents(5000, 'jarvis_command').slice(0, boundedLimit).map(event => ({
+  // Read first: this is the call that refreshes eventCache and fills in the read
+  // outcome the status below reports on.
+  const events = getRecentEvents(5000, 'jarvis_command').slice(0, boundedLimit).map(event => ({
     task_id: event.task_id || null,
     actor: event.actor || 'office-hud-local',
     target: event.target || null,
@@ -439,6 +509,59 @@ function getJarvisAudit(limit = 50) {
     prompt_hash: event.prompt_hash || null,
     timestamp: event.timestamp || null,
   }));
+
+  const scanned = eventCache.events.length;
+  const sourceBytes = eventCache.source_bytes;
+
+  let ok;
+  let status;
+  let error = eventCache.read_error;
+  if (eventCache.read_error) {
+    ok = false;
+    status = 'unreadable';
+  } else if (scanned === 0 && eventCache.unparsed > 0) {
+    // Bytes were there and were not events. Reporting [] here would claim the
+    // assistant was never asked anything on the strength of a corrupt file.
+    ok = false;
+    status = 'unparsed';
+    error = `${eventCache.unparsed} line(s) read but none parsed as an event`;
+  } else if (scanned === 0) {
+    // The honest empty: the file was readable and genuinely held nothing.
+    ok = true;
+    status = 'empty';
+  } else {
+    ok = true;
+    status = 'ok';
+  }
+
+  return {
+    ok,
+    status,
+    error,
+    events,
+    // count and limit travel together so a count sitting at the limit cannot be
+    // read as "that was all of them".
+    count: events.length,
+    limit: boundedLimit,
+    // How many events the window yielded before filtering. With count:0 this is
+    // what separates "looked at 4,317 events and none were jarvis_command" from
+    // "had nothing to look at".
+    scanned,
+    source: 'events.log',
+    reachable_window: true,
+    window: {
+      source_bytes: sourceBytes,
+      read_bytes: eventCache.read_bytes,
+      limit_bytes: EVENT_TAIL_BYTES,
+      // True whenever history exists above the window, which on the live hive it
+      // does: 11MB of events behind a 512KB read.
+      truncated: sourceBytes == null ? null : sourceBytes > EVENT_TAIL_BYTES,
+      // Lines in the window that did not parse. Normally 0; non-zero is the
+      // silent-truncation case made visible instead of dropped.
+      unparsed_lines: eventCache.unparsed,
+    },
+    checkedAt: new Date().toISOString(),
+  };
 }
 
 function isDangerousJarvisPrompt(prompt) {
@@ -980,13 +1103,28 @@ function terminalSnapshot() {
   };
 }
 
-let eventCache = { at: 0, events: [] };
+// The read outcome is kept alongside the events, not discarded with them. A
+// caller handed only the array cannot tell a missing events.log, an unreadable
+// one, and a log whose bytes were not events apart, because all three arrived as
+// the same empty array. The fields exist so a route can name the state.
+let eventCache = {
+  at: 0, events: [], source_bytes: null, read_bytes: 0, read_error: null, unparsed: 0,
+};
 
 function getRecentEvents(limit = 1000, type = null) {
   const now = Date.now();
   if (now - eventCache.at >= JSON_CACHE_MS) {
     const eventsPath = path.join(HIVE, 'events.log');
-    eventCache = { at: now, events: parseJsonLines(readTail(eventsPath, EVENT_TAIL_BYTES)).reverse() };
+    const read = readTailResult(eventsPath, EVENT_TAIL_BYTES);
+    const parsed = parseJsonLinesCounted(read.text);
+    eventCache = {
+      at: now,
+      events: parsed.items.reverse(),
+      source_bytes: read.source_bytes,
+      read_bytes: read.read_bytes,
+      read_error: read.error,
+      unparsed: parsed.unparsed,
+    };
   }
   const filtered = type ? eventCache.events.filter(event => event.type === type) : eventCache.events;
   return filtered.slice(0, limit);
@@ -2243,8 +2381,11 @@ app.get('/api/jarvis/tasks', (_req, res) => {
   res.json(buildSnapshot('jarvisTasks'));
 });
 
+// 200 on every state, including the failures. A 500 would be honest but would
+// replace "cannot tell whether it looked" with "did not answer", and the payload
+// still has to carry which of the two happened.
 app.get('/api/jarvis/audit', (req, res) => {
-  res.json({ events: getJarvisAudit(req.query.limit) });
+  res.json(getJarvisAudit(req.query.limit));
 });
 
 app.post('/api/jarvis/command', (req, res) => {
@@ -4039,7 +4180,8 @@ module.exports = {
   enqueueJarvisCommand,
   internals: {
     injectHudLauncher, hudLauncherSnippet, tournamentPayload,
-    readJson, readJsonCached, readText, readTail, readJsonl, clampLimit,
+    readJson, readJsonCached, readText, readTail, readTailResult, readJsonl, clampLimit,
+    parseJsonLines, parseJsonLinesCounted, getJarvisAudit,
     getFloorTaskCounts, getTaskBoard, getGraphifyCommunities, withHiveFileLock,
     getAgentDetail, getLedger, resolveResource, PARAMETERIZED,
     mergedAgents, sessionRows, rollupFloors, getWorkEvents, getQueueSummary,
