@@ -1,6 +1,6 @@
-import { useLive, useViewers, type FleetLaunchdState, type ProjectRecord, type QueueSummary, type Summary } from '../api';
+import { useLive, useViewers, type FleetLaunchdState, type ProjectRecord, type QueueSummary, type Summary, type TerminalsPayload } from '../api';
 
-type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16';
+type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16' | 'f17';
 
 interface BadgeData {
   summary: Summary | null;
@@ -11,6 +11,8 @@ interface BadgeData {
   tasksLoaded: boolean;
   projectsLoaded: boolean;
   failedLaunchd: number;
+  staleHosts: number;
+  fleetHosts: number;
 }
 
 interface FloorDefinition {
@@ -38,6 +40,9 @@ const FLOORS: FloorDefinition[] = [
   { id: 'f14', label: 'F14', name: 'Validation', badge: data => (data.taskCounts['f14'] ?? 0), taskCount: true },
   { id: 'f15', label: 'F15', name: 'Combined', badge: () => 0 },
   { id: 'f16', label: 'F16', name: 'Overview', badge: data => data.failedLaunchd },
+  // The one figure on this nav that should be readable without opening the
+  // floor: how many machines have stopped reporting.
+  { id: 'f17', label: 'F17', name: 'Fleet', badge: data => data.staleHosts },
 ];
 
 interface Props {
@@ -54,6 +59,9 @@ export default function FloorNav({ current, onChange, summary }: Props) {
   // The failed-job count is the one badge that must be true on a glance, so it
   // rides the same ops snapshot the F16 overview renders.
   const { data: ops } = useLive<{ launchdState?: FleetLaunchdState }>('/api/trading/ops');
+  // The fleet badge counts machines that have gone quiet. /api/terminals is already
+  // being served for F17, so this costs a subscription rather than another route.
+  const { data: fleet } = useLive<TerminalsPayload>('/api/terminals');
   const viewers = useViewers();
   const data: BadgeData = {
     summary,
@@ -64,6 +72,8 @@ export default function FloorNav({ current, onChange, summary }: Props) {
     tasksLoaded: tasksData !== null,
     projectsLoaded: projectsData !== null,
     failedLaunchd: ops?.launchdState?.counts.failed ?? 0,
+    staleHosts: fleet?.stale_hosts?.length ?? 0,
+    fleetHosts: fleet?.hosts?.length ?? 0,
   };
 
   return (
