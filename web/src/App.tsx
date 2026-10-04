@@ -5,6 +5,7 @@ import AutopilotPanel from './components/AutopilotPanel';
 import FleetPerformancePanel from './components/FleetPerformancePanel';
 import GodPanel from './components/GodPanel';
 import FleetFloor from './components/FleetFloor';
+import DeskFloor from './components/DeskFloor';
 import FloorTable from './components/FloorTable';
 import FloorProbeStatus from './components/FloorProbeStatus';
 import OfficeScene from './components/OfficeScene';
@@ -38,7 +39,8 @@ import NativeTitleStrip, { type NativeConnectionTone } from './components/Native
 import { markNative, onShellCommand, parseDeepLink } from './native';
 import { useConnectionStatus } from './api';
 
-type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16' | 'f17';
+type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16'   | 'f17'
+  | 'f18';
 
 export default function App() {
   const [floor, setFloor] = useState<FloorId>('f3');
@@ -120,7 +122,7 @@ export default function App() {
       };
       if (pendingBracket) {
         pendingBracket = false;
-        const high: Record<string, FloorId> = { '3': 'f13', '4': 'f14', '5': 'f15', '6': 'f16', '7': 'f17' };
+        const high: Record<string, FloorId> = { '3': 'f13', '4': 'f14', '5': 'f15', '6': 'f16', '7': 'f17', '8': 'f18' };
         if (e.key in high) { e.preventDefault(); setFloor(high[e.key]); return; }
       }
       if (e.key === '[') { pendingBracket = true; return; }
@@ -197,6 +199,7 @@ export default function App() {
       {floor === 'f15' && <CombinedPortfolioPanel />}
       {floor === 'f16' && <Overview onNavigate={setFloor} />}
       {floor === 'f17' && <FleetFloor />}
+      {floor === 'f18' && <DeskFloor />}
       {floor === 'f16' && (
         <div className="mt-6 grid grid-cols-1 xl:grid-cols-2 gap-4">
           <AlphaInsiderPanel />

@@ -1,6 +1,7 @@
-import { useLive, useViewers, type FleetLaunchdState, type ProjectRecord, type QueueSummary, type Summary, type TerminalsPayload } from '../api';
+import { useLive, useViewers, type FleetLaunchdState, type JarvisTasksResponse, type ProjectRecord, type QueueSummary, type Summary, type TerminalsPayload } from '../api';
 
-type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16' | 'f17';
+type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16'   | 'f17'
+  | 'f18';
 
 interface BadgeData {
   summary: Summary | null;
@@ -13,6 +14,12 @@ interface BadgeData {
   failedLaunchd: number;
   staleHosts: number;
   fleetHosts: number;
+  /**
+   * Work the office has been told and has not started. Counted from the queue
+   * rather than from the command history, because a command that was queued and
+   * then claimed is not pending any more.
+   */
+  pendingCommands: number;
 }
 
 interface FloorDefinition {
@@ -43,6 +50,9 @@ const FLOORS: FloorDefinition[] = [
   // The one figure on this nav that should be readable without opening the
   // floor: how many machines have stopped reporting.
   { id: 'f17', label: 'F17', name: 'Fleet', badge: data => data.staleHosts },
+  // The one desk figure readable without opening the floor: work that has been
+  // given to the office and has not started.
+  { id: 'f18', label: 'F18', name: 'The Desk', badge: data => data.pendingCommands },
 ];
 
 interface Props {
@@ -62,6 +72,12 @@ export default function FloorNav({ current, onChange, summary }: Props) {
   // The fleet badge counts machines that have gone quiet. /api/terminals is already
   // being served for F17, so this costs a subscription rather than another route.
   const { data: fleet } = useLive<TerminalsPayload>('/api/terminals');
+  // Pulled here rather than counted in App so the badge costs one shared socket
+  // subscription instead of a second one. A command that was queued and has since
+  // been claimed is not pending, which is why this reads the queue and not history.
+  const { data: jarvisTasks } = useLive<JarvisTasksResponse>('/api/jarvis/tasks');
+  const queuedJarvis = (jarvisTasks?.tasks ?? [])
+    .filter(t => String(t.status || '').toUpperCase() === 'QUEUED').length;
   const viewers = useViewers();
   const data: BadgeData = {
     summary,
@@ -73,6 +89,7 @@ export default function FloorNav({ current, onChange, summary }: Props) {
     projectsLoaded: projectsData !== null,
     failedLaunchd: ops?.launchdState?.counts.failed ?? 0,
     staleHosts: fleet?.stale_hosts?.length ?? 0,
+    pendingCommands: queuedJarvis,
     fleetHosts: fleet?.hosts?.length ?? 0,
   };
 

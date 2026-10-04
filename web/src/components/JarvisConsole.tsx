@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from 'react';
 import { reachableCount } from '../displayStates';
-import { previewJarvisCommand, riskLabel, needsTypeConfirmation, canDispatch, ownerLabel, routingLabel } from '../jarvisPreview';
-import { useLive, useConnectionStatus, type FleetEvent, type HarnessHealth, type JarvisPreview, type JarvisTask, type JarvisTasksResponse, type OfficeManagerStatus, type ProcessRecord, type ProjectRecord, type QueueSummary, type ServiceHealth, type SessionRecord, type Summary, type VerifyState } from '../api';
+import { previewJarvisCommand, riskLabel, needsTypeConfirmation, canDispatch, ownerLabel, routingLabel, routeJarvisCommand, writeErrorReason } from '../jarvisPreview';
+import { useLive, useConnectionStatus, type FleetEvent, type HarnessHealth, type JarvisPreview, type JarvisTasksResponse, type OfficeManagerStatus, type ProcessRecord, type ProjectRecord, type QueueSummary, type ServiceHealth, type SessionRecord, type Summary, type VerifyState } from '../api';
 import AlphaInsiderPanel from './AlphaInsiderPanel';
 
 function formatClock() {
@@ -36,13 +36,6 @@ type PendingCommand = {
    * write path uses, so there is nothing left in this file to be wrong about.
    */
   preview: JarvisPreview | null;
-};
-
-type CommandResponse = {
-  ok?: boolean;
-  message?: string;
-  error?: { message?: string } | string;
-  task?: JarvisTask;
 };
 
 const FLOORS: FloorDefinition[] = [
@@ -230,23 +223,17 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
     setIsSubmitting(true);
     setCommandError(null);
     try {
-      const response = await fetch('/api/jarvis/command', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: pendingCommand.prompt,
-          target: pendingCommand.target || null,
-          priority: pendingCommand.priority,
-          confirmed: true,
-          typeConfirmation: pendingCommand.preview?.requires_type_confirmation ? typeConfirmation : null,
-        }),
-      });
-      const result = await response.json() as CommandResponse;
-      if (!response.ok || !result.ok) {
-        const message = typeof result.error === 'string' ? result.error : result.error?.message;
-        throw new Error(message || 'JEV rejected the command');
-      }
-      setCommandMessage(result.message || 'Command routed to JEV');
+      // The body is assembled in one place. This console used to build its own, and
+      // the other console's copy was missing `confirmed`, so that button could never
+      // work. Two callers, two bodies, one of them wrong, and nothing failed.
+      const result = await routeJarvisCommand(
+        { prompt: pendingCommand.prompt, target: pendingCommand.target || null, priority: pendingCommand.priority },
+        pendingCommand.preview,
+        pendingCommand.preview?.requires_type_confirmation ? typeConfirmation : null,
+      );
+      const reason = writeErrorReason(result);
+      if (reason) throw new Error(reason);
+      setCommandMessage(result.data?.message || 'Command routed to JEV');
       setPendingCommand(null);
       setPrompt('');
       setTarget('');

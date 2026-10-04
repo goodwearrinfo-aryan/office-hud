@@ -477,6 +477,37 @@ export interface JarvisAuditEvent {
 
 export interface JarvisAuditResponse {
   events: JarvisAuditEvent[];
+  /**
+   * The read outcome, added alongside the events so an empty list can be told
+   * apart from a log that was never read.
+   *
+   * Measured off the live mini: `status: "ok"` with `count: 0`, `scanned: 375`, and
+   * a window that read 524288 of 15755023 bytes with `truncated: true`. Those fields
+   * were on the wire while the web type still declared only `events`, which is the
+   * type-side version of the F10 finding: the payload grew and the interface did
+   * not, so nothing in the build could have complained. A console reading `events`
+   * alone would have rendered "0 commands" from a partially-read log and had no
+   * field available to stop it.
+   */
+  ok?: boolean;
+  status?: 'ok' | 'unreadable' | 'unparsed' | string | null;
+  error?: string | null;
+  /** Events returned, after the limit. Not the number searched for. */
+  count?: number;
+  limit?: number;
+  /** Events parsed out of the window, before filtering to commands. */
+  scanned?: number;
+  source?: string | null;
+  /** False when the log is larger than any window this route reads. */
+  reachable_window?: boolean;
+  window?: {
+    source_bytes?: number;
+    read_bytes?: number;
+    limit_bytes?: number;
+    truncated?: boolean;
+    unparsed_lines?: number;
+  } | null;
+  checkedAt?: string | null;
 }
 
 export interface JarvisTasksResponse {
