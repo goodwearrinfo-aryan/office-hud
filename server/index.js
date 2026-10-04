@@ -12,6 +12,7 @@ const { LiveHub } = require('./lib/live_hub');
 const { AlertEngine } = require('./lib/alerts');
 const { AutonomyController } = require('./lib/autonomy');
 const replay = require('./lib/replay');
+const { rateLimitReport } = require('./rateLimitStatus');
 const {
   isDangerousJarvisPrompt,
   isIdentifier,
@@ -2941,9 +2942,31 @@ app.post('/api/llm/costs/reset/monthly', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/llm/rate-limits', (_req, res) => {
-  const { getRateLimitStatus } = require(path.join(HIVE, 'lib', 'llm', 'rateLimit'));
-  res.json({});
+app.get('/api/llm/rate-limits', (req, res) => {
+  // Was `res.json({})` after requiring the limiter without calling it: a route that
+  // looked implemented and answered every caller with nothing.
+  //
+  // It is not naively wired now, because hive/lib/llm/rateLimit.js substitutes a FULL
+  // bucket for any key it has never seen and keeps its key list private. Calling it
+  // for an unseen scope would report `available: <rpm>` -- capacity invented from the
+  // default that was just filled in. So the route reports that it has no record, which
+  // is the truth. See server/rateLimitStatus.js.
+  let limiter = null;
+  let loadError = null;
+  try {
+    ({ getRateLimitStatus: limiter } = require(path.join(HIVE, 'lib', 'llm', 'rateLimit')));
+  } catch (error) {
+    loadError = error?.message || 'module could not be loaded';
+  }
+  res.json(rateLimitReport({
+    limiter,
+    key: req.query.scope ? String(req.query.scope) : null,
+    rpm: req.query.rpm,
+    // Deliberately false: the limiter exposes no way to prove a bucket exists, and
+    // asserting otherwise is the bug this replaced.
+    hasRecord: false,
+    error: loadError,
+  }));
 });
 
 app.get('/api/llm/circuit-breakers', (_req, res) => {

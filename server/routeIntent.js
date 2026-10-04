@@ -75,8 +75,8 @@ const INTENT = {
     surface: 'F9, beside the approval queue',
   },
   '/api/llm/rate-limits': {
-    reason: 'Provider quota state. Pairs with the cost figures on F5 HQ; until the budget banner exists there is nowhere truthful to put a number that means "you are near a limit".',
-    surface: 'the budget banner on F5',
+    surface: 'F18, the Headroom section',
+    reason: 'Drawn by the desk, and only after the route stopped answering res.json({}). It reports `unobserved` rather than a number, because the limiter substitutes a full bucket for any key it has never seen and keeps its key list private. The section draws no bar from that; it prints the reason.',
   },
   '/api/jarvis/audit': {
     surface: 'F18',

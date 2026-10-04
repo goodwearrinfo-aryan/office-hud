@@ -1,8 +1,8 @@
 import { useLive, type JarvisAuditResponse, type JarvisTasksResponse, type QueueSummary, type TaskRecord, type VerifyState } from '../api';
 import type { AutonomyState } from '../live/store';
 import CommandCompose from './CommandCompose';
-import { claimLabel, dispatchSummary, historyLabel, verifyTally } from '../deskTruth';
-import type { PreviewLike } from '../deskTruth';
+import { claimLabel, dispatchSummary, headroomLine, historyLabel, mayDrawCapacity, verifyTally } from '../deskTruth';
+import type { PreviewLike, RateLimitLike } from '../deskTruth';
 import { previewJarvisCommand } from '../jarvisPreview';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { EMPTY_MODEL, emptyStateText, parseFrame, reduce, type FollowModel } from '../terminalFollow';
@@ -51,6 +51,7 @@ export default function DeskFloor() {
   const { data: board } = useLive<{ rows?: TaskRecord[] }>('/api/task-board');
   const { data: verify } = useLive<VerifyState>('/api/verify');
   const { data: queue } = useLive<QueueSummary>('/api/queue');
+  const { data: headroom } = useLive<RateLimitLike>('/api/llm/rate-limits');
 
   // One judgement, reused for the banner. It asks about a throwaway prompt because
   // the endpoint judges fields and dispatch together; the prompt is never sent, and
@@ -216,6 +217,19 @@ export default function DeskFloor() {
             Queue window: {queue.queued ?? '?'} queued, {queue.inProgress ?? '?'} in progress.
           </p>
         )}
+      </section>
+
+      {/* ---------- headroom ---------- */}
+      <section className="panel">
+        <div className="panel-head">
+          <h3>Headroom</h3>
+          {mayDrawCapacity(headroom)
+            ? <span className="badge badge-success">{headroom?.headroom} available</span>
+            : <span className="badge badge-neutral">not measured</span>}
+        </div>
+        {/* No bar, deliberately. The limiter reports a full bucket for any key it has
+            never seen, so a bar here would be drawn from a default. See deskTruth. */}
+        <p className="panel-note">{headroomLine(headroom)}</p>
       </section>
 
       {/* ---------- outcomes ---------- */}
