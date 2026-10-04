@@ -109,6 +109,73 @@ export interface FloorsPayload {
   at: number;
 }
 
+/**
+ * GET /api/terminals -- what every machine in the hive is running.
+ *
+ * Declared here because the fleet floor renders it and no exported type covered
+ * it. Three details are load-bearing and were read off the live payload rather
+ * than assumed:
+ *
+ *  - `stale` is per HOST, not per row. A host that has gone quiet is still
+ *    listed, with its rows, flagged -- it is never dropped. Absence of a host
+ *    would read as "this machine does not exist", which is a different claim.
+ *  - `age_sec` is how long since that host was collected. On the mini it was 34
+ *    seconds; on the laptop it was 56244 -- fifteen and a half hours. A stale
+ *    host's rows are a record of the past, not a measurement of now.
+ *  - identity and health are NULLABLE per row. The laptop's 33 rows carry
+ *    process_id, project_id and health all null, because the collector that
+ *    supplies them has not reported. So a row with a null process_id is NOT
+ *    REPORTED, not an unnamed healthy process.
+ */
+export interface HostProcessRow {
+  process_id: string | null;
+  project_id: string | null;
+  command?: string;
+  status?: string | null;
+  health?: string | null;
+  pid?: number | null;
+  started_at?: string | null;
+  last_seen?: string | null;
+  restart_count?: number | null;
+}
+
+export interface TerminalHost {
+  host: string;
+  /** True for the machine serving this HUD, so a reader can orient themselves. */
+  local: boolean;
+  collected_at: string;
+  age_sec: number;
+  /** The host has gone quiet. Its rows describe the past, not now. */
+  stale: boolean;
+  processes: HostProcessRow[];
+}
+
+export interface TerminalsPayload {
+  hosts: TerminalHost[];
+  /** Hosts currently flagged stale, by name. */
+  stale_hosts: string[];
+  terminals: Array<Record<string, unknown>>;
+  sessions: Array<Record<string, unknown>>;
+}
+
+/**
+ * GET /api/trading/ops -- the jobs this machine runs under launchd.
+ *
+ * `available: false` means the listing could not be read, which is different
+ * from "no jobs are loaded". The fleet floor has to say which of the two it is,
+ * because the first is a gap in what we can see and the second is a fact about
+ * the machine.
+ */
+export interface TradingOpsPayload {
+  launchdState?: {
+    available: boolean;
+    counts?: Record<string, number>;
+    error?: string | null;
+    services?: FleetLaunchdEntry[];
+  };
+  [k: string]: unknown;
+}
+
 export interface Summary {
   hive: string;
   label: string;

@@ -1,3 +1,20 @@
+// NO DATA SOURCE. Nothing mounts this component, and four of its five exports
+// cannot be fed by any route the server currently serves. Checked 2026-10-04
+// against the live mini:
+//
+//   EquityCurve          needs number[]            -- no equity series is published
+//   SharpeComparison     needs avg_sharpe/avg_return per strategy -- the server
+//                          publishes neither (0 references outside tests)
+//   WinRateProfitFactor  needs win_rate + profit_factor -- profit_factor exists
+//                          per arm (/api/... arms), win_rate is published nowhere
+//   DrawdownChart        needs number[]            -- max_dd_pct is a scalar per
+//                          arm, not a drawdown series
+//   RiskMetricsDoughnut  needs value/max/label     -- generic; F11 already shows
+//                          the real drawdown figure, so this would duplicate it
+//
+// Mounting any of these would mean inventing the numbers, which is exactly what
+// the HUD's truth contract forbids. If a route starts publishing an equity
+// curve or a drawdown series, mount that one and leave the rest here.
 import {
   Chart as ChartJS,
   CategoryScale,
