@@ -2344,6 +2344,7 @@ app.get('/api/terminals/spawned', (_req, res) => {
 });
 
 app.post('/api/terminals/spawn', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   try {
     const terminal = await terminalManager.spawnOne(req.body || {});
@@ -2355,6 +2356,7 @@ app.post('/api/terminals/spawn', async (req, res) => {
 });
 
 app.post('/api/terminals/bulk', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   const body = req.body || {};
   try {
@@ -2385,6 +2387,7 @@ app.post('/api/terminals/bulk', async (req, res) => {
 // /spawn, /bulk, /reap and /health -- answering a spawn attempt as "unknown
 // terminal 404" and a POST as 405. Keep every literal name above this line.
 app.post('/api/terminals/reap', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   const body = req.body || {};
   res.json({ ok: true, ...terminalManager.reap({
@@ -2463,6 +2466,7 @@ app.get('/api/autopilot/proposals', (_req, res) => {
 // Land/dismiss are operator decisions. The autopilot can propose all it likes;
 // this is the only way a proposal ever changes state, and it is loopback-only.
 app.post('/api/autopilot/proposals/:id/land', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (autopilotGuard(req, res)) return;
   try {
     const note = typeof req.body?.note === 'string' ? req.body.note.slice(0, 200) : 'landed by operator';
@@ -2475,6 +2479,7 @@ app.post('/api/autopilot/proposals/:id/land', (req, res) => {
 });
 
 app.post('/api/autopilot/proposals/:id/dismiss', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (autopilotGuard(req, res)) return;
   try {
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 200) : 'dismissed by operator';
@@ -2487,6 +2492,7 @@ app.post('/api/autopilot/proposals/:id/dismiss', (req, res) => {
 });
 
 app.post('/api/autopilot/policy', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (autopilotGuard(req, res)) return;
   try {
     const policy = autopilot.updatePolicy(req.body || {});
@@ -2499,6 +2505,7 @@ app.post('/api/autopilot/policy', (req, res) => {
 
 // One manual tick, for the operator who does not want to wait for the interval.
 app.post('/api/autopilot/tick', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (autopilotGuard(req, res)) return;
   const verdict = await autopilot.tick();
   autopilotRunner.persist(autopilot);
@@ -2593,6 +2600,7 @@ app.get('/api/terminals/:id/follow', (req, res) => {
 });
 
 app.post('/api/terminals/:id/kill', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   try {
     const terminal = await terminalManager.kill(req.params.id, { signal: (req.body || {}).signal });
@@ -2604,6 +2612,7 @@ app.post('/api/terminals/:id/kill', async (req, res) => {
 });
 
 app.post('/api/terminals/:id/signal', async (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   try {
     const terminal = await terminalManager.signal(req.params.id, (req.body || {}).signal);

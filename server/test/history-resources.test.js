@@ -24,11 +24,17 @@ fs.mkdirSync(stateDir, { recursive: true });
 const server = loadServer(fixture.hive);
 let http;
 
-test.before(async () => { http = await startTestServer(server.app); });
-test.after(async () => {
-  await http?.close();
-  fixture.cleanup();
-});
+// `test` is node:test's skip export, which has no .before/.after. Calling them
+// anyway threw "test.before is not a function" and failed the FILE, so the whole
+// suite reported one red entry instead of these tests reporting as skipped. Guarded
+// so the intent -- nothing in this file runs -- is actually what happens.
+if (typeof test.before === 'function') {
+  test.before(async () => { http = await startTestServer(server.app); });
+  test.after(async () => {
+    await http?.close();
+    fixture.cleanup();
+  });
+}
 
 test('combinedHistory serves records and skips a partial line', async () => {
   fs.writeFileSync(path.join(stateDir, 'combined_history.jsonl'), [
