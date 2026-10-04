@@ -45,6 +45,7 @@ const liveDigestRoute = require('./live_digest_route');
 const openaliceStatus = require('./openaliceStatus');
 const frozenFeedsRoute = require('./frozen_feeds_route');
   const floorRoute = require('./floor_route');
+const { spawnPolicyAudit } = require('./spawnPolicy');
   const { registerEvidenceRoutes } = require('./evidenceRoutes');
 const { registerWedgedRoutes } = require('./lib/wedgedProcesses');
 const { classifyTaskTruth, summarizeTasks } = require('./taskTruth.js');
@@ -962,6 +963,20 @@ function terminalSnapshot() {
     terminals,
     sessions,
     stale_hosts: hosts.filter(h => h.stale).map(h => h.host),
+    // Whether the HUD can start anything on the machine serving it, and why not.
+    //
+    // This is here because the answer is otherwise invisible: the terminal policy
+    // is a per-machine file, and a policy written on one machine and copied to
+    // another keeps its prefixes. On the mini, hive/terminal_allowlist.json names
+    // cwdPrefixes ["/Users/aryanagarwal"] -- a laptop path on a host whose home is
+    // /Users/a -- so every cwd is refused and no terminal can be spawned. That is
+    // fail-closed and correct, but from the HUD it looked identical to "spawning is
+    // disabled", and the two are very different facts.
+    //
+    // Nothing here loosens the policy. It reports what the policy permits and
+    // whether each permitted tree actually exists here, so a mismatch is visible
+    // instead of being discovered when a spawn silently fails.
+    spawn_policy: spawnPolicyAudit(),
   };
 }
 

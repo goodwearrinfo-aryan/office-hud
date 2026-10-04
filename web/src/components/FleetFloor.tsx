@@ -112,6 +112,72 @@ function HostCard({ host }: { host: TerminalsPayload['hosts'][number] }) {
   );
 }
 
+/**
+ * Whether this machine can start a terminal at all, and why not when it cannot.
+ *
+ * Four outcomes, all of which look identical from the outside -- a spawn that
+ * does not happen -- so they are named rather than collapsed into "disabled":
+ *
+ *   permitted       the policy's trees all exist here
+ *   partial         some exist, some do not: usually a policy that travelled
+ *   none_permitted  the policy is present and NONE of its trees exist here
+ *   no_policy_file  no file, so the built-in default applies
+ *
+ * `none_permitted` is the one worth catching early. It is what the mini has been
+ * running the whole time: a policy naming a laptop path, which refuses every cwd.
+ * Fail-closed and correct, and previously indistinguishable from spawning being
+ * switched off.
+ */
+function SpawnPolicyPanel({ audit }: { audit: NonNullable<TerminalsPayload['spawn_policy']> }) {
+  const tone =
+    audit.effect === 'permitted' ? 'text-hud-green'
+      : audit.effect === 'no_policy_file' ? 'text-hud-dim'
+        : 'text-hud-amber';
+  const heading =
+    audit.effect === 'permitted' ? 'PERMITTED'
+      : audit.effect === 'no_policy_file' ? 'DEFAULT POLICY'
+        : audit.effect === 'unreadable_policy' ? 'POLICY UNREADABLE'
+          : audit.effect === 'partial' ? 'PARTIALLY PERMITTED' : 'NO VALID TREE';
+
+  return (
+    <div className="panel p-4">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="font-mono text-sm text-hud-amber">CAN THIS MACHINE SPAWN A TERMINAL?</h3>
+        <span className={`text-[10px] font-mono ${tone}`}>{heading}</span>
+      </div>
+      <div className="text-[10px] text-hud-dim mb-2">
+        reported by reading {audit.source} · machine {audit.this_machine} · home {audit.home}
+      </div>
+      <div className={`text-xs ${tone} mb-3`}>{audit.summary}</div>
+      {audit.permitted_trees.length > 0 && (
+        <div className="table-container">
+          <table className="table">
+            <thead>
+              <tr><th>Permitted tree</th><th>Exists here</th><th>Under this home</th></tr>
+            </thead>
+            <tbody>
+              {audit.permitted_trees.map((t) => {
+                const missing = audit.missing_trees.includes(t);
+                return (
+                  <tr key={t}>
+                    <td className="font-mono text-xs">{t}</td>
+                    <td className="text-xs">
+                      {missing
+                        ? <span className="text-hud-amber">no</span>
+                        : <span className="text-hud-green">yes</span>}
+                    </td>
+                    <td className="text-xs">{t.startsWith(audit.home) ? 'yes' : 'no'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function FleetFloor() {
   const { data: fleet, error: fleetError } = useLive<TerminalsPayload>('/api/terminals');
   const { data: ops } = useLive<TradingOpsPayload>('/api/trading/ops');
@@ -156,6 +222,8 @@ export default function FleetFloor() {
           </div>
         </div>
       )}
+
+      {fleet?.spawn_policy && <SpawnPolicyPanel audit={fleet.spawn_policy} />}
 
       {hosts.map((h) => <HostCard key={h.host} host={h} />)}
 
