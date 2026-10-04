@@ -483,6 +483,46 @@ export interface JarvisTasksResponse {
   tasks: JarvisTask[];
 }
 
+/**
+ * The server's answer to "what would this command do?", from POST
+ * /api/jarvis/preview. It writes nothing.
+ *
+ * The point of asking rather than deriving: the browser used to keep its own
+ * narrower copy of the danger rule and guess the risk tier from it. The two
+ * disagreed often enough that the console would show a command as OPS TASK and
+ * the server would then refuse it with 428. `risk` and `requires_type_confirmation`
+ * come from the same function the write path uses, so they cannot be wrong here
+ * and right there.
+ *
+ * `dispatch.available` is false whenever the request did not arrive on the HUD
+ * host's own loopback interface -- which is the normal state when the HUD is
+ * being read from a laptop over a tunnel. It is reported rather than discovered
+ * by pressing the button, because the alternative is a control that looks live
+ * and answers 403.
+ */
+export interface JarvisPreview {
+  ok: boolean;
+  reason: string | null;
+  field_status: number | null;
+  prompt: string | null;
+  priority: string | null;
+  target: string | null;
+  risk: 'destructive' | 'normal' | null;
+  requires_type_confirmation: boolean | null;
+  assigned_agent: string | null;
+  routing: JarvisRouting | null;
+  would_accept: boolean;
+  /** Why it would not be queued: fields, queue_unavailable, not_local, confirmation. */
+  blocked_by: 'fields' | 'queue_unavailable' | 'not_local' | 'confirmation' | null;
+  blocked_reason: string | null;
+  dispatch: {
+    available: boolean;
+    host: string;
+    requirement: string;
+  };
+  queue_available: boolean;
+}
+
 export interface ApiErrorBody {
   code?: string;
   message?: string;

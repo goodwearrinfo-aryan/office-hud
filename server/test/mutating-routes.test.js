@@ -27,7 +27,8 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
 // keeps the failure from being silently discovered later. Narrowing any of
 // these is a behaviour change and needs its own decision.
 const ALLOWLIST = {
-  'POST /api/llm/costs/reset/daily': 'resets a local cost counter; no external effect',
+    'POST /api/jarvis/preview': 'writes nothing. It judges a command with the same pure function the write path uses (server/jarvisPolicy.js) and returns the verdict, including whether THIS host may dispatch at all. Ungated on purpose: the operator who most needs to be told that dispatch is unavailable from their machine is the one reading the HUD over a tunnel, and gating the preview would hide the explanation behind the thing being explained. It reads no more than /api/task-board already serves ungated to the same caller.',
+    'POST /api/llm/costs/reset/daily': 'resets a local cost counter; no external effect',
   'POST /api/llm/costs/reset/monthly': 'resets a local cost counter; no external effect',
   'POST /api/llm/circuit-breakers/reset': 're-arms breakers; fleet calls it by design',
   'POST /api/polymarket/markets/exclude': 'edits a local market filter',
@@ -38,22 +39,31 @@ const ALLOWLIST = {
   'POST /api/sessions/:id/reattach': 're-attaches an existing local session',
 };
 
-function mutatingRoutes(src) {
-  const out = [];
-  const re = /app\.(post|put|patch|delete)\(\s*'([^']+)'/g;
-  let m;
-  while ((m = re.exec(src)) !== null) {
-    const start = m.index;
-    const next = src.indexOf('app.', start + m[0].length);
-    const body = src.slice(start, next === -1 ? src.length : next);
-    out.push({
-      method: m[1].toUpperCase(),
-      path: m[2],
-      gated: body.includes('isLocalRequest'),
-    });
+// "gated" has to mean the route REJECTS a non-local caller, not that it mentions
+  // the gate. It used to be `body.includes('isLocalRequest')`, which any route could
+  // satisfy by calling the function and ignoring the answer -- and
+  // POST /api/jarvis/preview did exactly that on the day it was written: it calls
+  // isLocalRequest(req) to REPORT whether this host may dispatch, and is in the
+  // ALLOWLIST above for that reason, but it passed this test before it was listed
+  // at all. A gate check that a mention can satisfy is not a gate check.
+  const REJECTS_NON_LOCAL = /if\s*\(\s*!\s*isLocalRequest\s*\(\s*req\s*\)\s*\)\s*return\b/;
+
+  function mutatingRoutes(src) {
+    const out = [];
+    const re = /app\.(post|put|patch|delete)\(\s*'([^']+)'/g;
+    let m;
+    while ((m = re.exec(src)) !== null) {
+      const start = m.index;
+      const next = src.indexOf('app.', start + m[0].length);
+      const body = src.slice(start, next === -1 ? src.length : next);
+      out.push({
+        method: m[1].toUpperCase(),
+        path: m[2],
+        gated: REJECTS_NON_LOCAL.test(body),
+      });
+    }
+    return out;
   }
-  return out;
-}
 
 test('index.js does not define the gate inline', () => {
   assert.ok(
