@@ -44,7 +44,8 @@ const strategySearchRoute = require('./strategy_search_route');
 const liveDigestRoute = require('./live_digest_route');
 const openaliceStatus = require('./openaliceStatus');
 const frozenFeedsRoute = require('./frozen_feeds_route');
-const { registerEvidenceRoutes } = require('./evidenceRoutes');
+  const floorRoute = require('./floor_route');
+  const { registerEvidenceRoutes } = require('./evidenceRoutes');
 const { registerWedgedRoutes } = require('./lib/wedgedProcesses');
 const { classifyTaskTruth, summarizeTasks } = require('./taskTruth.js');
 const { processView, redactRecord } = require('./processTruth');
@@ -2041,8 +2042,9 @@ app.get('/api/alphainsider/status', (_req, res) => proxyFreeHarnessJson('/alphai
   strategySearchRoute.register(app);
   liveDigestRoute.register(app);
   openaliceStatus.register(app);
-  frozenFeedsRoute.register(app);
-  registerEvidenceRoutes(app);
+frozenFeedsRoute.register(app);
+    floorRoute.register(app);
+    registerEvidenceRoutes(app);
   registerWedgedRoutes(app, HIVE);
 
 app.get('/api/summary', (_req, res) => {

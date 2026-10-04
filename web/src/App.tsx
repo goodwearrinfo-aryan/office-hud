@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useLive, type Summary, type Agent } from './api';
 import FloorNav from './components/FloorNav';
+import FloorTable from './components/FloorTable';
+import FloorProbeStatus from './components/FloorProbeStatus';
 import OfficeScene from './components/OfficeScene';
 import AgentDrawer from './components/AgentDrawer';
 import LedgerTimeline from './components/LedgerTimeline';
@@ -167,7 +169,16 @@ export default function App() {
       {floor === 'f8' && <LiveTrading />}
       {floor === 'f9' && (
         <div className="flex items-start gap-4">
-          <div className="flex-1 min-w-0"><OpsFloor /></div>
+          <div className="flex-1 min-w-0">
+            <OpsFloor />
+            {/* The two floor views answer different questions and both belong on
+                the ops floor: FloorTable is the roster rollup (who claims a
+                floor), FloorProbeStatus is what the hive's own probe measured
+                (is the manager alive, is the status file fresh). Neither
+                substitutes for the other. */}
+            <div className="mt-6"><FloorTable /></div>
+            <div className="mt-4"><FloorProbeStatus /></div>
+          </div>
           <AlertRail />
         </div>
       )}

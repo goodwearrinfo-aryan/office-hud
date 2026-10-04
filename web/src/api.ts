@@ -55,6 +55,49 @@ export interface Agent {
   };
 }
 
+/**
+ * Probe-grade floor state from GET /api/floors.
+ *
+ * Distinct from `Summary.floors`, which rolls the agent roster up by floor and
+ * answers "who is on f3". This answers "is f3's manager alive and is its status
+ * file fresh", which the roster cannot know. Neither replaces the other.
+ */
+export interface FloorsPayload {
+  floors: Array<{
+    floor: string;
+    manager: string;
+    state: string;
+    reason: string | null;
+    manager_alive: boolean;
+    task_counts: Record<string, number>;
+    current_task?: string | null;
+    last_activity?: string | null;
+  }>;
+  /** Same read as `floors`, so a badge can never contradict the row beside it. */
+  counts: Record<string, {
+    state: string;
+    manager_alive: boolean;
+    reason: string | null;
+    current_task: string | null;
+    last_activity: string | null;
+    tasks: Record<string, number>;
+    workers: number;
+    failed_workers: number;
+    stalled: number;
+    degraded: boolean;
+  }>;
+  summary: Record<string, number>;
+  /** 'unavailable' when the hive has no probe, 'error' when it failed. */
+  source: string;
+  /**
+   * True when the probe could not be consulted. Every floor is then UNKNOWN and
+   * this flag must be surfaced: twelve grey rows read as measurements unless the
+   * caller says they are not.
+   */
+  not_verified: boolean;
+  at: number;
+}
+
 export interface Summary {
   hive: string;
   label: string;
