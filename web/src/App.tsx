@@ -40,8 +40,8 @@ import NativeTitleStrip, { type NativeConnectionTone } from './components/Native
 import { markNative, onShellCommand, parseDeepLink } from './native';
 import { useConnectionStatus } from './api';
 
-class ErrorBoundary extends React.Component<any, { hasError: boolean }> {
-      constructor(props: any) {
+class ErrorBoundary extends React.Component<{ children?: React.ReactNode; fallback?: React.ReactNode }, { hasError: boolean }> {
+      constructor(props: { children?: React.ReactNode; fallback?: React.ReactNode }) {
        super(props);
        this.state = { hasError: false };
      }
@@ -55,7 +55,7 @@ class ErrorBoundary extends React.Component<any, { hasError: boolean }> {
 
      public render() {
        if (this.state.hasError) {
-         return <div className="panel p-4 text-hud-red">Something went wrong with this floor.</div>;
+         return this.props.fallback ?? <div className="panel p-4 text-hud-red">Something went wrong with this floor.</div>;
        }
 
        return this.props.children;
@@ -175,7 +175,7 @@ export default function App() {
   const activeCount = agents.filter((a) => a.display === 'busy' || a.display === 'idle').length;
 
   const floorContent = (
-     <ErrorBoundary>
+     <ErrorBoundary key={floor}>
        <div className="flex-1 overflow-auto p-4">
       {floor === 'f1' && (
         <div className="flex items-start justify-between gap-4">
@@ -301,11 +301,13 @@ export default function App() {
 
       {/* Agent Drawer */}
       {drawerId && (
-        <AgentDrawer
-          agentId={drawerId}
-          summary={agents.find((a) => a.id === drawerId)}
-          onClose={() => setDrawerId(null)}
-        />
+        <ErrorBoundary fallback={<div className="panel p-4 text-hud-red">Agent drawer error.</div>}>
+          <AgentDrawer
+            agentId={drawerId}
+            summary={agents.find((a) => a.id === drawerId)}
+            onClose={() => setDrawerId(null)}
+          />
+        </ErrorBoundary>
       )}
 
       {/* God Console */}
@@ -321,14 +323,18 @@ export default function App() {
 
       {/* Global search */}
       {searchOpen && (
-        <GlobalSearch
-          onSelectAgent={(id) => { setSearchOpen(false); setDrawerId(id); }}
-        />
+        <ErrorBoundary fallback={<div className="panel p-4 text-hud-red">Global search error.</div>}>
+          <GlobalSearch
+            onSelectAgent={(id) => { setSearchOpen(false); setDrawerId(id); }}
+          />
+        </ErrorBoundary>
       )}
 
       {/* Command Palette */}
       {showCommandPalette && (
-        <CommandPalette onClose={() => setShowCommandPalette(false)} agents={agents} />
+        <ErrorBoundary fallback={<div className="panel p-4 text-hud-red">Command palette error.</div>}>
+          <CommandPalette onClose={() => setShowCommandPalette(false)} agents={agents} />
+        </ErrorBoundary>
       )}
 
       {/* Help modal */}

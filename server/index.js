@@ -34,6 +34,17 @@ process.env.OPENALICE_HIVE = HIVE;
 let hiveFileLock = null;
 try { hiveFileLock = require(path.join(HIVE, 'lib', 'file_lock.js')).withFileLock; } catch {}
 const HIVE_LABEL = process.env.OFFICE_HUD_LABEL || 'Fleet hive';
+// Host alias map: canonicalize host names (e.g. fix DHCP-flapped names)
+let HOST_ALIAS_MAP = {}
+try {
+  const aliasPath = path.join(HIVE, 'host_aliases.json');
+  if (fs.existsSync(aliasPath)) {
+    HOST_ALIAS_MAP = JSON.parse(fs.readFileSync(aliasPath, 'utf8'));
+  }
+} catch {
+  // If parsing fails, continue with empty map (no aliasing)
+}
+
 const FLEET_ROOT = path.dirname(HIVE);
 
 // The hardened local-only gate lives in its own module, not inline here. A
@@ -1012,8 +1023,9 @@ function terminalHosts() {
     if (!doc || typeof doc !== 'object') continue;
     const collectedAt = doc.collected_at || null;
     const ageSec = collectedAt ? Math.max(0, Math.round((Date.now() - Date.parse(collectedAt)) / 1000)) : null;
+    const rawHost = String(doc.host || entry.name);
+    const host = HOST_ALIAS_MAP[rawHost] || rawHost;
     hosts.push({
-      host: String(doc.host || entry.name),
       local: false,
       collected_at: collectedAt,
       age_sec: ageSec,

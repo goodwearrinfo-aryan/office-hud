@@ -350,35 +350,40 @@ function augmentedPath(current, policy) {
   const fs = require('node:fs');
   // The operator's own entries, preserved verbatim and in order.
   const existing = String(current || '').split(':').filter(Boolean);
-  const have = new Set(existing);
-  const lead = [];
   const isDir = (dir) => {
     try { return fs.statSync(dir).isDirectory(); } catch { return false; }
   };
-  const add = (dir) => {
-    if (!dir || have.has(dir) || lead.includes(dir)) return;
-    if (!isDir(dir)) return;
-    lead.push(dir);
-  };
-// nvm installs node under a version directory, so it cannot be named as a
-  // literal prefix. An explicit NVM_BIN goes FIRST: it is a deliberate pin, and
-  // it must outrank the generic prefixes below. Homebrew ships its own node, so
-  // putting /opt/homebrew/bin ahead of the pin silently runs spawned code on a
-  // different runtime than the one this server was tested on.
-  const home = os.homedir();
-  if (process.env.NVM_BIN) {
-    add(process.env.NVM_BIN);
-  } else {
+  // nvm installs node under a version directory, so it cannot be named as a
+  // literal prefix. An explicit NVM_BIN is a deliberate pin and has to go
+  // first: Homebrew ships its own node, so a generic prefix ahead of it runs
+  // spawned code on a different runtime than the one this server was tested on.
+  // The pin must be PROMOTED even when it already appears later in PATH -- the
+  // usual "skip what is already present" rule would leave it behind the prefix
+  // it is meant to outrank.
+  let pinned = process.env.NVM_BIN || null;
+  if (!pinned) {
+    const home = os.homedir();
     try {
       const newest = fs.readdirSync(`${home}/.nvm/versions/node`)
         .filter((v) => /^v\d+\./.test(v))
         .sort()
         .pop();
-      if (newest) add(`${home}/.nvm/versions/node/${newest}/bin`);
+      if (newest) pinned = `${home}/.nvm/versions/node/${newest}/bin`;
     } catch { /* nvm is not installed on this machine */ }
   }
+  if (pinned && !isDir(pinned)) pinned = null;
+  const lead = [];
+  const seen = new Set();
+  const add = (dir) => {
+    if (!dir || seen.has(dir) || !isDir(dir)) return;
+    seen.add(dir);
+    lead.push(dir);
+  };
+  add(pinned);
   for (const dir of policy.pathPrefixes || DEFAULTS.pathPrefixes) add(dir);
-  return [...lead, ...existing].join(':');
+  // Anything we promoted is dropped from the tail so it is not listed twice.
+  const tail = existing.filter((dir) => !seen.has(dir));
+  return [...lead, ...tail].join(':');
 }
 
 /**

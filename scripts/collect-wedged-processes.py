@@ -64,6 +64,21 @@ ONESHOT_PATTERNS = (
 
 DEFAULT_MIN_SECONDS = 1800  # a one-shot over 30 minutes is not making progress
 
+# Interactive agent sessions (opencode, claude, ...) are not one-shots: they are
+# long-lived by design, and their --prompt payload routinely names the very tools
+# in ONESHOT_PATTERNS ("run 'npx tsc --noEmit'", "run pytest"), so substring-
+# matching the whole argv flags every typecheck/code-quality worker as wedged the
+# moment it passes min_seconds. Observed live: worker-jim (2026-10-04) was
+# reported wedged for an hour while working normally. A wedged one-shot spawned
+# BY an agent still matches on its own row, so nothing real is masked.
+AGENT_SESSION_EXECUTABLES = (
+    "opencode",
+    "claude",
+    "cursor",
+    "codex",
+    "gemini",
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -119,6 +134,7 @@ def _ps() -> List[Dict[str, Any]]:
         if len(parts) < 7:
             continue
         pid, ppid, pgid, etime, cputime, state = parts[:6]
+        comm = parts[6].strip() if len(parts) > 7 else ""
         args = parts[7] if len(parts) > 7 else parts[6]
         if not pid.strip().isdigit():
             continue
@@ -129,7 +145,13 @@ def _ps() -> List[Dict[str, Any]]:
             "etime": etime.strip(),
             "cpu_time": cputime.strip(),
             "state": state.strip(),
-            "command": args.strip()[:400],
+            "comm": comm[:80],
+            # Full argv on the row: _script_path() must see the whole command,
+            # because a path cut at an output-width limit no longer ends in its
+            # real extension and resolves to a file that never existed
+            # ("hive/tasks.json" truncated to "hive/tasks.js" -> not exists).
+            # Truncation belongs to the emitted finding, not the analysis.
+            "command": args.strip(),
         })
     return rows
 
@@ -200,7 +222,22 @@ def _script_path(command: str, cwd: str):
     return "", True
 
 
+def _is_agent_session(row: Dict[str, Any]) -> bool:
+    """True when the row is an interactive agent harness, not a tool run.
+
+    Checked against both argv[0] and the ps comm column: macOS truncates comm,
+    and a session launched through a wrapper can differ between the two.
+    """
+    for candidate in (row.get("comm", ""), row["command"].split()[0] if row["command"] else ""):
+        name = Path(candidate).name if candidate else ""
+        if name in AGENT_SESSION_EXECUTABLES:
+            return True
+    return False
+
+
 def _is_wedged(row: Dict[str, Any], min_seconds: int) -> bool:
+    if _is_agent_session(row):
+        return False
     command = row["command"]
     if not any(p in command for p in ONESHOT_PATTERNS):
         return False
@@ -250,7 +287,7 @@ def collect(min_seconds: int) -> Dict[str, Any]:
             "cpu_time": root["cpu_time"],
             "cpu_seconds": round(_cpu_seconds(root["cpu_time"]), 3),
             "state": root["state"],
-            "command": root["command"],
+            "command": root["command"][:400],
             "script_path": script,
             "script_exists": exists,
             "managed_by_launchd": root["pid"] in launchd,
