@@ -14,6 +14,7 @@ const { AutonomyController } = require('./lib/autonomy');
 const replay = require('./lib/replay');
 const { rateLimitReport } = require('./rateLimitStatus');
 const { fleetCostVerdict, costLabel, mayShowZero } = require('./costTruth');
+const { fleetCapVerdict } = require('./capTruth');
 const {
   isDangerousJarvisPrompt,
   isIdentifier,
@@ -1259,6 +1260,13 @@ function mergedAgents() {
       breaker,
       tokens: agent.tokens ?? 0,
       usd: agent.usd ?? 0,
+      // Read, not assumed. hive/lib/llm/client.ts builds its cap from these exact
+      // fields on the agent record, and measured on the mini none of the 66 agents in
+      // registry.json sets either one -- which is why the cap check that runs on every
+      // request can never fire. Exposing them lets the floor report that instead of
+      // having no vocabulary for it at all.
+      capUsdPerDay: agent.cost_limit_usd_per_day ?? null,
+      capUsdPerMonth: agent.cost_limit_usd_per_month ?? null,
       sessionUsd: agent.sessionUsd ?? 0,
       lastTool: agent.lastTool || null,
       lastActiveSecAgo: agent.lastActiveSecAgo ?? null,
@@ -3300,7 +3308,19 @@ const RESOURCES = {
     // measurement, and a panel rendering it as $0.00 claims the office is free. The
     // floor keeps the number and adds whether it can be believed. See costTruth.js.
     const verdict = fleetCostVerdict(payload);
-    return { ...payload, verdict, cost_label: costLabel(verdict), may_show_zero: mayShowZero(verdict) };
+    // The cap is read from the agent records, not assumed present. On this hive none of
+    // them sets one, so the fleet verdict is `no_cap` -- which is the fact worth having
+    // on screen, rather than a green checkmark for a check that cannot fire.
+    const capByAgent = {};
+    for (const a of mergedAgents()) {
+      const daily = a.cost_limit_usd_per_day;
+      const monthly = a.cost_limit_usd_per_month;
+      if (daily != null || monthly != null) {
+        capByAgent[a.id] = { daily_usd: daily ?? null, monthly_usd: monthly ?? null };
+      }
+    }
+    const cap = fleetCapVerdict(payload, capByAgent);
+    return { ...payload, verdict, cost_label: costLabel(verdict), may_show_zero: mayShowZero(verdict), cap };
   }, { onError: (error) => ({ agents: {}, total: null, error: error.message, verdict: null, cost_label: 'Cost could not be read.', may_show_zero: false }) }),
   knowledge: build('knowledge', () => getGraphifyCommunities()),
   polymarket: build('polymarket', () => getPolymarketState(), {

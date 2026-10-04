@@ -1,4 +1,4 @@
-import type { CostVerdict } from '../costTruthTypes';
+import type { CapFleetVerdict, CostVerdict } from '../costTruthTypes';
 import { useLive, type HarnessHealth, type OfficeManagerStatus, type QueueSummary, type SessionRecord, type Summary } from '../api';
 
 function timeAgo(value: string | null) {
@@ -23,7 +23,7 @@ export default function ExecutiveHQ() {
   // token counts -- which the hive's cost lib multiplies into a zero. So the total is a
   // silence, and `may_show_zero` is the difference between $0.00 as a measurement and
   // $0.00 as a lie.
-  const { data: costs } = useLive<{ verdict?: CostVerdict | null; cost_label?: string | null; may_show_zero?: boolean }>('/api/llm/costs');
+  const { data: costs } = useLive<{ verdict?: CostVerdict | null; cost_label?: string | null; may_show_zero?: boolean; cap?: CapFleetVerdict | null }>('/api/llm/costs');
   const showCostFigure = costs?.may_show_zero === true;
   const agents = summary?.agents ?? [];
   const sessions = sessionsData?.sessions ?? [];
@@ -101,6 +101,27 @@ export default function ExecutiveHQ() {
           <div className="text-xs text-hud-dim">FREE HARNESS</div>
           <div className={`text-2xl font-mono font-bold ${harness?.ok ? 'text-hud-green' : 'text-hud-red'}`}>{harness?.status ?? 'CHECKING'}</div>
           <div className="text-xs text-hud-dim truncate">{harness?.provider ?? '—'} · {harness?.model ?? '—'}</div>
+        </div>
+        <div className="panel p-4">
+          <div className="text-xs text-hud-dim">SPENDING CAP</div>
+          {/* Rendered next to the total because a spend without a ceiling is not a
+              budget. NO CAP is its own state and is deliberately not green: the cap
+              check runs on every LLM request upstream and, with no agent setting a
+              limit, cannot fire for any of them. */}
+          {costs?.cap?.verdict === 'exceeded' ? (
+            <div className="text-2xl font-mono font-bold text-hud-red">EXCEEDED</div>
+          ) : costs?.cap?.verdict === 'within' ? (
+            <div className="text-2xl font-mono font-bold text-hud-green">WITHIN CAP</div>
+          ) : costs?.cap?.verdict === 'unknown' ? (
+            <div className="text-2xl font-mono font-bold text-hud-amber">CAP UNKNOWN</div>
+          ) : (
+            <div className="text-2xl font-mono font-bold text-hud-amber">NO CAP SET</div>
+          )}
+          <div className="text-xs text-hud-dim">
+            {costs?.cap
+              ? `${costs.cap.with_cap} of ${costs.cap.agents} agents capped`
+              : 'Cap state not reported.'}
+          </div>
         </div>
         <div className="panel p-4">
           <div className="text-xs text-hud-dim">TOTAL COST</div>
