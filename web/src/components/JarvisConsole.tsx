@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from 'react';
 import { reachableCount } from '../displayStates';
-import { useLive, useConnectionStatus, type FleetEvent, type HarnessHealth, type JarvisTask, type JarvisTasksResponse, type OfficeManagerStatus, type ProcessRecord, type ProjectRecord, type QueueSummary, type ServiceHealth, type SessionRecord, type Summary, type VerifyState } from '../api';
+import { previewJarvisCommand, riskLabel, needsTypeConfirmation, canDispatch, ownerLabel, routingLabel } from '../jarvisPreview';
+import { useLive, useConnectionStatus, type FleetEvent, type HarnessHealth, type JarvisPreview, type JarvisTask, type JarvisTasksResponse, type OfficeManagerStatus, type ProcessRecord, type ProjectRecord, type QueueSummary, type ServiceHealth, type SessionRecord, type Summary, type VerifyState } from '../api';
 import AlphaInsiderPanel from './AlphaInsiderPanel';
 
 function formatClock() {
@@ -21,7 +22,20 @@ type PendingCommand = {
   prompt: string;
   target: string;
   priority: string;
-  dangerous: boolean;
+  /**
+   * The office's own judgement, from POST /api/jarvis/preview.
+   *
+   * This used to be `dangerous: boolean`, computed by a second copy of the danger
+   * regex living in this file. That copy was missing clear, purge, erase,
+   * overwrite, disable, enable, transfer, withdraw, deposit, buy and sell, so the
+   * confirm card would label a command OPS TASK and the server would then answer
+   * 428. It also wrapped `rm\s` in \b(...)\b, and a word boundary cannot follow a
+   * space, so the branch meant to catch `rm -rf` never matched it.
+   *
+   * The tier label and the EXECUTE gate now both come from the same function the
+   * write path uses, so there is nothing left in this file to be wrong about.
+   */
+  preview: JarvisPreview | null;
 };
 
 type CommandResponse = {
@@ -83,10 +97,6 @@ function statusTone(status: string) {
 
 function serviceTone(status: string) {
   return status === 'online' ? 'is-online' : 'is-alert';
-}
-
-function isDangerousPrompt(prompt: string) {
-  return /\b(delete|remove|destroy|drop|kill|shutdown|stop|restart|rm\s|git\s+reset|force|password|secret|credential|private\s*key|live\s*trade)\b/i.test(prompt);
 }
 
 function taskTone(status: string) {
@@ -199,12 +209,24 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
     }
     setCommandError(null);
     setCommandMessage(null);
-    setPendingCommand({ prompt: normalizedPrompt, target, priority, dangerous: isDangerousPrompt(normalizedPrompt) });
+    // Ask the office to judge it. The confirm card used to label the tier from a
+    // regex in this file, so it could promise a command was ordinary when the
+    // server would refuse it. It now renders the server's answer, including who
+    // would own the work and whether this host may dispatch at all.
+    void (async () => {
+      const preview = await previewJarvisCommand({ prompt: normalizedPrompt, target: target || null, priority });
+      setPendingCommand({ prompt: normalizedPrompt, target, priority, preview });
+    })();
     setTypeConfirmation('');
   };
 
   const submitCommand = async () => {
-    if (!pendingCommand || (pendingCommand.dangerous && typeConfirmation !== 'EXECUTE')) return;
+    if (!pendingCommand) return;
+    // One decision function, shared with the God Console, so a command that cannot
+    // be dispatched is refused here for the reason the server will give rather
+    // than for whatever this file used to assume.
+    const gate = canDispatch(pendingCommand.preview, typeConfirmation);
+    if (!gate.allowed) { setCommandError(gate.reason); return; }
     setIsSubmitting(true);
     setCommandError(null);
     try {
@@ -216,7 +238,7 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
           target: pendingCommand.target || null,
           priority: pendingCommand.priority,
           confirmed: true,
-          typeConfirmation: pendingCommand.dangerous ? typeConfirmation : null,
+          typeConfirmation: pendingCommand.preview?.requires_type_confirmation ? typeConfirmation : null,
         }),
       });
       const result = await response.json() as CommandResponse;
@@ -251,7 +273,10 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
     setCommandError(null);
     setCommandMessage(null);
     setTypeConfirmation('');
-    setPendingCommand({ prompt: action.prompt, target: action.target ?? '', priority: action.priority, dangerous: isDangerousPrompt(action.prompt) });
+    void (async () => {
+      const preview = await previewJarvisCommand({ prompt: action.prompt, target: action.target || null, priority: action.priority });
+      setPendingCommand({ prompt: action.prompt, target: action.target ?? '', priority: action.priority, preview });
+    })();
   };
 
   return (
@@ -418,9 +443,17 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
       {pendingCommand && <div className="jarvis-modal-backdrop" onClick={() => { if (!isSubmitting) setPendingCommand(null); }}>
         <section className="jarvis-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="jarvis-confirm-title" onClick={event => event.stopPropagation()}>
           <div className="jarvis-panel-heading"><div><span className="jarvis-kicker">JEV CONFIRMATION</span><h2 id="jarvis-confirm-title">Route command to queue?</h2></div><button type="button" className="jarvis-modal-close" onClick={() => setPendingCommand(null)} disabled={isSubmitting} aria-label="Close confirmation">×</button></div>
-          <div className="jarvis-confirm-card"><span>OBJECTIVE</span><p>{pendingCommand.prompt}</p><div><span>{pendingCommand.target || 'JEV auto-route'}</span><span>{pendingCommand.priority}</span><span className={pendingCommand.dangerous ? 'text-alert' : 'text-green'}>{pendingCommand.dangerous ? 'DESTRUCTIVE' : 'OPS TASK'}</span></div></div>
-          {pendingCommand.dangerous && <label className="jarvis-type-confirm">Type <strong>EXECUTE</strong> to authorize<input ref={confirmationInputRef} value={typeConfirmation} onChange={event => setTypeConfirmation(event.target.value.toUpperCase())} autoComplete="off" /></label>}
-          <div className="jarvis-confirm-actions"><button type="button" className="btn btn-ghost" onClick={() => setPendingCommand(null)} disabled={isSubmitting}>Cancel</button><button type="button" className="jarvis-confirm-submit" onClick={submitCommand} disabled={isSubmitting || (pendingCommand.dangerous && typeConfirmation !== 'EXECUTE')}>{isSubmitting ? 'Routing…' : 'Confirm and route'}</button></div>
+          <div className="jarvis-confirm-card"><span>OBJECTIVE</span><p>{pendingCommand.prompt}</p><div><span>{ownerLabel(pendingCommand.preview)}</span><span>{pendingCommand.priority}</span><span className={riskLabel(pendingCommand.preview) === 'DESTRUCTIVE' ? 'text-alert' : riskLabel(pendingCommand.preview) === 'UNKNOWN' ? 'text-hud-amber' : 'text-green'}>{riskLabel(pendingCommand.preview)}</span></div>
+            {routingLabel(pendingCommand.preview) && <div className="jarvis-confirm-routing">{routingLabel(pendingCommand.preview)}</div>}</div>
+          {/* When this host cannot dispatch, say so here instead of letting the
+              operator press Confirm and meet a 403. Reading the HUD from another
+              machine is read-only by design, and that is now visible before the
+              press rather than after it. */}
+          {pendingCommand.preview && !pendingCommand.preview.dispatch.available && (
+            <p className="jarvis-dispatch-blocked">{pendingCommand.preview.blocked_reason || pendingCommand.preview.dispatch.requirement}</p>
+          )}
+          {needsTypeConfirmation(pendingCommand.preview) && <label className="jarvis-type-confirm">Type <strong>EXECUTE</strong> to authorize<input ref={confirmationInputRef} value={typeConfirmation} onChange={event => setTypeConfirmation(event.target.value.toUpperCase())} autoComplete="off" /></label>}
+          <div className="jarvis-confirm-actions"><button type="button" className="btn btn-ghost" onClick={() => setPendingCommand(null)} disabled={isSubmitting}>Cancel</button><button type="button" className="jarvis-confirm-submit" onClick={submitCommand} disabled={isSubmitting || !canDispatch(pendingCommand.preview, typeConfirmation).allowed}>{isSubmitting ? 'Routing…' : 'Confirm and route'}</button></div>
         </section>
       </div>}
 

@@ -12,6 +12,13 @@ const { LiveHub } = require('./lib/live_hub');
 const { AlertEngine } = require('./lib/alerts');
 const { AutonomyController } = require('./lib/autonomy');
 const replay = require('./lib/replay');
+const {
+  isDangerousJarvisPrompt,
+  isIdentifier,
+  routeJarvisCommand,
+  evaluateJarvisCommand,
+  acceptance: jarvisAcceptance,
+} = require('./jarvisPolicy');
 
 let liveHub = null;
 let alertEngine = null;
@@ -107,8 +114,15 @@ const SAFE_POST = new Set([
   '/api/recovery/start',
   '/api/recovery/stop',
   '/api/recovery/manual/:agentId',
-  '/api/jarvis/command',
-]);
+'/api/jarvis/command',
+    // Judgement, not action. This route writes nothing: it runs a command through
+    // the same pure validator the write path uses and returns the verdict, so the
+    // console can show the risk tier and the owner without the browser holding its
+    // own copy of the danger rule. It is here rather than behind the read-only
+    // middleware because it is a POST only for its body, and the alternative —
+    // smuggling a prompt through a GET — would put command text in access logs.
+    '/api/jarvis/preview',
+  ]);
 // Alert acknowledgement and autonomy decisions are operator state on the HUD
 // itself, not hive writes. Each handler still requires a local caller.
 const SAFE_POST_PREFIXES = [
@@ -357,9 +371,6 @@ function sendError(res, status, code, message, details) {
   return res.status(status).json({ ok: false, error });
 }
 
-function isIdentifier(value) {
-  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value);
-}
 
 const HIVE_LOCK_STALE_MS = 30000;
 
@@ -441,45 +452,6 @@ function getJarvisAudit(limit = 50) {
   }));
 }
 
-function isDangerousJarvisPrompt(prompt) {
-  return /\b(delete|remove|destroy|drop|kill|shutdown|stop|restart|reset|clear|purge|erase|overwrite|disable|enable|transfer|withdraw|deposit|buy|sell|force|password|secret|credential|private\s*key|live\s*trad(?:e|ing))\b/i.test(prompt)
-    || /\b(rm|git\s+reset|place\s+(?:an?\s+)?order)\b/i.test(prompt);
-}
-
-function routeJarvisCommand(prompt, requestedTarget) {
-  const promptMatched = /\bpolymarket\b|market|\bpm\b/i.test(prompt);
-  const targetMatched = !!requestedTarget && /^pm-/i.test(requestedTarget);
-  if (!promptMatched && !targetMatched) {
-    return { assignedAgent: requestedTarget, routing: null };
-  }
-  const target = requestedTarget ? requestedTarget.toLowerCase() : null;
-  let resolvedTarget = target;
-  let selector = 'explicit_target';
-  if (!['pm-data', 'pm-signal', 'pm-risk'].includes(target)) {
-    if (/\b(risk|loss|exposure|drawdown|position|portfolio|clear|stop|kill|trade|order)\b/i.test(prompt)) {
-      resolvedTarget = 'pm-risk';
-      selector = 'risk_intent';
-    } else if (/\b(signal|predict|prediction|forecast|probability|odds|outcome|buy|sell|entry|exit)\b/i.test(prompt)) {
-      resolvedTarget = 'pm-signal';
-      selector = 'signal_intent';
-    } else {
-      resolvedTarget = 'pm-data';
-      selector = 'market_data_intent';
-    }
-  }
-  return {
-    assignedAgent: resolvedTarget,
-    routing: {
-      domain: 'polymarket',
-      prompt_matched: promptMatched,
-      target_matched: targetMatched,
-      requested_target: requestedTarget || null,
-      resolved_target: resolvedTarget,
-      selector,
-    },
-  };
-}
-
 function emitJarvisEvent(event) {
   try {
     const { emitEvent } = require(path.join(HIVE, 'lib', 'event_bus.js'));
@@ -494,34 +466,23 @@ function emitJarvisEvent(event) {
 }
 
 function enqueueJarvisCommand({ prompt, target, priority, confirmed, typeConfirmation }) {
-  if (typeof prompt !== 'string') throw requestError('prompt must be a string between 3 and 2000 characters', 400);
-  const normalizedPrompt = prompt.trim();
-  if (normalizedPrompt.length < 3 || normalizedPrompt.length > 2000) {
-    throw requestError('prompt must be between 3 and 2000 characters', 400);
-  }
-  const normalizedPriority = priority === undefined ? 'high' : typeof priority === 'string' ? priority.trim().toLowerCase() : '';
-  if (!['critical', 'high', 'normal', 'low'].includes(normalizedPriority)) {
-    throw requestError('priority must be critical, high, normal, or low', 400);
-  }
-  let normalizedTarget = null;
-  if (target !== undefined && target !== null) {
-    if (typeof target !== 'string') throw requestError('target must be a valid agent or floor identifier', 400);
-    if (target.trim()) {
-      normalizedTarget = target.trim();
-      if (!isIdentifier(normalizedTarget)) throw requestError('target must be a valid agent or floor identifier', 400);
-    }
-  }
-  if (confirmed !== true) throw requestError('explicit confirmation is required', 428);
-  const dangerous = isDangerousJarvisPrompt(normalizedPrompt);
-  if (dangerous && typeConfirmation !== 'EXECUTE') {
-    throw requestError('type-to-confirm value EXECUTE is required for this command', 428);
-  }
-  const tasksPath = path.join(HIVE, 'tasks.json');
-  if (!fs.existsSync(tasksPath)) throw requestError('JEV task queue is unavailable', 503);
-  const now = new Date().toISOString();
-  const taskId = `jarvis-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
-  const routed = routeJarvisCommand(normalizedPrompt, normalizedTarget);
-  const task = {
+    // Judged by the same pure function the preview route calls, so a preview can
+    // never describe a write that behaves differently. The order is preserved:
+    // fields first, then confirmation, then type-to-confirm.
+    const verdict = evaluateJarvisCommand({ prompt, target, priority });
+    const gate = jarvisAcceptance(verdict, { confirmed, typeConfirmation });
+    if (!gate.accepted) throw requestError(gate.reason, gate.statusCode);
+    // Renamed on the way out. The verdict names these prompt/priority/target
+    // because it is a wire payload; the task row has used normalized* since before
+    // the extraction, so the rename happens here rather than at 40 call sites.
+    const { prompt: normalizedPrompt, priority: normalizedPriority, target: normalizedTarget } = verdict.normalized;
+    const dangerous = verdict.requiresTypeConfirmation;
+    const tasksPath = path.join(HIVE, 'tasks.json');
+    if (!fs.existsSync(tasksPath)) throw requestError('JEV task queue is unavailable', 503);
+    const now = new Date().toISOString();
+    const taskId = `jarvis-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+    const routed = { assignedAgent: verdict.assignedAgent, routing: verdict.routing };
+    const task = {
     task_id: taskId,
     title: `[Jarvis] ${normalizedPrompt.slice(0, 100)}`,
     objective: normalizedPrompt,
@@ -2247,7 +2208,68 @@ app.get('/api/jarvis/audit', (req, res) => {
   res.json({ events: getJarvisAudit(req.query.limit) });
 });
 
-app.post('/api/jarvis/command', (req, res) => {
+/**
+   * What a command WOULD do, without doing it.
+   *
+   * Two things justify this route existing.
+   *
+   * The first is that the office was asking operators to press a button whose
+   * outcome they could not see. The console showed a transcript, the server
+   * decided the risk tier, and the operator found out which agent would own the
+   * work only from a task row appearing later. Preview answers the question
+   * first: who owns it, what tier it is, what confirmation it still needs.
+   *
+   * The second is that the browser used to guess the risk tier itself, from its
+   * own narrower copy of the rule, and was wrong often enough to send an operator
+   * into a 428 wall. Asking the server removes the guess rather than correcting
+   * it, so there is no second copy left to drift.
+   *
+   * It is deliberately NOT behind isLocalRequest, which is the opposite of every
+   * other write route here. This one writes nothing, and the operator who most
+   * needs to be told they cannot dispatch is the one looking at the mini over a
+   * tunnel from a laptop -- exactly the request the gate would refuse. Gating it
+   * would hide the explanation behind the thing being explained.
+   *
+   * It reads the queue to report availability, which is no new exposure:
+   * /api/task-board already serves the same rows ungated to the same caller.
+   */
+  app.post('/api/jarvis/preview', (req, res) => {
+    const body = isPlainObject(req.body) ? req.body : {};
+    const verdict = evaluateJarvisCommand(body);
+    const gate = jarvisAcceptance(verdict, { confirmed: body.confirmed, typeConfirmation: body.typeConfirmation });
+    const tasksPath = path.join(HIVE, 'tasks.json');
+    const queueAvailable = fs.existsSync(tasksPath);
+    const local = isLocalRequest(req);
+    res.json({
+      ok: verdict.ok,
+      reason: verdict.ok ? null : verdict.reason,
+      field_status: verdict.statusCode,
+      prompt: verdict.ok ? verdict.normalized.prompt : null,
+      priority: verdict.ok ? verdict.normalized.priority : null,
+      target: verdict.ok ? verdict.normalized.target : null,
+      risk: verdict.ok ? verdict.risk : null,
+      requires_type_confirmation: verdict.ok ? verdict.requiresTypeConfirmation : null,
+      assigned_agent: verdict.ok ? verdict.assignedAgent : null,
+      routing: verdict.ok ? verdict.routing : null,
+      would_accept: gate.accepted && queueAvailable,
+      blocked_by: !verdict.ok ? 'fields'
+        : !queueAvailable ? 'queue_unavailable'
+          : !local ? 'not_local'
+            : gate.accepted ? null : 'confirmation',
+      blocked_reason: !verdict.ok ? verdict.reason
+        : !queueAvailable ? 'JEV task queue is unavailable'
+          : !local ? `This HUD is served from ${os.hostname()}, and dispatch requires a request that reaches that host's own loopback interface. Viewing it from another machine is read-only by design.`
+            : gate.accepted ? null : gate.reason,
+      dispatch: {
+        available: local,
+        host: os.hostname(),
+        requirement: 'Dispatch must be issued by a process on this host. A tunnel or reverse proxy in front of the HUD cannot carry it.',
+      },
+      queue_available: queueAvailable,
+    });
+  });
+
+  app.post('/api/jarvis/command', (req, res) => {
   if (!isLocalRequest(req)) return sendError(res, 403, 'JARVIS_LOCAL_ONLY', 'JEV commands are available only from the local HUD');
   const now = Date.now();
   while (jarvisCommandTimestamps[0] && now - jarvisCommandTimestamps[0] > 60000) jarvisCommandTimestamps.shift();
