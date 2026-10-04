@@ -1,4 +1,4 @@
-import type { JarvisPreview } from './api';
+import type { JarvisPreview, JarvisTask } from './api';
 
 /**
  * The browser's one way of asking what a command would do.
@@ -10,6 +10,48 @@ import type { JarvisPreview } from './api';
  * Both consoles used to carry their own copy of the danger regex. They are now
  * both empty of it, and neither can drift, because neither decides.
  */
+
+/**
+ * The one request body sent to /api/jarvis/command.
+ *
+ * Two surfaces POST to that route — the shared CommandCompose and the Jarvis
+ * console's modal — and when they each built their own body they drifted. The
+ * console's copy was the one that could not work: it omitted `confirmed`, so every
+ * press answered 428. So the body is assembled here, once, and
+ * server/test/commandCompose.test.ts fails if a second copy appears in web/src.
+ *
+ * `typeConfirmation` is whatever the server's preview said this tier required. No
+ * caller decides it, which is the whole point: the browser's opinion is not a
+ * security control, and the server re-derives it anyway.
+ */
+export async function routeJarvisCommand(
+  input: JarvisCommandInput,
+  judged: JarvisPreview | null,
+  word: string | null,
+  priority?: string,
+): Promise<{ ok: boolean; status: number; data: { task?: JarvisTask; error?: string | { message?: string } | null; message?: string } | null }> {
+  const response = await fetch('/api/jarvis/command', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt: input.prompt,
+      target: input.target ?? null,
+      priority: priority ?? input.priority ?? 'high',
+      confirmed: true,
+      typeConfirmation: judged?.requires_type_confirmation ? word : null,
+    }),
+  });
+  const data = await response.json().catch(() => null);
+  return { ok: response.ok, status: response.status, data: data as never };
+}
+
+/** The operator-facing reason for a refusal, or null when the write succeeded. */
+export function writeErrorReason(result: { ok: boolean; status: number; data: { error?: string | { message?: string } | null } | null }): string | null {
+  if (result.ok) return null;
+  const error = result.data?.error;
+  const why = typeof error === 'string' ? error : error?.message;
+  return why || `HTTP ${result.status}`;
+}
 
 export interface JarvisCommandInput {
   prompt: string;

@@ -1,0 +1,41 @@
+
+/* ---------- F18 The Desk ---------- */
+/* The floor's job is to be readable at a glance, so the rules here are mostly about
+   not letting a state borrow the colour of a neighbouring one. An amber capability
+   banner and an amber "queue unavailable" banner are different problems. */
+.desk-floor .floor-header { margin-bottom: 1rem; }
+.desk-capability { border-left: 3px solid var(--hud-edge); }
+.desk-capability.is-available { border-left-color: var(--hud-green); }
+.desk-capability.is-blocked { border-left-color: var(--hud-amber); }
+.desk-compose { margin-top: 0.75rem; }
+.desk-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.desk-table td { padding: 0.35rem 0.5rem; border-top: 1px solid var(--hud-edge); vertical-align: top; }
+.desk-kind {
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--hud-dim);
+}
+.desk-meta { white-space: nowrap; color: var(--hud-dim); font-size: 0.75rem; }
+/* A claim is only a claim when both fields exist; the unverified tone is what keeps
+   a row from inheriting the confidence of the rows around it. */
+.desk-claim-claimed { color: var(--hud-green); }
+.desk-claim-assigned { color: var(--hud-dim); }
+.desk-claim-unverified { color: var(--hud-amber); }
+.desk-claim-queued { color: var(--hud-dim); }
+.desk-history-head { margin-top: 1rem; }
+.desk-follow { margin-top: 0.5rem; }
+.desk-follow-log {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem;
+  max-height: 18rem;
+  overflow-y: auto;
+  background: var(--hud-bg);
+  border: 1px solid var(--hud-edge);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

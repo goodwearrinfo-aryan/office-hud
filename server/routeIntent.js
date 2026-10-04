@@ -37,13 +37,15 @@ const INTENT = {
     reason: 'Read-only dispatch targets, ungated on purpose so a caller can discover where work may go before asking for it to be placed. No floor renders it yet.',
   },
   '/api/terminals/:id/follow': {
-    reason: 'SSE stream of a terminal\'s output. A live terminal viewer consumes this; that surface is not built, and building it behind the loopback gate is deliberate work rather than a default.',
+    surface: 'F18',
+    reason: 'The follow pane on the desk reads it as a stream. The pane is a reader and labels itself read-only: nothing can be typed into this stream, and rendering it as a shell would imply otherwise. xterm.js is deliberately not here.',
   },
   '/api/terminals/:id/logs': {
     reason: 'Backlog of a terminal\'s output, the non-streaming counterpart to follow. Same viewer surface as above.',
   },
   '/api/terminals/spawned': {
-    reason: 'Terminals THIS hud started, kept apart from the human shells that collect-terminals.py reports. Only meaningful next to the spawned-terminal viewer.',
+    surface: 'F18',
+    reason: 'The desk floor lists what this HUD started so the follow pane has something to attach to. Kept apart from the human shells collect-terminals.py reports, which is why it is not simply the fleet list.',
   },
   '/api/terminals/health': {
     reason: 'Concurrency and log-volume health for the spawned-terminal manager. Feeds the same viewer surface.',
@@ -77,8 +79,8 @@ const INTENT = {
     surface: 'the budget banner on F5',
   },
   '/api/jarvis/audit': {
-    reason: 'Audit of what the assistant was asked and what it answered. Belongs beside JarvisConsole on the F9 stack.',
-    surface: 'F9, under JarvisConsole',
+    surface: 'F18',
+    reason: 'Drawn by the desk floor, and the route had to grow before it could be drawn honestly: it reports the read outcome alongside the events, so a partly-read log cannot be rendered as an empty history. F18 shows that outcome verbatim instead of summarising it.',
   },
   '/api/office/classification': {
     reason: 'Python-side classification of office data. Its output is a judgement about the fleet, so it is shown next to the fleet view that produced the inputs.',
