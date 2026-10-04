@@ -4003,6 +4003,41 @@ function injectHudLauncher(html) {
 
 // ---------- static web app ----------
 
+// Canonical floor route. Restored verbatim by floor_route_guard.py.
+//
+// The operator rule is that floors are never deleted. This route was removed
+// three times in one day while hive/lib/floor_health.py kept computing every
+// floor correctly the whole time: the data was never the problem, the route was.
+//
+// The derivation deliberately does NOT live here. It lives in the tracked
+// module server/floor_health.js, which exists for exactly this reason:
+// server/index.js is large and concurrently edited, and an inline version of
+// this route was silently lost three times. Restoring this file therefore
+// restores a thin call to durable, tested code rather than a second copy of
+// the logic that can drift from it.
+//
+// HIVE is passed explicitly: the module's default resolves to
+// ~/openalice-fleet/hive, which is not this deployment's tree. Without the
+// override every floor correctly reports UNKNOWN ("script is missing") - honest,
+// but useless. That binding bug was already fixed once in 91e12e1; the override
+// is what keeps it fixed.
+const { getFloorHealth } = require('./floor_health');
+
+// NOT HERE ON PURPOSE. This route used to be spelled inline, above, and it was removed
+// three times in one day by concurrent edits to this file while hive/lib/floor_health.py
+// kept computing every floor correctly the whole time -- the data was never the problem.
+//
+// It is registered by server/floor_route.js instead (floorRoute.register(app)), which
+// owns the cache, the honest unreadable-floors shape and the tests. A second registration
+// for the same path is matched first by Express and silently ignored for the other, which
+// is the same class of failure as the inline copy it replaced: a route that exists,
+// answers, and can be quietly lost.
+//
+// The one thing worth carrying from that restore: the hive must be passed explicitly.
+// floor_health.js defaults to ~/openalice-fleet/hive, which is NOT this deployment's
+// tree, and probing the wrong one makes every floor report UNKNOWN -- honest, useless.
+// floor_route.js reads OFFICE_HUD_HIVE for exactly that reason.
+
 const dist = path.join(__dirname, '..', 'web', 'dist');
 // Unknown /api paths must not fall through to the SPA and return HTML 200.
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown API route' }));
