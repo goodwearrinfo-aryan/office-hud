@@ -1,3 +1,4 @@
+import React from 'react';
 import { useEffect, useState } from 'react';
 import { useLive, type Summary, type Agent } from './api';
 import FloorNav from './components/FloorNav';
@@ -37,6 +38,28 @@ import ExportButton from './components/ExportButton';
 import NativeTitleStrip, { type NativeConnectionTone } from './components/NativeTitleStrip';
 import { markNative, onShellCommand, parseDeepLink } from './native';
 import { useConnectionStatus } from './api';
+
+class ErrorBoundary extends React.Component<any, { hasError: boolean }> {
+      constructor(props: any) {
+       super(props);
+       this.state = { hasError: false };
+     }
+     public static getDerivedStateFromError(_error: unknown): { hasError: true } {
+       return { hasError: true };
+     }
+
+     public componentDidCatch(_error: unknown, errorInfo: React.ErrorInfo) {
+       console.error('Error caught by boundary:', _error, errorInfo);
+     }
+
+     public render() {
+       if (this.state.hasError) {
+         return <div className="panel p-4 text-hud-red">Something went wrong with this floor.</div>;
+       }
+
+       return this.props.children;
+     }
+   }
 
 type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16' | 'f17';
 
@@ -149,7 +172,8 @@ export default function App() {
   const activeCount = agents.filter((a) => a.display === 'busy' || a.display === 'idle').length;
 
   const floorContent = (
-    <div className="flex-1 overflow-auto p-4">
+     <ErrorBoundary>
+       <div className="flex-1 overflow-auto p-4">
       {floor === 'f1' && (
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0"><SessionsPanel onSelect={setDrawerId} /></div>
@@ -209,6 +233,7 @@ export default function App() {
         </div>
       )}
     </div>
+    </ErrorBoundary>
   );
 
   return (

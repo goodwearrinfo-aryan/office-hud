@@ -9,9 +9,21 @@ Reads `~/openalice-fleet/hive/` and serves a dark mission-control dashboard at `
 |---|---|
 | **F1 — Sessions** | Runtime map: provider, cwd, cwdValid, lastSeen for every agent |
 | **F2 — Ledger** | `log.jsonl` timeline — spawns, messages, archives, filterable |
-| **F3 — Agents** ★ | Isometric pixel office: Michael in the corner office + 7 workers at pods. Monitor color = live status. Click any desk → drawer with identity.md, memory.md, inbox/outbox |
+| **F3 — Agents** ★ | Isometric pixel office: Michael in the corner office + workers at pods. Monitor color = live status. Click any desk → drawer with identity.md, memory.md, inbox/outbox |
 | **F4 — Projects** | Agents grouped by their cwd (worktree) |
 | **F5 — Executive HQ** | KPI cards (active/archived, backlog, cost, events/24h, breakers), sparkline, roster table |
+| **F6 — Trading Lab** | Strategy backtesting UI, equity curves, Sharpe, win rate, profit factor |
+| **F7 — Strategy Lab** | Strategy development, parameter search, walk-forward analysis |
+| **F8 — Live Trading** | Paper/testnet trading interface, order execution, position monitoring |
+| **F9 — 24x7 Ops** | Service health, provider status, adherence logs, launchd services, Polymarket operations |
+| **F10 — Knowledge** | Document search, semantic index, graph explorer, communities |
+| **F11 — Risk Metrics** | Portfolio risk analytics, VaR, drawdown, exposure, correlation |
+| **F12 — Knowledge Graph** | Interactive graph of knowledge nodes and links, community detection |
+| **F13 — Time Machine** | Historical audit log, replay, and comparison tools |
+| **F14 — Validation** | Strategy validation, signal backtesting, and performance attribution |
+| **F15 — Combined Portfolio** | Aggregated P&L, exposure, and risk across all strategies |
+| **F16 — Overview** | Fleet health, active agents, queue status, and top strategies |
+| **F17 — Fleet** | Complete agent roster, task queue, and system metrics |
 
 ## Quick start
 
