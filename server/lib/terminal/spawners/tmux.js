@@ -142,8 +142,15 @@ async function kill(session, options = {}) {
 }
 
 /** Send keys to the session's pane (used to answer a prompt in a live session). */
+// NOTE on target syntax. Session targets here are plain names, never the
+// `=name` exact-match form. Verified against tmux 3.7c: `send-keys -t =sess`
+// fails with "can't find pane", `capture-pane -t =sess` fails the same way, and
+// `display-message -t =sess` returns EMPTY rather than erroring -- which made
+// cwd() report null for a live session. `has-session` and `list-panes` do
+// accept `=`, so both forms appear below only where they actually work.
+
 async function sendKeys(session, keys, options = {}) {
-  await tmux(['send-keys', '-t', `=${session}`, ...String(keys).split(' ')], options);
+  await tmux(['send-keys', '-t', session, ...String(keys).split(' ')], options);
   return true;
 }
 
@@ -159,24 +166,24 @@ async function sendKeys(session, keys, options = {}) {
 async function sendText(session, text, options = {}) {
   const value = String(text ?? '');
   if (!value) return false;
-  await tmux(['send-keys', '-t', `=${session}`, '-l', '--', value], options);
+  await tmux(['send-keys', '-t', session, '-l', '--', value], options);
   return true;
 }
 
 /** Deliver `text` followed by a Return, i.e. submit the line. */
 async function sendLine(session, text, options = {}) {
   await sendText(session, text, options);
-  await tmux(['send-keys', '-t', `=${session}`, 'Enter'], options);
+  await tmux(['send-keys', '-t', session, 'Enter'], options);
   return true;
 }
 
 const capture = (session, lines = 200) =>
-  tmux(['capture-pane', '-p', '-t', `=${session}`, '-S', `-${Math.max(1, Number(lines) || 200)}`]);
+  tmux(['capture-pane', '-p', '-t', session, '-S', `-${Math.max(1, Number(lines) || 200)}`]);
 
 /** The session's current working directory, so a reload can show where it is. */
 async function cwd(session) {
   try {
-    return await tmux(['display-message', '-p', '-t', `=${session}`, '#{pane_current_path}']);
+    return await tmux(['display-message', '-p', '-t', session, '#{pane_current_path}']);
   } catch {
     return null;
   }

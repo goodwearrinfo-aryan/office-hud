@@ -685,7 +685,7 @@ test('typed text is delivered literally, not split on spaces', async () => {
   await withFakeTmux(async (tmux, argv) => {
     await tmux.sendText('sess', payload);
     const args = argv();
-    assert.deepEqual(args, ['send-keys', '-t', '=sess', '-l', '--', payload]);
+    assert.deepEqual(args, ['send-keys', '-t', 'sess', '-l', '--', payload]);
     assert.ok(args.includes(payload), 'the whole string is one argument');
     assert.ok(args.includes('-l'), 'literal mode is set so tmux does not interpret it');
   });
@@ -730,4 +730,17 @@ test('writeInput reaches a tmux pane and submits the line', async () => {
     delete require.cache[mgrPath];
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('send-keys and capture-pane never use the =name target form', () => {
+  // Verified against tmux 3.7c: `send-keys -t =sess` fails with "can't find
+  // pane", `capture-pane -t =sess` fails the same way, and
+  // `display-message -t =sess` returns EMPTY instead of erroring -- which made
+  // cwd() report null for a live session. has-session and list-panes do accept
+  // `=`, so only those two may keep it.
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'lib', 'terminal', 'spawners', 'tmux.js'), 'utf8',
+  );
+  const broken = [...source.matchAll(/'(send-keys|capture-pane|display-message)',[\s\S]{0,40}?`-?=\$\{session\}`/g)];
+  assert.equal(broken.length, 0, `these commands must target the session by plain name: ${broken.map((m) => m[1]).join(', ')}`);
 });
