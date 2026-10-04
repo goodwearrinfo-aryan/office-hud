@@ -13,6 +13,7 @@ const { AlertEngine } = require('./lib/alerts');
 const { AutonomyController } = require('./lib/autonomy');
 const replay = require('./lib/replay');
 const { rateLimitReport } = require('./rateLimitStatus');
+const { fleetCostVerdict, costLabel, mayShowZero } = require('./costTruth');
 const {
   isDangerousJarvisPrompt,
   isIdentifier,
@@ -3291,8 +3292,16 @@ const RESOURCES = {
     const { getTotalCosts, getAgentCosts } = require(path.join(HIVE, 'lib', 'llm', 'cost'));
     const agents = {};
     for (const a of mergedAgents()) agents[a.id] = getAgentCosts(a.id);
-    return { agents, total: getTotalCosts() };
-  }, { onError: (error) => ({ agents: {}, total: null, error: error.message }) }),
+    const payload = { agents, total: getTotalCosts() };
+    // The verdict is computed HERE, from the records, rather than left to the browser.
+    // Measured on the live mini: 58 agents, every one reporting daily 0, and all 27
+    // records carrying promptTokens/completionTokens/costUsd as null -- which
+    // hive/lib/llm/cost.js multiplies into a zero. So total.daily is a silence, not a
+    // measurement, and a panel rendering it as $0.00 claims the office is free. The
+    // floor keeps the number and adds whether it can be believed. See costTruth.js.
+    const verdict = fleetCostVerdict(payload);
+    return { ...payload, verdict, cost_label: costLabel(verdict), may_show_zero: mayShowZero(verdict) };
+  }, { onError: (error) => ({ agents: {}, total: null, error: error.message, verdict: null, cost_label: 'Cost could not be read.', may_show_zero: false }) }),
   knowledge: build('knowledge', () => getGraphifyCommunities()),
   polymarket: build('polymarket', () => getPolymarketState(), {
     onError: (error) => ({ present: false, mode: 'unknown', trades: 0, net_pnl: null, realized_edge: null, updated_at: null, gate: null, audit: { total: 0, allowed: 0, rejected: 0, reject_reasons: {} }, error: error.message }),
