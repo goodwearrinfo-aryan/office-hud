@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Agent } from '../api';
+import { DISPLAY_STATES, describeRoster, isKnownDisplay, statusColorFor } from '../displayStates';
 
 interface Props {
   agents: Agent[];
@@ -7,12 +8,6 @@ interface Props {
   selectedId?: string | null;
 }
 
-const STATUS_COLORS: Record<Agent['display'], string> = {
-  busy: '#34d399',
-  idle: '#f5a623',
-  breaker: '#f87171',
-  offline: '#475569',
-};
 
 function groupAgents(agents: Agent[]) {
   const groups = new Map<string, Agent[]>();
@@ -46,7 +41,9 @@ function ModelBadge({ agent }: { agent: Agent }) {
 }
 
 function AgentPod({ agent, selected, onSelect }: { agent: Agent; selected: boolean; onSelect: () => void }) {
-  const color = STATUS_COLORS[agent.display];
+  // statusColor(), not STATUS_COLORS[...]: an unrecognised state must not read
+  // as undefined and leave the pod unlit with no explanation.
+  const color = statusColorFor(agent.display);
   return (
     <button
       onClick={onSelect}
@@ -76,24 +73,25 @@ export default function OfficeScene({ agents, onSelect, selectedId }: Props) {
   const workers = agents.filter(agent => !agent.isGod);
   const visibleWorkers = activeOnly ? workers.filter(agent => agent.display === 'busy' || agent.display === 'idle') : workers;
   const groups = useMemo(() => groupAgents(visibleWorkers), [visibleWorkers]);
-  const liveCount = workers.filter(agent => agent.display === 'busy' || agent.display === 'idle').length;
 
   return (
     <div className="h-full overflow-auto panel">
       <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-2.5 border-b border-hud-edge bg-hud-panel">
         <div>
           <div className="font-mono text-xs tracking-widest text-hud-dim">FLOOR F3 · THE OFFICE</div>
-          <div className="text-[10px] text-hud-dim mt-0.5">{liveCount} live · {workers.length} workers</div>
+          <div className="text-[10px] text-hud-dim mt-0.5">{describeRoster(workers)}</div>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex gap-3 text-[10px] font-mono text-hud-dim">
-            {Object.entries(STATUS_COLORS).map(([status, color]) => (
-              <span key={status} className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full inline-block" style={{ background: color }} />{status}</span>
+            {/* Driven by DISPLAY_STATES, not by the colour map's keys, so the
+                legend cannot fall behind the states the server can emit. */}
+            {DISPLAY_STATES.map(status => (
+              <span key={status} className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full inline-block" style={{ background: statusColorFor(status) }} />{status}</span>
             ))}
           </div>
           <label className="flex items-center gap-2 text-[10px] font-mono text-hud-dim">
             <input type="checkbox" checked={activeOnly} onChange={event => setActiveOnly(event.target.checked)} />
-            active only
+            active only (hides stale, breaker, offline)
           </label>
         </div>
       </div>
@@ -149,7 +147,12 @@ export default function OfficeScene({ agents, onSelect, selectedId }: Props) {
                     }}
                   >
                     <td className="text-hud-text">{agent.name}</td>
-                    <td style={{ color: STATUS_COLORS[agent.display] }}>{agent.display}</td>
+                    <td style={{ color: statusColorFor(agent.display) }}>
+                      {agent.display}
+                      {!isKnownDisplay(agent.display) && (
+                        <span className="ml-1 text-[9px] text-hud-amber">NOT RECOGNISED</span>
+                      )}
+                    </td>
                     <td className="max-w-[300px] truncate">{agent.currentTaskTitle || agent.currentTaskId || '—'}</td>
                     <td>{ageLabel(agent.heartbeatAgeSec)}</td>
                     <td>{agent.provider || '—'}</td>

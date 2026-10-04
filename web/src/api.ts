@@ -11,7 +11,18 @@ export interface Agent {
   cwd: string | null;
   cwdValid: boolean;
   status: string;
-  display: 'busy' | 'idle' | 'breaker' | 'offline';
+  /**
+   * `stale` is a real state the server emits and this type used to deny:
+   * index.js derives it for an agent that HAS a session which is no longer
+   * fresh (`else if (session) display = 'stale'`), ranks it between idle and
+   * breaker, and counts it separately in the floor rollup. Omitting it here
+   * made a stale employee unrepresentable, so every panel that switched on
+   * `display` silently folded it into `offline` -- a session-backed agent
+   * rendered identically to one that was never seen.
+   *
+   * Ordered as the server orders them: busy, idle, stale, breaker, offline.
+   */
+  display: 'busy' | 'idle' | 'stale' | 'breaker' | 'offline';
   archived: boolean;
   breaker: string;
   tokens: number;

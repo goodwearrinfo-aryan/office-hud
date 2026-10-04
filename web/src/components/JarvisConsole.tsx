@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from 'react';
+import { reachableCount } from '../displayStates';
 import { useLive, useConnectionStatus, type FleetEvent, type HarnessHealth, type JarvisTask, type JarvisTasksResponse, type OfficeManagerStatus, type ProcessRecord, type ProjectRecord, type QueueSummary, type ServiceHealth, type SessionRecord, type Summary, type VerifyState } from '../api';
 import AlphaInsiderPanel from './AlphaInsiderPanel';
 
@@ -141,7 +142,17 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
   const services = serviceHealth?.services ?? [];
   const busy = agents.filter(agent => agent.display === 'busy').length;
   const idle = agents.filter(agent => agent.display === 'idle').length;
+  // stale and breaker were counted nowhere, so the figures under the headline
+  // numbers did not add up to the fleet: "12 online / 3 working / 2 standing by
+  // 1 offline" left six agents described by no number at all. A roster you
+  // cannot reconcile by reading is not a measurement.
+  const stale = agents.filter(agent => agent.display === 'stale').length;
+  const breaker = agents.filter(agent => agent.display === 'breaker').length;
   const offline = agents.filter(agent => agent.display === 'offline').length;
+  // This tile read agents.length, which counted archived and offline agents as
+  // online. An agent that cannot be reached is not online, whatever the roster
+  // says about its history.
+  const reachable = reachableCount(agents);
   const freshSessions = sessions.filter(session => session.fresh).length;
   const onlineServices = services.filter(service => service.status === 'online').length;
   const totalCost = agents.reduce((sum, agent) => sum + (agent.usd ?? 0), 0);
@@ -302,9 +313,9 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
       </section>
 
       <section className="jarvis-metrics" aria-label="Fleet metrics">
-        <div className="jarvis-metric"><span>FLEET ONLINE</span><strong>{agents.length || '—'}</strong><small>{busy} working · {idle} standing by</small></div>
+        <div className="jarvis-metric"><span>FLEET REACHABLE</span><strong>{reachable || '—'}</strong><small>{busy} working · {idle} standing by{stale ? ` · ${stale} stale` : ''}{breaker ? ` · ${breaker} breaker` : ''}</small></div>
         <div className="jarvis-metric"><span>QUEUE PRESSURE</span><strong>{queue?.queued ?? '—'}</strong><small>{queue?.inProgress ?? 0} active claims</small></div>
-        <div className="jarvis-metric"><span>SESSION HEALTH</span><strong className={freshSessions ? 'text-green' : 'text-alert'}>{freshSessions || '—'}</strong><small>{offline} offline agents</small></div>
+        <div className="jarvis-metric"><span>SESSION HEALTH</span><strong className={freshSessions ? 'text-green' : 'text-alert'}>{freshSessions || '—'}</strong><small>{offline} offline{stale ? ` · ${stale} stale claims` : ''}</small></div>
         <div className="jarvis-metric"><span>PORT MESH</span><strong>{onlineServices}/{services.length || '—'}</strong><small>{harness?.ok ? 'harness online' : 'harness checking'}</small></div>
         <div className="jarvis-metric"><span>RUN COST</span><strong>${totalCost.toFixed(2)}</strong><small>{queue?.completionsLastHour ?? 0} completions / hour</small></div>
       </section>

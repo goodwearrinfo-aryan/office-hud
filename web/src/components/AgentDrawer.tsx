@@ -1,11 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLive, type Agent, type AgentDetail } from '../api';
 import Markdown from './Markdown';
+import { statusColorFor } from '../displayStates';
 
 type Tab = 'profile' | 'live' | 'memory' | 'inbox' | 'outbox';
 
+/**
+ * Was a three-way ternary chain ending in the offline grey, so a `stale` agent
+ * -- one with a session that is no longer fresh -- was drawn identically to an
+ * agent that was never seen. Delegating to OfficeScene keeps one definition of
+ * each state's colour, so a state cannot mean two different things in two panels.
+ */
 function statusColor(display?: string) {
-  return display === 'busy' ? '#34d399' : display === 'idle' ? '#f5a623' : display === 'breaker' ? '#f87171' : '#475569';
+  return statusColorFor(display ?? '');
 }
 
 function ageLabel(seconds: number | null) {
