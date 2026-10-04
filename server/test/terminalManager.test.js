@@ -258,8 +258,17 @@ test('spawnBulk caps the batch at the concurrent limit', async () => {
 test('a background terminal that exits is recorded with its exit code', async () => {
   // A real short-lived process, awaited to completion so nothing outlives the
   // test. This is the case that proves the onExit callback wiring.
-  const repo = path.join(os.homedir(), '.hud-mgr-fixture-repo');
-  fs.mkdirSync(repo, { recursive: true });
+  //
+  // The fixture repo used to be a FIXED path under $HOME. That is a shared global: two
+  // runs -- a full suite and a single file, or two suites at once -- used the same
+  // directory, and this test deletes it on the way out, so one run's cleanup removed
+  // another's fixture mid-test. A real race, unrelated to load.
+  //
+  // It has to stay under $HOME rather than /tmp, though: TerminalManager refuses a cwd
+  // outside the allowlist (cwdPrefixes is $HOME on this box), so moving it to os.tmpdir()
+  // fails with "cwd is outside the allowed trees". The uniqueness has to come from a
+  // random suffix inside an allowed tree rather than from a different tree.
+  const repo = fs.mkdtempSync(path.join(os.homedir(), '.hud-mgr-fixture-')); 
   require('node:child_process').execFileSync('git', ['init', '-q'], { cwd: repo });
   const manager = make();
   await manager.load();
@@ -271,7 +280,10 @@ test('a background terminal that exits is recorded with its exit code', async ()
       const live = manager.get(record.id);
       if (live && live.status !== 'running' && live.status !== 'starting') { clearInterval(timer); resolve(live); }
     }, 25);
-    setTimeout(() => { clearInterval(timer); resolve(manager.get(record.id)); }, 10000);
+    // Resolving on timeout with whatever the current status is produced an assertion
+    // failure reading "expected running to be exited", which says nothing about why.
+    // A sentinel makes the timeout name itself.
+    setTimeout(() => { clearInterval(timer); resolve({ status: 'TIMED_OUT', exitCode: null }); }, 30000);
   });
   assert.equal(settled.status, 'exited');
   assert.equal(settled.exitCode, 0, 'a successful command is not marked failed');

@@ -3492,13 +3492,24 @@ function changedResources(names = resourceNames()) {
   }
   return changed;
 }
+/**
+ * How long hive write events are coalesced before anything is pushed.
+ *
+ * Named and exported because two socket tests were asserting against timing guesses
+ * instead of this number: one waited a fixed 900ms for "nothing was pushed", which is
+ * barely two debounce windows, and one waited a fixed 8000ms for "something was
+ * pushed". Both are load-sensitive, and a test that only passes on an idle machine is
+ * not a test. See server/test/integration.test.js.
+ */
+const HIVE_WATCH_DEBOUNCE_MS = 400;
+
 
 function startWatch() {
   if (watcher) return;
   try {
     watcher = fs.watch(HIVE, { recursive: true }, () => {
       clearTimeout(watchTimer);
-      watchTimer = setTimeout(onHiveChanged, 400);
+      watchTimer = setTimeout(onHiveChanged, HIVE_WATCH_DEBOUNCE_MS);
     });
     watcher.on('error', (err) => {
       // An unhandled 'error' event on the watcher would be an uncaught exception.
@@ -4313,6 +4324,7 @@ module.exports = {
     portalTarget, rewriteUpstreamLocation, portalSlugForPort, PORTAL_SERVICES,
     parseLaunchctlList, getFleetLaunchdState,
     changedResources, signatureOf, resourceNames, invalidateCaches, hostIsAllowed, hostOnly,
+      HIVE_WATCH_DEBOUNCE_MS,
     HIVE, FLEET_ROOT, SERVICE_PORTS, JSON_CACHE_MS, RESOURCES,
   },
 };

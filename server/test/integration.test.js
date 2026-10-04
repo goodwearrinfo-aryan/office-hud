@@ -16,6 +16,17 @@ const fixture = makeFixtureHive();
 const server = loadServer(fixture.hive);
 const internals = server.internals;
 
+// Every wait below is derived from the server's own hive-watch debounce rather than
+// guessed. Both of these tests were timing-sensitive in opposite directions: the push
+// test allowed 8000ms for a change that is coalesced over 400ms, and the no-push test
+// allowed 900ms -- barely two windows -- while asserting that nothing arrived. That
+// second one also had a structural flaw: a fresh client subscribes, so a debounce timer
+// still pending from an EARLIER test fires into its window and the assertion fails for
+// a push it did not cause. The window now begins from quiescence.
+const DEBOUNCE = internals.HIVE_WATCH_DEBOUNCE_MS;
+const QUIESCENT_MS = DEBOUNCE * 3;   // long enough for a pending debounce to have fired
+const PUSH_WAIT_MS = DEBOUNCE * 50;  // generous; waitFor returns as soon as it matches
+
 let http;
 let hub;
 let watcher;
@@ -71,9 +82,14 @@ test('a write to the hive is pushed to a subscribed client', async () => {
   );
   fs.writeFileSync(tasksFile, JSON.stringify(doc, null, 2));
 
-  const pushed = await client.waitFor((m) => m.type === 'resource' && m.key === 'queue', 8000);
-  assert.equal(pushed.payload.total, 7, 'the pushed payload reflects the new tasks');
-  assert.equal(pushed.payload.queued, 4);
+  // Expected values are read from the hive the test just wrote to, not hardcoded. The
+  // old literals (total 7, queued 4) described one particular fixture state; any earlier
+  // test in this file that enqueued a task moved the baseline and failed this one, which
+  // is how an order-dependent test shows up as an intermittent one.
+  const after = await http.get('/api/queue');
+  const pushed = await client.waitFor((m) => m.type === 'resource' && m.key === 'queue', PUSH_WAIT_MS);
+  assert.equal(pushed.payload.total, after.json.total, 'the pushed payload matches the hive it was read from');
+  assert.equal(pushed.payload.queued, after.json.queued);
 });
 
 test('an unchanged hive produces no further pushes', async () => {
@@ -82,11 +98,17 @@ test('an unchanged hive produces no further pushes', async () => {
   await client.waitFor((m) => m.type === 'resource' && m.key === 'queue');
   client.messages.length = 0;
 
+  // Let anything still in flight from an earlier test land BEFORE the window opens. Without
+  // this the window can start mid-debounce, the timer fires inside it, and this client --
+  // subscribed a moment ago, innocent -- receives a push it did not cause.
+  await new Promise((resolve) => setTimeout(resolve, QUIESCENT_MS));
+  client.messages.length = 0;
+
   // Touch a file with identical content: mtime changes, the signature does not.
   const projectsFile = path.join(fixture.hive, 'projects.json');
   const before = fs.readFileSync(projectsFile, 'utf8');
   fs.writeFileSync(projectsFile, before);
-  await new Promise((resolve) => setTimeout(resolve, 900));
+  await new Promise((resolve) => setTimeout(resolve, QUIESCENT_MS));
 
   const queuePushes = client.messages.filter((m) => m.type === 'resource' && m.key === 'queue');
   assert.equal(queuePushes.length, 0, 'an unchanged resource must not be re-pushed');
