@@ -27,6 +27,22 @@ export interface Agent {
   breaker: string;
   tokens: number;
   usd: number;
+  /**
+   * The agent's spending caps, read from `cost_limit_usd_per_day` /
+   * `cost_limit_usd_per_month` -- the exact fields hive/lib/llm/client.ts builds its
+   * cap from on every LLM request.
+   *
+   * Declared because the server sends them and this interface did not, which
+   * webContract.test.js reports as "Agent omits fields the server sends". It only
+   * fails where a hive is real: with an empty local hive the contract check skips, so
+   * the gap would have merged on the laptop and surfaced on the mini. That is the F10
+   * finding on the type side.
+   *
+   * Null means no cap is set for that agent, which is the measured state of all 66
+   * agents in registry.json -- and is not the same claim as a cap of zero.
+   */
+  capUsdPerDay: number | null;
+  capUsdPerMonth: number | null;
   sessionUsd: number;
   lastTool: string | null;
   lastActiveSecAgo: number | null;
