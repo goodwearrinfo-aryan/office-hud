@@ -124,11 +124,7 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
   const { data: verify } = useLive<VerifyState>('/api/verify');
   const { data: processData } = useLive<{ processes: ProcessRecord[] }>('/api/processes');
   const { data: projectData } = useLive<{ projects: ProjectRecord[] }>('/api/projects');
-  // Heartbeats outnumber work events ~30:1 in this hive. Requesting the tail
-  // unfiltered filled this panel with nothing but heartbeats, so "Recent
-  // activity" showed no activity. Heartbeats are still available through
-  // /api/events without the exclusion — this asks for what actually happened.
-  const { data: eventData } = useLive<{ events: FleetEvent[] }>('/api/events?limit=200&exclude=heartbeat');
+  const { data: eventData } = useLive<{ events: FleetEvent[] }>('/api/events?limit=28');
   const { data: jarvisData, refresh: refreshJarvisTasks } = useLive<JarvisTasksResponse>('/api/jarvis/tasks');
 
   const agents = summary?.agents ?? [];
@@ -147,13 +143,12 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
   const totalCost = agents.reduce((sum, agent) => sum + (agent.usd ?? 0), 0);
   const activeAlerts = [
     queue?.staleInProgress ? `${queue.staleInProgress} stale claims` : null,
-    // Gated on a prerequisite. Worth surfacing: it is real work that cannot
-    // start, and the reason it is waiting is what a coordinator acts on.
-    queue?.blocked ? `${queue.blocked} blocked on dependencies` : null,
     queue?.failedLastHour ? `${queue.failedLastHour} LLM failures this hour` : null,
     harness && !harness.ok ? 'Free harness unavailable' : null,
     officeManager && !officeManager.running ? 'Office Manager session missing' : null,
-    verify?.realWorkRatePct != null && verify.realWorkRatePct < 95 ? `Real-work rate ${verify.realWorkRatePct}%` : null,
+    verify?.outputQualityRatePct != null && verify.outputQualityRatePct < 95
+      ? `Verified work ${verify.verifiedWork ?? 0}/${verify.verifiedWorkDenominator ?? 0} (${verify.outputQualityRatePct}%)`
+      : null,
   ].filter(Boolean) as string[];
   const completionMax = Math.max(...(queue?.completionsByHour.map(item => item.count) ?? [0]), 1);
   const filteredAgents = useMemo(() => {
@@ -345,7 +340,7 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
           <div className="jarvis-alert-list">
             {activeAlerts.length ? activeAlerts.map(alert => <div className="jarvis-alert" key={alert}><span>!</span><p>{alert}</p><time>NOW</time></div>) : <div className="jarvis-clear-state"><span>✓</span><p>All systems nominal</p><small>No active operational alerts</small></div>}
           </div>
-          <div className="jarvis-panel-footer"><span>VERDICT TALLY</span><strong>{verify?.realWorkRatePct != null ? `${verify.realWorkRatePct}% real work` : 'verification pending'}</strong></div>
+          <div className="jarvis-panel-footer"><span>VERDICT TALLY</span><strong>{verify?.outputQualityRatePct != null ? `${verify.verifiedWork ?? 0}/${verify.verifiedWorkDenominator ?? 0} qualified · ${verify.outputQualityRatePct}%` : 'verification pending'}</strong></div>
         </section>
       </div>
 

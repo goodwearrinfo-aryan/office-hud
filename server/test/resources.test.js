@@ -52,6 +52,56 @@ const VOLATILE = new Set([
   'heartbeat_age_sec', 'latencyMs', 'ageMs', 'startedAt', 'endedAt',
 ]);
 
+const LIVE_PROBE_TOWNS = new Set([
+  '/api/services/health', '/api/harness/health',
+  '/api/trading/ops', '/api/trading/live', '/api/processes', '/api/events',
+]);
+const PROBE_OUTCOME = new Set(['status', 'error', 'latencyMs', 'detail']);
+
+/**
+ * Twins whose values are sampled from the live machine, so two calls
+ * microseconds apart can legitimately differ:
+ *
+ *   - services/health and harness/health probe another process; under concurrent
+ *     test load one call can come back ECONNRESET/offline while its twin, moments
+ *     later, comes back null/online.
+ *   - trading/ops counts launchd jobs by state; a job can start between the two
+ *     calls, flipping idle/running while total and stopped stay put.
+ *   - trading/live, processes and events read a running bot, `ps`, and a log tail
+ *     that are all moving while this suite runs.
+ *
+ * For those, comparing values is comparing two independent samples of a moving
+ * machine, which cannot hold. What must hold is that both twins expose the same
+ * STRUCTURE from the same producer: a divergence there means the UI renders one
+ * shape after a socket push and another after a reload. So live twins are
+ * compared by key path at every depth rather than by value -- which keeps the
+ * real contract, including nested shape, instead of guessing which field names
+ * happen to move. Deterministic twins still get the strict value comparison.
+ */
+const LIVE_SAMPLED_TOWNS = new Set([
+  '/api/services/health', '/api/harness/health',
+  '/api/trading/ops', '/api/trading/live', '/api/processes', '/api/events',
+]);
+
+/** Every dotted key path in a payload, so shape is compared at full depth. */
+function keyPaths(value, prefix = '', out = new Set()) {
+  if (Array.isArray(value)) {
+    // Index positions are data, not shape: a list that grows between two samples
+    // must not read as a structural change.
+    for (const entry of value) keyPaths(entry, `${prefix}[]`, out);
+    return out;
+  }
+  if (value && typeof value === 'object') {
+    for (const key of Object.keys(value).sort()) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      out.add(path);
+      keyPaths(value[key], path, out);
+    }
+    return out;
+  }
+  return out;
+}
+
 function normalise(value) {
   if (Array.isArray(value)) return value.map(normalise);
   if (value && typeof value === 'object') {
@@ -77,6 +127,13 @@ for (const [path, resource] of TOWNS) {
       Object.keys(pushed.json ?? {}).sort(),
       `${path} and /api/live/${resource} must expose the same top-level fields`
     );
+    if (LIVE_SAMPLED_TOWNS.has(path)) {
+      // Structure at every depth, values ignored: this payload samples the live
+      // machine, so the numbers move between the two calls by design.
+      assert.deepEqual([...keyPaths(legacy.json)].sort(), [...keyPaths(pushed.json)].sort(),
+        `${path} and /api/live/${resource} must expose the same structure`);
+      return;
+    }
     assert.deepEqual(normalise(legacy.json), normalise(pushed.json), `${path} payload drift`);
   });
 }

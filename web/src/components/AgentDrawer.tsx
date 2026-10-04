@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLive, type Agent, type AgentDetail } from '../api';
 import Markdown from './Markdown';
 
@@ -32,6 +32,40 @@ export default function AgentDrawer({ agentId, summary, onClose }: { agentId: st
   const { data } = useLive<AgentDetail>(`/api/agents/${encodeURIComponent(agentId)}`);
   const [tab, setTab] = useState<Tab>('profile');
   const agent = summary ?? data?.agent;
+  const panelRef = useRef<HTMLDivElement>(null);
+  const restoreFocusTo = useRef<HTMLElement | null>(null);
+
+  // Move focus into the dialog and hand it back on close, so the drawer is
+  // usable from the keyboard instead of being a pointer-only surface.
+  useEffect(() => {
+    restoreFocusTo.current = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    return () => restoreFocusTo.current?.focus?.();
+  }, []);
+
+  // Tabbing past the last control should not escape into the page behind.
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return undefined;
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const focusable = panel.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    panel.addEventListener('keydown', trap);
+    return () => panel.removeEventListener('keydown', trap);
+  }, [agentId]);
   const tabs: Array<{ id: Tab; label: string; count?: number }> = [
     { id: 'profile', label: 'Profile' },
     { id: 'live', label: 'Live', count: (data?.sessions.length ?? 0) + (data?.currentTasks.length ?? 0) },
@@ -43,7 +77,16 @@ export default function AgentDrawer({ agentId, summary, onClose }: { agentId: st
   return (
     <div className="fixed inset-0 z-50" onClick={onClose}>
       <div className="absolute inset-0 bg-black/60" />
-      <div className="drawer absolute right-0 top-0 bottom-0 w-[440px] bg-hud-panel border-l border-hud-edge flex flex-col" onClick={event => event.stopPropagation()}>
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Agent ${agent?.name ?? agentId}`}
+        className="drawer absolute right-0 top-0 bottom-0 w-[440px] bg-hud-panel border-l border-hud-edge flex flex-col outline-none"
+        tabIndex={-1}
+        onClick={event => event.stopPropagation()}
+        onKeyDown={event => { if (event.key === 'Escape') onClose(); }}
+      >
         <div className="p-4 border-b border-hud-edge flex items-start justify-between">
           <div>
             <div className="flex items-center gap-2">
@@ -53,7 +96,14 @@ export default function AgentDrawer({ agentId, summary, onClose }: { agentId: st
             </div>
             <div className="text-xs text-hud-dim mt-0.5">{agent?.role}</div>
           </div>
-          <button onClick={onClose} className="text-hud-dim hover:text-hud-text text-lg px-2">×</button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-hud-dim hover:text-hud-text text-lg px-2"
+            aria-label="Close agent drawer"
+          >
+            ×
+          </button>
         </div>
 
         <div className="grid grid-cols-4 gap-px bg-hud-edge text-center text-xs">
@@ -70,11 +120,26 @@ export default function AgentDrawer({ agentId, summary, onClose }: { agentId: st
           ))}
         </div>
 
-        <div className="flex gap-1 px-3 pt-3 overflow-x-auto">
+        <div className="flex gap-1 px-3 pt-3 overflow-x-auto" role="tablist" aria-label="Agent detail sections">
           {tabs.map(item => (
             <button
               key={item.id}
+              type="button"
+              role="tab"
+              id={`drawer-tab-${item.id}`}
+              aria-selected={tab === item.id}
+              aria-controls="drawer-tabpanel"
+              tabIndex={tab === item.id ? 0 : -1}
               onClick={() => setTab(item.id)}
+              onKeyDown={event => {
+                // Arrow keys move between tabs, as a tablist is expected to.
+                if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+                event.preventDefault();
+                const index = tabs.findIndex(entry => entry.id === tab);
+                const next = tabs[(index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+                setTab(next.id);
+                panelRef.current?.querySelector<HTMLElement>(`#drawer-tab-${next.id}`)?.focus();
+              }}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${tab === item.id ? 'bg-hud-edge text-hud-text' : 'text-hud-dim hover:text-hud-text'}`}
             >
               {item.label}{item.count ? ` · ${item.count}` : ''}
@@ -82,7 +147,13 @@ export default function AgentDrawer({ agentId, summary, onClose }: { agentId: st
           ))}
         </div>
 
-        <div className="flex-1 overflow-auto p-4">
+        <div
+          id="drawer-tabpanel"
+          role="tabpanel"
+          aria-labelledby={`drawer-tab-${tab}`}
+          tabIndex={0}
+          className="flex-1 overflow-auto p-4"
+        >
           {!data ? (
             <div className="text-hud-dim text-sm">Loading…</div>
           ) : tab === 'profile' ? (

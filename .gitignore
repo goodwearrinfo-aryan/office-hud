@@ -1,7 +1,17 @@
 node_modules/
+# the bare name also catches a symlink called node_modules, which the
+# trailing-slash form above does not match
+node_modules
 dist/
 .DS_Store
 *.log
 .env
 .env.local
 office-hud.app/
+
+# Machine-local runtime state written by the floor guards, not source.
+floor_ledger.json
+floor_route_guard_state.json
+hud_guard_baseline.json
+hud_guard_state.json
+office-hud.err

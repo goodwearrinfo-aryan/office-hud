@@ -116,16 +116,6 @@ export interface QueueSummary {
   inProgress: number;
   complete: number;
   failed: number;
-  quarantined?: number;
-  blocked?: number;
-  blockedTasks?: Array<{
-    task_id: string;
-    title: string;
-    assigned_agent: string | null;
-    waiting_on: string[] | null;
-    reason: string | null;
-    blocked_at: string | null;
-  }>;
   staleInProgress: number;
   byStatus: Record<string, number>;
   inProgressTasks: Array<TaskRecord & { heartbeat_age_sec: number | null }>;
@@ -418,7 +408,11 @@ export interface VerifyState {
   verdict_tally?: { OK?: number; DODGE?: number; SHORT?: number; FAIL?: number; EMPTY?: number };
   requeued?: Array<[string, string]>;
   quarantined?: Array<[string, string]>;
-  realWorkRatePct?: number | null;
+  verifiedWork?: number | null;
+  verifiedWorkDenominator?: number | null;
+  outputQualityRatePct?: number | null;
+  verificationCoverage?: number | null;
+  verificationBasis?: string;
 }
 
 export interface AgentDetail {
@@ -711,11 +705,6 @@ function usePolled<T>(path: string) {
   const alive = useRef(true);
 
   const refresh = useCallback(() => {
-    // An empty path means the caller is served by the socket instead. Hooks
-    // cannot be conditional, so useLive points the unused poller at ''. That
-    // must be inert: fetch('') resolves against the document base URL and
-    // fetches the SPA shell, which then fails response.json().
-    if (!path) return;
     fetch(path, { headers: { Accept: 'application/json' } })
       .then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -728,17 +717,11 @@ function usePolled<T>(path: string) {
 
   useEffect(() => {
     alive.current = true;
-    if (!path) {
-      setData(null);
-      setError(null);
-      setLoading(false);
-      return () => { alive.current = false; };
-    }
     setLoading(true);
     refresh();
     const timer = setInterval(refresh, POLL_ONLY_MS);
     return () => { alive.current = false; clearInterval(timer); };
-  }, [refresh, path]);
+  }, [refresh]);
 
   return { data, error, loading, refresh };
 }

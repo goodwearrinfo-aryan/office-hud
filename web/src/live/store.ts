@@ -63,16 +63,6 @@ const STORAGE_PREFIX = 'office-hud:last-good:';
 const STORAGE_LIMIT = 24;
 const POLL_FALLBACK_MS = 20000;
 const STALE_AFTER_MS = 120000;
-/**
- * Trailing debounce for localStorage writes. The socket delivers every
- * resource on a shared 1/60s tick, and `sessions` serializes to several MB,
- * so writing on each message re-serialized the same megabytes dozens of times
- * a minute. Safari backs localStorage with SQLite in WAL mode and never
- * checkpoints that log, so the repeated writes grew a 58 GB WAL against 4 MB
- * of real data. Coalescing to one write per window keeps the cache fresh while
- * bounding how fast the log can grow.
- */
-const STORAGE_WRITE_DEBOUNCE_MS = 5000;
 
 // ---------------------------------------------------------------- persistence
 
@@ -89,55 +79,13 @@ function readCached<T>(key: string, storage: Storage | null): { data: T; updated
   }
 }
 
-function writeCachedNow(key: string, data: unknown, updatedAt: number, storage: Storage | null): void {
+function writeCached(key: string, data: unknown, updatedAt: number, storage: Storage | null): void {
   if (!storage) return;
   try {
     storage.setItem(STORAGE_PREFIX + key, JSON.stringify({ data, updatedAt }));
   } catch {
     // Quota or private mode: the app still works, just without offline state.
   }
-}
-
-/**
- * Pending debounced writes, keyed by resource. Each entry holds the latest
- * value plus the timer that will flush it, so a burst of socket messages
- * collapses into one serialization of the newest payload.
- */
-const pendingWrites = new Map<
-  string,
-  { data: unknown; updatedAt: number; storage: Storage; timer: unknown; schedule: (fn: () => void, ms: number) => unknown }
->();
-
-function flushCached(key: string): void {
-  const pending = pendingWrites.get(key);
-  if (!pending) return;
-  pendingWrites.delete(key);
-  writeCachedNow(key, pending.data, pending.updatedAt, pending.storage);
-}
-
-function writeCached(
-  key: string,
-  data: unknown,
-  updatedAt: number,
-  storage: Storage | null,
-  schedule: (fn: () => void, ms: number) => unknown,
-): void {
-  if (!storage) return;
-  const existing = pendingWrites.get(key);
-  if (existing) {
-    // Keep the newest payload; the pending timer will serialize it once.
-    existing.data = data;
-    existing.updatedAt = updatedAt;
-    return;
-  }
-  const timer = schedule(() => flushCached(key), STORAGE_WRITE_DEBOUNCE_MS);
-  pendingWrites.set(key, { data, updatedAt, storage, timer, schedule });
-}
-
-/** Drop any pending debounced writes without writing them. Used by tests. */
-export function resetPendingWrites(cancel: (handle: unknown) => void = clearTimeout): void {
-  for (const pending of pendingWrites.values()) cancel(pending.timer);
-  pendingWrites.clear();
 }
 
 /**
@@ -329,11 +277,9 @@ export class LiveStore {
         const response = await fetch(`/api/live/${key}`, { headers: { Accept: 'application/json' } });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
-        // env.now(), not Date.now(): isStale() and the test harness both
-        // compare against the injected clock.
-        const updatedAt = this.env.now();
+        const updatedAt = Date.now();
         this.patch(key, { data: payload as never, error: null, loading: false, updatedAt, stale: false });
-        writeCached(key, payload, updatedAt, this.env.storage, this.env.setTimeout);
+        writeCached(key, payload, updatedAt, this.env.storage);
         pruneCache(this.env.storage);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -370,16 +316,16 @@ export class LiveStore {
       this.pollers.set(key, slow);
       return;
     }
-    // One self-rescheduling timer, and the status check belongs on the tick
-    // that actually re-arms. An earlier version kept the guarded timer in a
-    // local and stored the unguarded one, so every subscribed resource was
-    // refetched every 20s even while the socket was live, and the orphaned
-    // guarded timer survived release() and fired once after unmount.
-    this.pollers.set(key, this.env.setTimeout(function tick(this: LiveStore) {
+    const timer = this.env.setTimeout(() => {
       // A live socket already pushes; polling is only a safety net.
-      if (this.status.state !== 'live') void this.load(key);
+      if (this.status.state === 'live') return;
+      void this.load(key);
+    }, POLL_FALLBACK_MS);
+    this.pollers.set(key, this.env.setTimeout(function tick(this: LiveStore) {
+      void this.load(key);
       this.pollers.set(key, this.env.setTimeout(tick.bind(this), POLL_FALLBACK_MS));
     }.bind(this), POLL_FALLBACK_MS));
+    void timer;
   }
 
   private stopPolling(key: string): void {
@@ -450,7 +396,7 @@ export class LiveStore {
           return;
         }
         this.patch(key, { data: message.payload as never, error: null, loading: false, updatedAt, stale: false });
-        writeCached(key, message.payload, updatedAt, this.env.storage, this.env.setTimeout);
+        writeCached(key, message.payload, updatedAt, this.env.storage);
         return;
       }
       case 'alerts': {

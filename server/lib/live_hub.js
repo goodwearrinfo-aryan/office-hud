@@ -221,6 +221,15 @@ class LiveHub {
     return [...keys];
   }
 
+  /** Every resource name any client is currently subscribed to. */
+  subscribedKeys() {
+    const keys = new Set();
+    for (const client of this.clients.values()) {
+      if (client.open) for (const key of client.keys) keys.add(key);
+    }
+    return [...keys];
+  }
+
   status() {
     return {
       socketPath: SOCKET_PATH,

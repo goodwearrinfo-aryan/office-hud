@@ -75,10 +75,7 @@ export default function LedgerTimeline() {
         rowHeight={54}
         height="calc(100vh - 260px)"
         className="space-y-2"
-        // No index in the key: a new head event or a filter change would
-        // otherwise renumber every later row and remount the whole window,
-        // which is the cost VirtualTable exists to avoid.
-        rowKey={(event) => `${event.timestamp ?? 'event'}-${event.task_id ?? ''}-${event.agent_id ?? ''}`}
+        rowKey={(event, index) => `${event.timestamp ?? 'event'}-${event.task_id ?? ''}-${event.agent_id ?? ''}-${index}`}
         emptyLabel={error ? `Failed to load events: ${error}` : 'No events found'}
         renderRow={(event) => (
           <div className="panel p-3 w-full">

@@ -256,10 +256,14 @@ test('the task board is grouped, capped and far smaller than the raw file', asyn
     );
   }
 
-  // Only the fields the board draws, so the payload stays small.
+  // Only the fields the board draws, so the payload stays small. The three
+  // evidence fields answer "is this actually finished?" and are added only to
+  // done rows. They are listed explicitly rather than loosening the check, so
+  // an unexpected field is still a failure.
   const allowed = new Set([
     'task_id', 'title', 'status', 'project_id', 'assigned_agent', 'claimed_by',
     'created_at', 'started_at', 'completed_at', 'updated_at', 'heartbeat', 'priority',
+    'completion_truth', 'evidence_score', 'evidence_reason',
   ]);
   for (const rows of Object.values(board.json.groups)) {
     for (const row of rows) {
