@@ -115,6 +115,25 @@ test('the write path then accepts exactly what preview said it would', async () 
   assert.equal(after, before + 1, 'and the real write did queue exactly one task');
 });
 
+test('an SSH-style loopback forward is local, and preview says so rather than implying otherwise', async () => {
+  // Measured against the real gate, because an earlier version of the requirement
+  // string claimed a tunnel could not carry a dispatch. That was false for the
+  // `ssh -L` forward this HUD is read through: a loopback socket with no forwarded
+  // chain passes isLocalRequest, so dispatch IS available. The fix is to state what
+  // the check does instead of what a tunnel supposedly cannot do.
+  const res = await http.post('/api/jarvis/preview', {
+    prompt: 'summarise the queue depth by hour',
+    priority: 'normal',
+    confirmed: true,
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.dispatch.available, true, 'a loopback caller is local');
+  assert.equal(res.json.blocked_by, null);
+  assert.match(res.json.dispatch.requirement, /cannot tell a local browser from a forwarded one/);
+  assert.doesNotMatch(res.json.dispatch.requirement, /tunnel .*cannot carry/i,
+    'the string must not claim a tunnel is refused when it is not');
+});
+
 test('the write route still refuses a proxied caller, which is why preview is the ungated one', async () => {
   const res = await http.get('/api/jarvis/command', {
     method: 'POST',

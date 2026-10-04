@@ -2404,7 +2404,14 @@ app.get('/api/jarvis/audit', (req, res) => {
       dispatch: {
         available: local,
         host: os.hostname(),
-        requirement: 'Dispatch must be issued by a process on this host. A tunnel or reverse proxy in front of the HUD cannot carry it.',
+        // Measured, not assumed. The gate accepts a loopback socket whose forwarded
+        // chain is absent or entirely loopback, so a plain `ssh -L` forward arrives
+        // looking exactly like a browser on this host and IS allowed. Tailscale Serve
+        // and any real proxy are refused, because they set forwarded headers. So the
+        // honest statement is about the check, not about tunnels in general -- an
+        // earlier version of this string claimed a tunnel could not carry a dispatch,
+        // which was false for the SSH forward this HUD is actually read through.
+        requirement: 'Dispatch requires a loopback caller: a request whose socket is on this host and whose forwarded chain, if present, is all loopback. A plain SSH port-forward satisfies that and is accepted; Tailscale Serve and other proxies are refused because their forwarded headers are checked. The check cannot tell a local browser from a forwarded one, so anyone who can reach a loopback port here can dispatch.',
       },
       queue_available: queueAvailable,
     });
