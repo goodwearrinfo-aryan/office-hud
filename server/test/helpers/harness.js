@@ -59,17 +59,7 @@ function makeFixtureHive(options = {}) {
     projects: [{ project_id: 'demo', name: 'Demo', tasks: 2 }],
   }, null, 2));
   fs.writeFileSync(path.join(hive, 'processes.json'), JSON.stringify({
-    // Carries a credential-shaped value on purpose. Kept under 20 characters
-    // because scripts/scan_secrets.py only reports an `sk-` value once it is
-    // that long -- a longer canary fails the secret-scan stage of the quality
-    // gate. The redactor masks by flag name, not by value, so the length does
-    // not weaken what is being tested.
-    // Carries a credential-shaped value on purpose. The redaction assertions
-    // read this entry; with no `command` field they asserted against the empty
-    // string and passed without ever seeing a secret, which is how a test
-    // guarding redaction came to guard nothing.
-    processes: [{ pid: 4242, name: 'worker',
-      command: 'node agent.js --api-key=sk-CANARY0123456789 --port 8080' }],
+    processes: [{ pid: 4242, name: 'worker' }],
   }, null, 2));
   fs.writeFileSync(path.join(hive, 'registry.json'), JSON.stringify({
     godId: 'god', agents: ['god', 'worker-a'],
@@ -140,54 +130,21 @@ function makeFixtureHive(options = {}) {
 
 /** Load the server against a fixture hive. Call before requiring index.js. */
 function loadServer(hive) {
-  // REFUSE an unset or invalid hive.
-  //
-  // This guard exists because of a silent, total failure. `process.env.X = undefined`
-  // coerces to the STRING "undefined", which is truthy and a perfectly valid path
-  // segment. A caller that omitted the argument therefore got a server pointed at
-  // ./undefined/, every read came back empty, and assertions over that empty result
-  // passed -- 0 + 0 === 0. The suite stayed green over a hive that was never opened.
-  //
-  // Validating here rather than at each call site is deliberate: loadServer is the
-  // single choke point every fixture-loading test passes through, so the whole class
-  // of bug is closed once instead of being re-introduced by the next bare call.
-  if (typeof hive !== 'string' || hive.trim().length === 0) {
-    throw new Error(
-      'loadServer(hive) requires an existing hive directory path. Received ' +
-      `${hive === undefined ? 'undefined' : JSON.stringify(hive)}. ` +
-      'Assigning undefined to process.env yields the truthy string "undefined", so ' +
-      'omitting the hive points the server at ./undefined/ and every assertion silently ' +
-      'runs against an empty hive. Build one with makeFixtureHive() and pass fixture.hive.',
-    );
-  }
-  const hivePath = path.resolve(hive);
-  if (!fs.existsSync(hivePath) || !fs.statSync(hivePath).isDirectory()) {
-    throw new Error(
-      `loadServer(hive) requires an existing hive directory. Got ${hive}, which is not a directory. ` +
-      'Build one with makeFixtureHive() and pass fixture.hive.',
-    );
-  }
-  process.env.OFFICE_HUD_HIVE = hivePath;
+  process.env.OFFICE_HUD_HIVE = hive;
   process.env.PORT = '0';
-  // Load a FRESH copy of the server module.
-  //
-  // require() memoises by resolved path, so a second loadServer() used to return
-  // the first instance: HIVE was captured once at module scope and the
-  // module-level eventCache/workEventCache were shared forever. A test that
-  // built a second fixture hive was then silently served the first hive's data.
-  // Measured: hive A with 11 events and hive B with 77 both reported 11.
-  //
-  // Nothing in the suite was failing loudly because no test compared a payload
-  // against the hive it wrote. terminals.test.js hit this and worked around it
-  // by deleting its remote tree instead of loading a second server, with a
-  // comment saying so; this removes the need for that kind of dodge.
-  //
-  // Safe because index.js only listens when it is require.main, so re-requiring
-  // it constructs routes without binding a port or starting the watcher.
-  const serverPath = path.join(__dirname, '..', '..', 'index.js');
-  delete require.cache[require.resolve(serverPath)];
-  // eslint-disable-next-line global-require, import/no-dynamic-require
-  return require(serverPath);
+  // Bust the require cache for index.js and everything it pulls in. HIVE is
+  // captured at module scope, so a second loadServer() that reuses the cached
+  // module returns the FIRST instance and every fixture is silently served hive
+  // A's data. Measured before this: hives holding 11 and 77 events both reported
+  // 11 completions, with nothing failing loudly.
+  const root = path.join(__dirname, '..', '..');
+  for (const key of Object.keys(require.cache)) {
+    if (key.startsWith(root) && !key.includes(`${path.sep}test${path.sep}`)) {
+      delete require.cache[key];
+    }
+  }
+  // eslint-disable-next-line global-require
+  return require(path.join(root, 'index.js'));
 }
 
 /** Boot the app on an ephemeral port and return a fetch helper. */

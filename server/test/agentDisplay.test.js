@@ -218,26 +218,31 @@ test('agents without a floor are excluded, and empty input is empty', () => {
 });
 
 test('numbered floors sort in numeric order, not lexicographically', () => {
-  const rows = rollupFloors([
-    agent({ id: 'a', floor: 'f10' }),
-    agent({ id: 'b', floor: 'f2' }),
-    agent({ id: 'c', floor: 'f1' }),
-  ]);
-  assert.deepEqual(rows.map(r => r.floor), ['f1', 'f2', 'f10']);
-});
+// Only f<digits> reaches rollupFloors now: the floor attribute is also used
+      // for organisational groups like `command`, and emitting those as floors gave
+      // 18 rows for 12 floors (see summaryFloorsContract.test.js). So this asserts
+      // the numeric ordering directly, which is what lexicographic sorting breaks:
+      // f10 before f2.
+      const rows = rollupFloors([
+        agent({ id: 'a', floor: 'f10' }),
+        agent({ id: 'b', floor: 'f2' }),
+        agent({ id: 'c', floor: 'f1' }),
+      ]);
+      assert.deepEqual(rows.map(r => r.floor), ['f1', 'f2', 'f10']);
+  });
 
-test('organisational groups are not reported as floors', () => {
-  // `floor` doubles as an organisational group attribute (command, office,
-  // operations, ...). Reporting those as floors produced 18 rows for 12
-  // floors, six with no manager, no state and no liveness. A floor id is
-  // f<digits>; anything else belongs in the agent view, not the floor rollup.
-  const rows = rollupFloors([
-    agent({ id: 'a', floor: 'f2' }),
-    agent({ id: 'b', floor: 'command' }),
-    agent({ id: 'c', floor: 'office' }),
-  ]);
-  assert.deepEqual(rows.map(r => r.floor), ['f2']);
-});
+  test('organisational groups are not reported as floors', () => {
+    // `floor` doubles as an organisational group attribute (command, office,
+    // operations, ...). Reporting those as floors produced 18 rows for 12
+    // floors, six with no manager, no state and no liveness. A floor id is
+    // f<digits>; anything else belongs in the agent view, not the floor rollup.
+    const rows = rollupFloors([
+      agent({ id: 'a', floor: 'f2' }),
+      agent({ id: 'b', floor: 'command' }),
+      agent({ id: 'c', floor: 'office' }),
+    ]);
+    assert.deepEqual(rows.map(r => r.floor), ['f2']);
+  });
 
 // ---- completion integrity ---------------------------------------------------
 // A task can be recorded COMPLETE while its own record says the model call

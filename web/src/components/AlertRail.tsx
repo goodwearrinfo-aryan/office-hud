@@ -101,7 +101,7 @@ export default function AlertRail() {
           <ul>
             {data.history.slice(0, 6).map((alert: ResolvedAlert) => (
               <li key={`${alert.fingerprint}-${alert.resolvedAt}`}>
-                <span className="muted">{ago(alert.resolvedAt)}</span> {alert.title}
+                <span className="text-hud-dim">{ago(alert.resolvedAt)}</span> {alert.title}
               </li>
             ))}
           </ul>

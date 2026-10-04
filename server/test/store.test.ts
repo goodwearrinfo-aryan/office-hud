@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import {
   LiveStore,
   OPEN,
+  resetPendingWrites,
   type StoreEnvironment,
   type WebSocketLike,
 } from '../../web/src/live/store.ts';
@@ -128,6 +129,14 @@ function harness(options: { storage?: FakeStorage | null; fetchImpl?: (url: stri
   return h;
 }
 
+/**
+ * Cache writes are debounced through module-level state, so each test starts
+ * from a clean slate. Timers are dropped rather than run.
+ */
+function resetDebounceState(): void {
+  resetPendingWrites(() => {});
+}
+
 const harnesses: Harness[] = [];
 function makeHarness(options?: Parameters<typeof harness>[0]): Harness {
   const h = harness(options);
@@ -178,6 +187,7 @@ test('releasing twice is harmless', async () => {
 });
 
 test('a pushed payload lands in the store and in the cache', async () => {
+  resetDebounceState();
   const h = makeHarness();
   h.setResponse('/api/live/queue', { total: 1 });
   h.store.acquire('queue');
@@ -193,8 +203,38 @@ test('a pushed payload lands in the store and in the cache', async () => {
   assert.equal(state.error, null);
   assert.equal(state.loading, false);
 
+  // Cache writes are debounced so a burst of frames serializes once.
+  h.runTimer(h.timers.findIndex((t) => t.ms === 5000));
   const cached = JSON.parse(h.storage.getItem('office-hud:last-good:queue')!);
   assert.equal(cached.data.total, 42);
+});
+
+test('a burst of pushes writes the cache once, with the newest payload', async () => {
+  resetDebounceState();
+  const h = makeHarness();
+  h.setResponse('/api/live/queue', { total: 1 });
+  h.store.acquire('queue');
+  await tick();
+  const socket = FakeSocket.instances.at(-1)!;
+  socket.open();
+  await tick();
+
+  // The acquire() fetch above already scheduled a pending write, so the burst
+  // must reuse that timer rather than adding one per frame.
+  const pendingIndex = h.timers.findIndex((t) => t.ms === 5000);
+  const timersBeforeBurst = h.timers.length;
+  for (let i = 1; i <= 5; i += 1) {
+    socket.emit({ type: 'resource', key: 'queue', payload: { total: i } });
+  }
+  assert.equal(
+    h.timers.length,
+    timersBeforeBurst,
+    'a burst must not schedule one write per frame',
+  );
+
+  h.runTimer(pendingIndex);
+  const cached = JSON.parse(h.storage.getItem('office-hud:last-good:queue')!);
+  assert.equal(cached.data.total, 5, 'the flushed payload must be the newest');
 });
 
 test('a cached payload renders immediately and is flagged stale until live data lands', async () => {

@@ -2833,3 +2833,42 @@ tr[role="button"]:focus-visible {
   outline: 2px solid var(--hud-amber);
   outline-offset: -2px;
 }
+
+/* ---- Carried over from main during the mini reconcile -----------------------
+ * The mini's stylesheet is otherwise a superset: it defines .chip, .vtable and
+ * .offline-banner, which AlertRail, VirtualTable and OfflineBanner have always
+ * referenced and which main never defined, so those three components were
+ * rendering unstyled on main. These rules are the ones the mini lacked, and
+ * NativeTitleStrip.tsx needs them.
+ */
+.hud-native-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0 0.75rem 0 5.25rem;
+  background: var(--hud-panel);
+  border-bottom: 1px solid var(--hud-edge);
+  font-family: ui-monospace, monospace;
+  font-size: 0.65rem;
+  color: var(--hud-dim);
+  z-index: 40;
+}
+.hud-native-strip-title {
+  color: var(--hud-amber);
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.hud-native-strip-hive {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@keyframes hudPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

@@ -1,5 +1,21 @@
 // Export utilities for CSV/JSON download
 
+/**
+ * Which file(s) an export call should produce.
+ *
+ * Every exporter used to emit JSON *and* CSV unconditionally, while the button
+ * that calls them offered "Download JSON" and "Download CSV" as two separate
+ * menu items. Both items therefore produced two downloads, and neither did what
+ * it said. `both` stays the default so any caller that never picked a format
+ * keeps its old behaviour.
+ */
+export type ExportFormat = 'json' | 'csv' | 'both';
+
+function emit(rows: any[], name: string, format: ExportFormat): void {
+  if (format !== 'csv') downloadJSON(rows, `${name}-${Date.now()}.json`);
+  if (format !== 'json') downloadCSV(rows, `${name}-${Date.now()}.csv`);
+}
+
 export function downloadJSON(data: any, filename: string) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -29,7 +45,7 @@ export function downloadCSV(data: any[], filename: string) {
   URL.revokeObjectURL(url);
 }
 
-export function exportAgents(agents: any[]) {
+export function exportAgents(agents: any[], format: ExportFormat = 'both') {
   const simplified = agents.map(a => ({
     id: a.id,
     name: a.name,
@@ -51,23 +67,21 @@ export function exportAgents(agents: any[]) {
     lastSeen: a.lastSeen,
     lastSeenHuman: a.lastSeen ? new Date(a.lastSeen).toISOString() : '',
   }));
-  downloadJSON(simplified, `agents-${Date.now()}.json`);
-  downloadCSV(simplified, `agents-${Date.now()}.csv`);
+  emit(simplified, 'agents', format);
 }
 
-export function exportLedger(events: any[]) {
+export function exportLedger(events: any[], format: ExportFormat = 'both') {
   const simplified = events.map(e => ({
     ts: e.ts,
     tsHuman: e.ts ? new Date(e.ts > 1e12 ? e.ts : e.ts * 1000).toISOString() : '',
     kind: e.kind,
     ...Object.fromEntries(Object.entries(e).filter(([k]) => k !== 'ts' && k !== 'kind')),
   }));
-  downloadJSON(simplified, `ledger-${Date.now()}.json`);
-  downloadCSV(simplified, `ledger-${Date.now()}.csv`);
+  emit(simplified, 'ledger', format);
 }
 
-export function exportBacktest(backtest: any) {
-  downloadJSON(backtest, `backtest-${Date.now()}.json`);
+export function exportBacktest(backtest: any, format: ExportFormat = 'both') {
+  if (format !== 'csv') downloadJSON(backtest, `backtest-${Date.now()}.json`);
   // Flatten for CSV
   const rows: any[] = [];
   for (const [strategy, data] of Object.entries(backtest)) {
@@ -92,10 +106,9 @@ export function exportBacktest(backtest: any) {
       });
     }
   }
-  downloadCSV(rows, `backtest-windows-${Date.now()}.csv`);
+  if (format !== 'json') downloadCSV(rows, `backtest-windows-${Date.now()}.csv`);
 }
 
-export function exportRiskMetrics(metrics: any[]) {
-  downloadJSON(metrics, `risk-metrics-${Date.now()}.json`);
-  downloadCSV(metrics, `risk-metrics-${Date.now()}.csv`);
+export function exportRiskMetrics(metrics: any[], format: ExportFormat = 'both') {
+  emit(metrics, 'risk-metrics', format);
 }

@@ -29,6 +29,73 @@ export interface Agent {
   sessionFresh: boolean;
   currentTaskId: string | null;
   currentTaskTitle: string | null;
+  /**
+   * What backs the status/display labels above, so a panel can show its
+   * reasoning instead of asking the reader to trust a colour.
+   *
+   * This was missing from the canonical type even though the server has emitted
+   * it on every agent since it was added. GodPanel worked around that by
+   * declaring a private duplicate of the whole agent shape, which is how the
+   * canonical type stayed wrong while the component that needed the field
+   * type-checked fine.
+   *
+   * `processLiveness` keeps three states apart on purpose: a live process, a dead
+   * one, and no pid reported at all are different facts, and collapsing them
+   * into one "unverified" reads as a problem when nothing is wrong.
+   */
+  evidence: {
+    hasSession: boolean;
+    sessionFresh: boolean;
+    hasTask: boolean;
+    taskStatus: string | null;
+    heartbeatAgeSec: number | null;
+    processId: number | null;
+    processLiveness: 'alive' | 'dead' | 'no-pid' | null;
+    processVerified: boolean;
+  };
+}
+
+/**
+ * Probe-grade floor state from GET /api/floors.
+ *
+ * Distinct from `Summary.floors`, which rolls the agent roster up by floor and
+ * answers "who is on f3". This answers "is f3's manager alive and is its status
+ * file fresh", which the roster cannot know. Neither replaces the other.
+ */
+export interface FloorsPayload {
+  floors: Array<{
+    floor: string;
+    manager: string;
+    state: string;
+    reason: string | null;
+    manager_alive: boolean;
+    task_counts: Record<string, number>;
+    current_task?: string | null;
+    last_activity?: string | null;
+  }>;
+  /** Same read as `floors`, so a badge can never contradict the row beside it. */
+  counts: Record<string, {
+    state: string;
+    manager_alive: boolean;
+    reason: string | null;
+    current_task: string | null;
+    last_activity: string | null;
+    tasks: Record<string, number>;
+    workers: number;
+    failed_workers: number;
+    stalled: number;
+    degraded: boolean;
+  }>;
+  summary: Record<string, number>;
+  /** 'unavailable' when the hive has no probe, 'error' when it failed. */
+  source: string;
+  /**
+   * True when the probe could not be consulted. Every floor is then UNKNOWN and
+   * this flag must be surfaced: twelve grey rows read as measurements unless the
+   * caller says they are not.
+   */
+  not_verified: boolean;
+  at: number;
 }
 
 export interface Summary {
@@ -37,25 +104,77 @@ export interface Summary {
   present: boolean;
   godId: string | null;
   agents: Agent[];
+  /**
+   * `floors` is emitted as an empty array on this deployment, which is the
+   * truthful shape of "no floor rollup was produced".
+   *
+   * Typed as a `FloorRollup[]` covering every member FloorTable's own
+   * `FloorRow` declares, so the `Summary & { floors?: FloorRow[] }` intersection
+   * it uses resolves to a readable type. Leaving it undeclared did NOT fail:
+   * an intersection with an absent optional property silently collapses to
+   * `never[]`, so `floors.length === 0` type-checked and the panel rendered its
+   * empty state forever with no error to explain why. It is now genuinely empty
+   * on this deployment, so the panel honestly says so rather than pretending
+   * the field is missing.
+   */
+  floors?: Array<{
+    floor: string;
+    lead: string | null;
+    leadIsLive: boolean;
+    agents: number;
+    running: number;
+    working: number;
+    idle: number;
+    stale: number;
+    failed: number;
+    offline: number;
+    breaker: number;
+    health: string;
+  }>;
+  /** A second copy of the agent list with the time it was collected. */
+  fleet?: { ts?: number; agents?: Agent[] };
 }
 
+/**
+ * A process row from /api/processes, as collected into the hive's processes.json.
+ *
+ * This shape previously declared `pid`, `name`, `kind` and `observed_at`, none
+ * of which the server ever sent. It type-checked cleanly, so a consumer reading
+ * `process.pid` would render `undefined` with no error anywhere — a declared
+ * field that does not exist is worse than an absent one, because it reads as a
+ * guarantee.
+ *
+ * `pid` and `process_id` are both optional because the collectors disagree: rows
+ * sourced from the hive carry `pid`, engine probes carry only `process_id`.
+ * `command` arrives already redacted server-side.
+ */
 export interface ProcessRecord {
-  pid: number;
-  name: string;
-  kind: string;
-  status: string;
-  command: string;
-  observed_at: string;
+  status?: string;
+  command?: string;
+  pid?: number;
+  process_id?: string;
+  project_id?: string;
+  started_at?: string;
+  last_seen?: string;
+  health?: string;
+  restart_count?: number;
 }
 
+/**
+ * A project row from /api/projects.
+ *
+ * `branch`, `health`, `last_seen` and `metadata` were declared here and are
+ * never emitted by projects.json, so they resolved to undefined at runtime while
+ * type-checking cleanly. Replaced with the fields that are actually sent, plus
+ * the timestamps the collector records.
+ */
 export interface ProjectRecord {
   project_id: string;
   name?: string;
   status?: string;
-  branch?: string;
-  health?: string;
-  last_seen?: string;
-  metadata?: Record<string, unknown>;
+  description?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface Message {
@@ -116,10 +235,47 @@ export interface QueueSummary {
   inProgress: number;
   complete: number;
   failed: number;
+  quarantined?: number;
+  /**
+   * COMPLETE is a status the executor writes, so it is a claim rather than
+   * proof. `verifiedComplete` is the subset carrying durable recorded output and
+   * `unverifiedComplete` is the residue; they and `completedButFailed` partition
+   * `complete`. None of these are inferred from the absence of a failure marker.
+   */
+  completedButFailed?: number;
+  verifiedComplete?: number;
+  unverifiedComplete?: number;
+  blocked?: number;
+  /**
+   * A task parked on an unmet dependency.
+   *
+   * `blocked_since` is what the server actually sends. This shape previously
+   * declared `waiting_on` and `blocked_at`, which the server has never emitted —
+   * so both resolved to undefined at runtime while type-checking cleanly, which
+   * is worse than not having declared them. `reason` is derived server-side and
+   * is honest about its own limits: when the record carries no cause it says
+   * "blocked with no reason recorded" rather than inventing one.
+   */
+  blockedTasks?: Array<{
+    task_id: string;
+    title: string;
+    assigned_agent: string | null;
+    reason: string;
+    blocked_since: string | null;
+  }>;
   staleInProgress: number;
   byStatus: Record<string, number>;
   inProgressTasks: Array<TaskRecord & { heartbeat_age_sec: number | null }>;
   completionsLastHour: number;
+  /**
+   * True when the count is a floor rather than the rate: the log exceeded the
+   * window that was read, so older completions exist that this cannot see.
+   */
+  completionsLastHourLowerBound?: boolean;
+  /** Bytes of events.log the rate and the chart were computed from. */
+  completionsWindowBytes?: number | null;
+  /** Why the throughput read failed, if it did. Null means it succeeded. */
+  completionsError?: string | null;
   failedLastHour: number;
   completionsByHour: Array<{ hour: string; count: number }>;
   recentCompletions: FleetEvent[];
@@ -216,6 +372,86 @@ export interface ApiErrorBody {
   details?: unknown;
 }
 
+/**
+ * Runtime status of the managed Polymarket engine, from /api/polymarket/status.
+ *
+ * This payload had no TypeScript type at all, so it was fetched as an untyped
+ * blob. Every field below is required because the server builds them from a
+ * single object literal with no conditional spread — all thirteen are present on
+ * every response, whether or not the engine is installed. Optionality would be a
+ * lie here in the other direction: it would let a consumer treat "the engine is
+ * not installed" as "the server did not tell me".
+ *
+ * Nullability is not optionality. `paper_only`, `managed`, `running` and
+ * `execution_allowed` are required booleans, never null: the server derives them
+ * from `plistValid && !configResult.error && ...`, which always yields a boolean.
+ * A consumer gating on them is gating on a fact, not on missing data.
+ *
+ * The three error/identity fields that CAN be null are typed `| null` because the
+ * server genuinely sends null: a missing launchd service has no pid and no path,
+ * and an unreadable config reports `error: null` rather than omitting itself.
+ *
+ * `paper_only` and `execution_allowed` are the paper/testnet boundary. The server
+ * requires paper_only before it will start anything
+ * (`POST /api/polymarket/start` returns paper_only_required otherwise) and
+ * execution_allowed is only true when the plist, config and loaded state all
+ * hold. Both are typed as plain required booleans so that fact cannot be lost in
+ * an optional chain.
+ */
+export interface PolymarketStatus {
+  /** ISO timestamp of the probe. */
+  checked_at: string;
+  /** Absolute path the server expects the engine script at. */
+  engine_path: string;
+  /** Same path, reported separately so a mismatch is visible rather than inferred. */
+  expected_engine_path: string;
+  /** The plist the server expects to be loaded from. */
+  expected_plist_path: string;
+  /**
+   * True only when the plist is valid, carries `--paper`, has no unsafe
+   * (--live/--real/--mainnet/--testnet) argument, and the config agrees.
+   */
+  paper_only: boolean;
+  /** The engine has a valid plist and a readable config. */
+  managed: boolean;
+  /** A process matching the engine path was found. */
+  running: boolean;
+  /** PID of the first matching process, or null when not running. */
+  pid: number | null;
+  /** Every matching pid and its command line. Empty when not running. */
+  process: {
+    pids: number[];
+    commands: (string | null)[];
+  };
+  /** What launchctl reports for the managed label, plus what was expected. */
+  launchd: {
+    loaded: boolean;
+    state: string;
+    pid: number | null;
+    path: string | null;
+    error: string | null;
+    expected_path: string;
+    expected_loaded: boolean;
+  };
+  /** polymarket_config.json as read, if any. */
+  config: {
+    present: boolean;
+    path: string;
+    error: string | null;
+  };
+  /** The installed plist, validated against the expected shape. */
+  plist: {
+    valid: boolean;
+    error: string | null;
+    path: string;
+  };
+  /**
+   * True only when paper-only is satisfied AND the expected plist is loaded.
+   * False here means no live order path is authorised.
+   */
+  execution_allowed: boolean;
+}
+
 export interface ApiErrorResponse {
   ok?: boolean;
   error?: ApiErrorBody | string;
@@ -261,10 +497,23 @@ export interface PolymarketExclusionFile {
   error: string | null;
 }
 
+/**
+ * The market-exclusion list and whether it could be read at all.
+ *
+ * `present`, `valid` and `error` were missing here while the server sends all
+ * three, and `count` is null whenever `valid` is false. That combination is the
+ * hazard: the type said `count: number` (always a number) and said nothing about
+ * validity, so a consumer could render a count while the file behind it was
+ * unreadable or malformed. `count` is nullable precisely because "no count" is
+ * a distinct, reportable state rather than a zero.
+ */
 export interface PolymarketExclusionSet {
   path: string;
-  count: number;
+  present?: boolean;
+  valid?: boolean;
+  count: number | null;
   items: PolymarketExclusion[];
+  error?: string | null;
 }
 
 export interface PolymarketMarket {
@@ -292,21 +541,24 @@ export interface PolymarketPortfolio {
   current_drawdown: number | null;
 }
 
+/**
+ * A summary of the local polymarket engine's own state.
+ *
+ * The seven optional fields this previously declared (`open_trades`,
+ * `closed_trades`, `trade_sides`, `signal_decisions`, `order_statuses`,
+ * `performance_metrics`, `portfolio`) are not emitted by the summariser, so a
+ * consumer reading them got `undefined` where the honest answer is "this engine
+ * does not report that". Declared-but-absent reads as a guarantee that nothing
+ * needs checking.
+ */
 export interface PolymarketMarketSummary {
   trades: number;
-  open_trades?: number;
-  closed_trades?: number;
-  trade_sides?: Record<string, number>;
   signals: number;
-  signal_decisions?: Record<string, number>;
   orders: number;
-  order_statuses?: Record<string, number>;
   fills: number;
   open_positions: number;
   closed_positions: number;
   markets: number;
-  performance_metrics?: Record<string, unknown>;
-  portfolio?: PolymarketPortfolio;
 }
 
 export interface PolymarketMarketsResponse {
@@ -367,8 +619,25 @@ export interface HarnessHealth {
   model: string;
   error: string | null;
   checkedAt: string;
+  /**
+   * Providers that are configured but not currently serving. Empty is the healthy
+   * case and is a real measurement, not missing data.
+   *
+   * This was absent from the canonical type while Overview read it. That worked
+   * only because Overview declares a private copy of HarnessHealth with the field
+   * included — the second component-local duplicate of a type that api.ts already
+   * exports, and the same pattern that hid Agent.evidence from the canonical
+   * Agent.
+   */
+  degradedProviders?: string[];
 }
 
+/**
+ * One probed service from /api/services/health.
+ *
+ * `attempts` is sent by the collector (how many times it tried before recording
+ * a status) and was previously undeclared.
+ */
 export interface ServicePort {
   name: string;
   port: number;
@@ -376,6 +645,7 @@ export interface ServicePort {
   status: 'online' | 'offline';
   latencyMs: number;
   error: string | null;
+  attempts?: number;
 }
 
 export interface ServiceHealth {
@@ -405,15 +675,22 @@ export interface PortalResponse {
 export interface VerifyState {
   present: boolean;
   at?: string;
-  verdict_tally?: { OK?: number; DODGE?: number; SHORT?: number; FAIL?: number; EMPTY?: number };
-  requeued?: Array<[string, string]>;
-  quarantined?: Array<[string, string]>;
-  verifiedWork?: number | null;
-  verifiedWorkDenominator?: number | null;
-  outputQualityRatePct?: number | null;
-  verificationCoverage?: number | null;
-  verificationBasis?: string;
-}
+verdict_tally?: { OK?: number; DODGE?: number; SHORT?: number; FAIL?: number; EMPTY?: number };
+    verdict_tally_total?: number;
+    requeued?: Array<[string, string]>;
+    quarantined?: Array<[string, string]>;
+    /** Fraction of scanned verdicts that were OK. Measures output quality only. */
+    outputQualityRatePct?: number | null;
+    /**
+     * Verified work is not measured by this pipeline and is published as null.
+     * 0 would claim nothing was verified and a number would claim a measurement
+     * that never happened, so the honest value is "not measured" plus a reason.
+     */
+    verifiedWork?: number | null;
+    verifiedWorkDenominator?: number | null;
+    verificationCoverage?: number | null;
+    verificationBasis?: string;
+  }
 
 export interface AgentDetail {
   agent: Agent;
@@ -705,6 +982,11 @@ function usePolled<T>(path: string) {
   const alive = useRef(true);
 
   const refresh = useCallback(() => {
+    // An empty path means the caller is served by the socket instead. Hooks
+    // cannot be conditional, so useLive points the unused poller at ''. That
+    // must be inert: fetch('') resolves against the document base URL and
+    // fetches the SPA shell, which then fails response.json().
+    if (!path) return;
     fetch(path, { headers: { Accept: 'application/json' } })
       .then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -717,11 +999,17 @@ function usePolled<T>(path: string) {
 
   useEffect(() => {
     alive.current = true;
+    if (!path) {
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return () => { alive.current = false; };
+    }
     setLoading(true);
     refresh();
     const timer = setInterval(refresh, POLL_ONLY_MS);
     return () => { alive.current = false; clearInterval(timer); };
-  }, [refresh]);
+  }, [refresh, path]);
 
   return { data, error, loading, refresh };
 }

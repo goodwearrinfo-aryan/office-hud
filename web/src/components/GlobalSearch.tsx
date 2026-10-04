@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo } from 'react';
-import { useLive, type Agent, type LedgerEvent, type Summary } from '../api';
+import { useState, useEffect } from 'react';
+import { useLive, type LedgerEvent, type Summary } from '../api';
 
 interface Props {
   onSelectAgent?: (id: string) => void;
