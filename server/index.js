@@ -12,6 +12,31 @@ const { LiveHub } = require('./lib/live_hub');
 const { AlertEngine } = require('./lib/alerts');
 const { AutonomyController } = require('./lib/autonomy');
 const replay = require('./lib/replay');
+const {
+  completionsLastHour: unbiasedCompletionsLastHour,
+  completionsByHour: completionHistogram,
+  WINDOW_BYTES: COMPLETION_WINDOW_BYTES,
+} = require('./throughput.js');
+const { classifyTaskTruth, summarizeTasks } = require('./taskTruth.js');
+const alphaInsiderStats = require('./alphainsider_stats_route');
+const strategySearchRoute = require('./strategy_search_route');
+// The project list is answered by a live filesystem+git probe, not by the
+// registry file. hive/projects.json is a legacy flat file the fleet moved
+// away from when it adopted the sessions/terminals model, so nothing writes
+// it: it carried health="healthy" for 13 of its 14 projects while 7 of
+// those paths do not exist on disk, and the HUD reported all of them as
+// healthy. getProjectStatus() runs project_probe.py, reports ACTIVE /
+// MISSING / UNKNOWN with a verified flag and a reason, and falls back to the
+// registry labelled UNKNOWN when the probe cannot run -- so it degrades to
+// "unverified" rather than to a confident lie.
+const { getProjectStatus } = require('./project_status');
+const { processView, redactRecord } = require('./processTruth');
+const { registerWedgedRoutes } = require('./lib/wedgedProcesses');
+const liveDigestRoute = require('./live_digest_route');
+const openaliceStatus = require('./openaliceStatus');
+const frozenFeedsRoute = require('./frozen_feeds_route');
+const { registerEvidenceRoutes } = require('./evidenceRoutes');
+const { isLocalRequest, TAILSCALE_PROXY_HEADERS } = require('./lib/local_only');
 
 let liveHub = null;
 let alertEngine = null;
@@ -25,19 +50,6 @@ let hiveFileLock = null;
 try { hiveFileLock = require(path.join(HIVE, 'lib', 'file_lock.js')).withFileLock; } catch {}
 const HIVE_LABEL = process.env.OFFICE_HUD_LABEL || 'Fleet hive';
 const FLEET_ROOT = path.dirname(HIVE);
-
-// The hardened local-only gate lives in its own module, not inline here. A
-// socket-address check is not sufficient: Tailscale Serve terminates the tailnet
-// connection on this host and then opens a NEW loopback connection to the app, so
-// a remote device and a local browser both arrive as 127.0.0.1. An earlier
-// version checked only the socket, and every gated route below was reachable
-// from any device on the tailnet with no auth. Keeping the decision in a module
-// no in-flight rewrite touches is deliberate: that inline check was reverted five
-// times in one session, and once reached production wide open.
-const { isLocalRequest } = require('./lib/local_only');
-const { TerminalManager } = require('./lib/terminal/manager');
-
-const terminalManager = new TerminalManager({ hive: HIVE });
 const POLYMARKET_ROOT = '/Users/a/polymarket';
 const POLYMARKET_RESEARCH = path.join(POLYMARKET_ROOT, 'research');
 const POLYMARKET_STATE_PATH = path.join(POLYMARKET_RESEARCH, 'engine_state.json');
@@ -97,13 +109,6 @@ const SAFE_POST = new Set([
 const SAFE_POST_PREFIXES = [
   '/api/alerts/',
   '/api/autonomy/',
-  // Terminal control runs arbitrary commands, so it is the strongest thing on
-  // this list, and it is listed as a prefix purely so the global read-only gate
-  // lets the request reach its own handler. That handler applies the hardened
-  // Tailscale-aware local check AND the command allowlist, so widening this
-  // prefix grants nothing on its own -- but keep it under review: any new route
-  // beginning /api/terminals/ inherits the reach of this entry.
-  '/api/terminals/',
 ];
 
 const app = express();
@@ -261,6 +266,19 @@ function timestampMs(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+// How many messages are actually waiting in an agent's inbox. A missing
+// directory is 0, not an error: an agent that has not started yet has no inbox,
+// and that is different from an agent whose inbox is being ignored.
+function inboxBacklog(agentId) {
+  if (!agentId) return 0;
+  try {
+    return fs.readdirSync(path.join(HIVE, 'agents', agentId, 'inbox'))
+      .filter(f => f.endsWith('.json')).length;
+  } catch {
+    return 0;
+  }
+}
+
 function listMessages(dir, limit = 50) {
   try {
     return fs.readdirSync(dir)
@@ -289,8 +307,102 @@ function getFleet() {
   return readJsonCached(path.join(HIVE, 'fleet.json'), { ts: null, agents: [] });
 }
 
+// CANONICAL ROSTER FRESHNESS CONTRACT
+//
+//   fleet.stale        true when the roster observation is stale or unmeasurable
+//   fleet.live         true only when that observation is current and usable
+//   fleet.age_seconds  age of the observation, or null when it cannot be measured
+//   fleet.observed_at  epoch ms of the observation, or null
+//
+// One contract, one set of names, snake_case because this is the public API
+// surface. An earlier version of this file published rosterStale /
+// rosterAgeSeconds / rosterObservedAt on this same object. That naming is
+// replaced rather than shadowed: two names for one meaning is how a reader ends
+// up trusting whichever is easier to ignore.
+//
+// The age comes from the timestamp the file RECORDS, not from its mtime. That
+// distinction is the point: mtime moves when a file is copied, checked out or
+// otherwise touched, so it can certify a stale observation as fresh. The
+// recorded ts is the writer's own claim about when it looked, and the age of
+// that claim is what we actually care about.
+//
+// hive/fleet.json has no writer any more -- the fleet moved to a
+// sessions/terminals model -- so this will normally report stale. That is the
+// correct answer, not a defect to tune away. It is labelled rather than hidden,
+// and agent rows carry the same measurement so a field they inherited can be
+// read for what it is.
+const ROSTER_STALE_SECONDS = 900;
+
+function rosterFreshness(fleet) {
+  const recorded = fleet ? (fleet.ts ?? fleet.updated_at) : null;
+  const observedAt = timestampMs(recorded);
+  if (observedAt == null) {
+    // Unmeasurable is not fresh. A roster whose age cannot be established is
+    // reported stale and not live rather than given the benefit of the doubt,
+    // which is the exact failure this contract exists to prevent.
+    return { stale: true, live: false, age_seconds: null, observed_at: null,
+             stale_after_seconds: ROSTER_STALE_SECONDS };
+  }
+  const age = Math.max(0, Math.round((Date.now() - observedAt) / 1000));
+  const stale = age > ROSTER_STALE_SECONDS;
+  return { stale, live: !stale, age_seconds: age, observed_at: observedAt,
+           stale_after_seconds: ROSTER_STALE_SECONDS };
+}
+
 function getRegistry() {
   return readJsonCached(path.join(HIVE, 'registry.json'), { godId: null, agents: {} });
+}
+
+// GOD IDENTITY PROVENANCE
+//
+// godId is the top of the command hierarchy and it is the one field in the
+// summary payload that arrived with no provenance at all: it came from
+// hive/registry.json and nothing said how old the reading was.
+//
+// Traced to its source rather than assumed. registry.json has exactly one
+// writer in the live hive -- hive/agents/mainbot/bin/main_bot.js -- and
+// main_bot.js is not running and is referenced by no launchd plist. The file
+// records no timestamp of its own (its keys are agents, godId, missions), so
+// mtime is the only observation time available. That makes it weaker evidence
+// than the roster contract's recorded ts, and it is labelled
+// registryObservedFrom: "mtime" so a reader can weigh it accordingly.
+//
+// I looked for a live source that declares the hierarchy and did not find one.
+// office-manager is the live top-level process, but it contains no reference to
+// godId at all. What IS live is weaker evidence of a different claim: sessions
+// for an agent named "god" and a running process for it. That corroborates
+// that an agent of that name exists, not that it holds the top role, so it is
+// reported separately as godIdLive rather than being used to justify godId.
+//
+// The value is left exactly as it is. Repointing the hierarchy root is a change
+// of meaning and belongs to whoever owns that decision; making the provenance
+// visible does not.
+const REGISTRY_STALE_SECONDS = 900;
+
+function registryFreshness(godId) {
+  const file = path.join(HIVE, 'registry.json');
+  try {
+    const observedAt = Math.floor(fs.statSync(file).mtimeMs);
+    const registryAgeSeconds = Math.max(0, Math.round((Date.now() - observedAt) / 1000));
+    const key = String(godId || '').toLowerCase();
+    let corroborated = false;
+    for (const row of sessionRows()) {
+      if (String(row.agent_id || '').toLowerCase() === key) { corroborated = true; break; }
+    }
+    return {
+      godIdSource: 'registry-snapshot',
+      registryObservedFrom: 'mtime',
+      registryObservedAt: observedAt,
+      registryAgeSeconds,
+      registryStale: registryAgeSeconds > REGISTRY_STALE_SECONDS,
+      registryStaleAfterSeconds: REGISTRY_STALE_SECONDS,
+      godIdLive: corroborated,
+    };
+  } catch (err) {
+    return { godIdSource: 'unavailable', registryObservedFrom: null, registryObservedAt: null,
+             registryAgeSeconds: null, registryStale: null, registryStaleAfterSeconds: REGISTRY_STALE_SECONDS,
+             godIdLive: false, registryError: err.message };
+  }
 }
 
 function getTasks() {
@@ -316,6 +428,7 @@ function sendError(res, status, code, message, details) {
 function isIdentifier(value) {
   return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value);
 }
+
 
 const HIVE_LOCK_STALE_MS = 30000;
 
@@ -859,6 +972,7 @@ function terminalHosts() {
     // remote host can be stale, because only a remote host is expected to keep
     // writing on a schedule.
     stale: false,
+    processes: (Array.isArray(local.processes) ? local.processes : []).map(redactRecord),
     doc: local,
   });
 
@@ -887,6 +1001,7 @@ function terminalHosts() {
       collected_at: collectedAt,
       age_sec: ageSec,
       stale: ageSec == null || ageSec > TERMINAL_STALE_SEC,
+      processes: (Array.isArray(doc.processes) ? doc.processes : []).map(redactRecord),
       doc,
     });
   }
@@ -900,7 +1015,7 @@ function terminalSnapshot() {
   for (const host of hosts) {
     const doc = host.doc || {};
     for (const shell of Array.isArray(doc.shell_terminals) ? doc.shell_terminals : []) {
-      terminals.push({ ...shell, host: host.host, host_stale: host.stale, age_sec: host.age_sec });
+      terminals.push({ ...redactRecord(shell), host: host.host, host_stale: host.stale, age_sec: host.age_sec });
     }
     for (const session of Array.isArray(doc.agent_sessions) ? doc.agent_sessions : []) {
       sessions.push({ ...session, host: host.host, host_stale: host.stale });
@@ -980,34 +1095,14 @@ function mergedAgents() {
   const fleet = getFleet();
   const reg = getRegistry();
   const now = Date.now();
-  const fleetById = new Map(
-    (fleet.agents || []).map(agent => [String(agent.id || '').toLowerCase(), agent]),
-  );
+  const fleetById = Object.fromEntries((fleet.agents || []).map(agent => [agent.id, agent]));
   const byId = new Map();
-  // Merged case-insensitively, because the registry has accumulated both
-  // casings for the same agent: PM-RISK and pm-risk are one agent, and listing
-  // both inflated the floor count and the roster the HUD reports. The same
-  // function already lowercases session and task keys below, so this key was
-  // the odd one out. The registry itself is left untouched: it is written by
-  // live agents and deduping it here keeps the fix on the read path.
-  const canonical = new Map();
 
   for (const [id, agent] of Object.entries(reg.agents || {})) {
-    const key = String(id || '').toLowerCase();
-    if (!key) continue;
-    const existing = canonical.get(key);
-    // Prefer the fleet's spelling when it has one: the fleet is what is
-    // actually running right now.
-    const fromFleet = fleetById.get(key);
-    const chosenId = fromFleet ? (fromFleet.id ?? id) : (existing ?? id);
-    canonical.set(key, chosenId);
-    byId.set(key, { ...agent, ...(fromFleet || {}), id: chosenId });
+    byId.set(id, { ...agent, ...(fleetById[id] || {}), id });
   }
   for (const agent of fleet.agents || []) {
-    const key = String(agent.id || '').toLowerCase();
-    if (!key) continue;
-    if (!canonical.has(key)) canonical.set(key, agent.id);
-    if (!byId.has(key)) byId.set(key, { ...agent, id: canonical.get(key) });
+    if (!byId.has(agent.id)) byId.set(agent.id, agent);
   }
 
   // Newest session per agent, tracked for BOTH fresh and stale sessions. An
@@ -1095,7 +1190,11 @@ function mergedAgents() {
       sessionUsd: agent.sessionUsd ?? 0,
       lastTool: agent.lastTool || null,
       lastActiveSecAgo: agent.lastActiveSecAgo ?? null,
-      inboxBacklog: agent.inboxBacklog ?? 0,
+      // Counted from disk. This used to be a hardcoded 0, which is why every
+      // agent showed an empty inbox regardless of what was actually waiting: a
+      // field that cannot be non-zero is not a measurement, and a fleet panel
+      // full of zeros reads as "nothing to do" rather than "never measured".
+      inboxBacklog: inboxBacklog(agent.id),
       onHold: !!agent.onHold,
       lastSeen: session?.heartbeat_age_sec != null ? Date.now() - session.heartbeat_age_sec * 1000 : (agent.lastSeen || null),
       sessionId: session?.session_id || null,
@@ -1124,6 +1223,14 @@ function rollupFloors(agents) {
   for (const agent of agents) {
     const floor = agent.floor || null;
     if (!floor) continue;
+    // An agent's `floor` attribute is not reserved for floors. It is also used
+    // for organisational groups (command, office, operations, polymarket,
+    // specialists, workers), so grouping by it emitted those groups as if they
+    // were floors: 18 rows for 12 floors, six of them with no manager, no state
+    // and no liveness. A floor id is f<digits>; anything else is an agent group
+    // and belongs in the agent view. The groups are not removed from the roster,
+    // they simply stop being reported as floors.
+    if (!/^f\d+$/i.test(String(floor))) continue;
     if (!byFloor.has(floor)) {
       byFloor.set(floor, {
         floor,
@@ -1162,6 +1269,21 @@ function rollupFloors(agents) {
     if (nb != null) return 1;
     return a.floor.localeCompare(b.floor);
   });
+  // One canonical floor derivation. server/floor_health.js is tracked, tested,
+  // and already backs GET /api/floors. Deriving `state` from the same probe
+  // keeps a single floor calculator: the rollup still supplies the per-floor
+  // agent counters, but it no longer invents its own health verdict, and `state`
+  // is never null.
+  const canonical = new Map();
+  try {
+    const derived = getFloorHealth(HIVE);
+    for (const f of (derived && derived.floors) || []) {
+      canonical.set(String(f.floor).toLowerCase(), f);
+    }
+  } catch (err) {
+    // Leave `canonical` empty; every floor falls back to UNKNOWN below, which
+    // is honest: the probe could not be consulted, so nothing is claimed.
+  }
   for (const row of floors) {
     row.health = row.working > 0 ? 'working'
       : row.stale > 0 ? 'stale'
@@ -1169,6 +1291,11 @@ function rollupFloors(agents) {
       : row.offline > 0 && row.offline === row.agents ? 'offline'
       : row.idle > 0 ? 'idle'
       : 'unknown';
+    const c = canonical.get(String(row.floor).toLowerCase());
+    row.state = c && c.state ? c.state : 'UNKNOWN';
+    row.manager = c ? (c.manager || null) : null;
+    row.manager_alive = c ? (c.manager_alive === true) : null;
+    row.reason = c ? (c.reason || null) : 'canonical floor probe unavailable';
   }
   return floors;
 }
@@ -1558,6 +1685,50 @@ function getGraphifyCommunities(limit = 12) {
   };
 }
 
+// Does this task leave anything durable behind?
+//
+// `verifiedComplete` used to be computed as `complete - completedButFailed`,
+// which subtracted keyword-matched failures and consulted no evidence at all. The
+// field carried the word "verified" while measuring only "not flagged as failed",
+// so a COMPLETE task that produced nothing whatsoever still counted as verified.
+// The three buckets published below exist so that failure has somewhere honest to
+// go instead of being absorbed into a single flattering number.
+//
+// Evidence is any one of:
+//   - evidence.artifacts  a non-empty list of paths (the strongest signal).
+//   - evidence.outcome    an executor-declared terminal outcome. Only recognised
+//                         terminal values count: an unrecognised or error-shaped
+//                         string is not proof that work landed.
+//   - result              this fleet's deliverable IS the response text, so a
+//                         non-empty result is durable output. It is trimmed
+//                         first, because a whitespace-only result is exactly what
+//                         a task that produced nothing stores -- crediting that
+//                         would restore the exact overclaim this replaces.
+//
+// evidence.requested_target_file is deliberately NOT evidence. It names the file
+// the task was ASKED to write, which is a request, not a produced artifact, and
+// treating it as proof is how a task that never wrote anything gets verified.
+const DURABLE_OUTCOMES = new Set([
+  'done', 'complete', 'completed', 'success', 'succeeded', 'ok',
+  'pass', 'passed', 'delivered', 'written', 'applied', 'patched',
+  'committed', 'merged', 'published', 'resolved', 'closed', 'shipped',
+]);
+
+function classifyCompletionEvidence(task) {
+  const evidence = isPlainObject(task.evidence) ? task.evidence : {};
+  // Entries are trimmed before the list is judged non-empty, but only when they
+  // are strings -- a path object is evidence regardless of its shape.
+  const artifacts = Array.isArray(evidence.artifacts)
+    ? evidence.artifacts.filter(entry => typeof entry !== 'string' || entry.trim().length > 0)
+    : [];
+  if (artifacts.length > 0) return { verified: true, evidenceKind: 'artifacts' };
+  const outcome = String(evidence.outcome || '').trim().toLowerCase();
+  if (DURABLE_OUTCOMES.has(outcome)) return { verified: true, evidenceKind: 'outcome' };
+  const result = typeof task.result === 'string' ? task.result.trim() : '';
+  if (result.length > 0) return { verified: true, evidenceKind: 'result' };
+  return { verified: false, evidenceKind: null };
+}
+
 function getQueueSummary() {
   const now = Date.now();
   const tasks = getTasks().tasks || [];
@@ -1583,17 +1754,45 @@ function getQueueSummary() {
     const text = `${String(task.result || '')} ${evidenceStatus}`;
     return /llm call failed|llm_error|all llm providers failed|executor ended: llm_error|executor ended: error/i.test(text);
   };
-  const completedButFailed = completedTasks.filter(looksFailed);
+  // Partitioned in a single pass rather than as three independent filters,
+  // because the buckets must be disjoint: a record that says the model call
+  // failed is a failed completion no matter what else it carries, so failure is
+  // checked before evidence. Three overlapping filters would silently break the
+  // verified + failed + unverified === complete identity.
+  const completedButFailed = [];
+  const verifiedTasks = [];
+  const unverifiedTasks = [];
+  for (const task of completedTasks) {
+    if (looksFailed(task)) completedButFailed.push(task);
+    else if (classifyCompletionEvidence(task).verified) verifiedTasks.push(task);
+    else unverifiedTasks.push(task);
+  }
   const inProgress = tasks.filter(task => String(task.status).toUpperCase() === 'IN_PROGRESS');
   const staleInProgress = inProgress.filter(task => {
     const heartbeat = timestampMs(task.heartbeat || task.claimed_at);
     return heartbeat == null || now - heartbeat > SESSION_STALE_MS;
   });
+  // getRecentEvents reads only the last EVENT_TAIL_BYTES (512KB) of a 47MB
+  // events.log, so the 12-hour chart below is still built from a tail. That is
+  // left alone: it is a coarse trend and widening it is a separate change.
+  //
+  // The scalar is not coarse, it is a throughput figure, and on the live hive it
+  // reported 39 completions in the hour when the log held 222 -- a 5.7x
+  // undercount caused entirely by how much log happened to sit behind the
+  // cursor. throughput.js reads a window sized to span the period and reports
+  // whether that window was still a lower bound, so a truncated count can no
+  // longer masquerade as the rate.
   const completions = getRecentEvents(5000, 'task_completed');
   const completionHour = new Map();
   const currentHour = Math.floor(now / 3600000) * 3600000;
   for (let i = 11; i >= 0; i--) completionHour.set(currentHour - i * 3600000, 0);
   let completionsLastHour = 0;
+  const unbiased = unbiasedCompletionsLastHour(HIVE);
+  // Same reader, same window, same call site as the scalar above.
+  const histogram = completionHistogram(HIVE, 12);
+  if (typeof unbiased.completionsLastHour === 'number') {
+    completionsLastHour = unbiased.completionsLastHour;
+  }
   let failedLastHour = 0;
   for (const event of completions) {
     const eventTime = timestampMs(event.timestamp);
@@ -1601,7 +1800,12 @@ function getQueueSummary() {
     const hour = Math.floor(eventTime / 3600000) * 3600000;
     if (completionHour.has(hour)) completionHour.set(hour, completionHour.get(hour) + 1);
     if (now - eventTime <= 3600000) {
-      completionsLastHour++;
+      // completionsLastHour is NOT incremented here. It was already assigned
+      // above from throughput.js, which reads a window large enough to span the
+      // hour. Incrementing it again from the 512KB tail double-counted the last
+      // hour: the live payload reported 266 where the unbiased source said 218,
+      // because the same events were counted a second time. This loop now
+      // contributes only to the hourly chart and to failedLastHour.
       if (String(event.result || '').startsWith('[LLM call failed')) failedLastHour++;
     }
   }
@@ -1612,12 +1816,39 @@ function getQueueSummary() {
     complete: byStatus.COMPLETE || 0,
     failed: byStatus.FAILED || 0,
     quarantined: byStatus.QUARANTINED || 0,
+    // The throughput window and whether it covered the whole hour. A reader can
+    // tell a real rate from a floor without having to know how the log is read.
+    completionsLastHourLowerBound: Boolean(unbiased && unbiased.lower_bound),
+    completionsWindowBytes: unbiased ? unbiased.window_bytes : null,
+    completionsError: unbiased ? unbiased.error : null,
+    // Tasks held by the dependency engine because a prerequisite has not
+    // produced a result yet. Surfacing the count keeps gated work visible
+    // instead of it silently disappearing between QUEUED and claimable.
+    blocked: byStatus.BLOCKED || 0,
+    blockedTasks: tasks
+      .filter((task) => String(task.status || '').toUpperCase() === 'BLOCKED')
+      .slice(0, 50)
+      .map((task) => ({
+        task_id: task.task_id,
+        title: task.title,
+        assigned_agent: task.assigned_agent || null,
+        waiting_on: task.depends_on || task.blocked_on || null,
+        reason: task.blocked_reason || null,
+        blocked_at: task.blocked_at || null,
+      })),
     staleInProgress: staleInProgress.length,
-    // Recorded as COMPLETE but the record itself says the model call failed.
-    // `complete` above is the raw count and includes these; subtracting them is
-    // the only way to read a success rate that is not misleading.
+    // COMPLETE tasks split three ways, and the three sum exactly to `complete`:
+    //   completedButFailed - the record itself says the model call failed
+    //   verifiedComplete   - durable evidence exists, per classifyCompletionEvidence
+    //   unverifiedComplete - complete, unflagged, and backed by nothing at all
+    //
+    // `complete` above is the raw stored count and includes all three. Publishing
+    // the unbacked residue as its own number is the point: it used to be folded
+    // into `verifiedComplete`, which is how a queue could report every completion
+    // as verified while none of them carried an artifact.
     completedButFailed: completedButFailed.length,
-    verifiedComplete: completedTasks.length - completedButFailed.length,
+    verifiedComplete: verifiedTasks.length,
+    unverifiedComplete: unverifiedTasks.length,
     byStatus,
     inProgressTasks: inProgress.slice(0, 50).map(task => ({
       task_id: task.task_id,
@@ -1631,7 +1862,15 @@ function getQueueSummary() {
     })),
     completionsLastHour,
     failedLastHour,
-    completionsByHour: [...completionHour.entries()].map(([hour, count]) => ({ hour: new Date(hour).toISOString(), count })),
+    // Built from the same module and the same WINDOW_BYTES as
+    // completionsLastHour. It used to come from the 512KB tail while the scalar
+    // used 16MB, so two adjacent widgets described one metric over different
+    // populations: live, the scalar read 177 for the current hour while this
+    // chart's final bar read 25, and 10 of 12 buckets were empty because 512KB
+    // of a heartbeat-dominated log spans minutes, not hours.
+    completionsByHour: histogram.hours,
+    completionsWindowBytes: COMPLETION_WINDOW_BYTES,
+    completionsChartError: histogram.error,
     recentCompletions: completions.slice(0, 20),
   };
 }
@@ -1672,12 +1911,27 @@ async function getHarnessHealth() {
       checkedAt,
     };
   } catch (error) {
+    // SHAPE-STABLE. This branch used to omit degradedProviders while the success
+    // branch included it, so the same resource changed shape depending on
+    // whether one 2s probe happened to succeed. Measured on the live machine
+    // under test-suite load: the harness took 2.578s to answer, exceeded the
+    // 2s AbortSignal, and this branch returned. A panel reading the field
+    // conditionally then rendered a different card for a slow response than for
+    // a fast one, and resources.test.js failed intermittently on
+    // "/api/harness/health and /api/live/harness must expose the same top-level
+    // fields".
+    //
+    // Every key is now present on both paths. Which providers are degraded is
+    // unknowable when the probe failed, so it is an empty list rather than a
+    // missing field: absent means "not measured", absent-because-broken is the
+    // same lie in a different shape.
     return {
       ok: false,
       url: `${FREE_HARNESS_URL}/health`,
       status: 'offline',
       provider: 'none',
       model: 'none',
+      degradedProviders: [],
       error: error.message,
       checkedAt,
     };
@@ -1874,9 +2128,83 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ...hiveStatus(), ts: Date.now() });
 });
 
+const PUBLIC_SYNC_STATUS_PATH = process.env.OPENALICE_PUBLIC_SYNC_STATUS
+  || path.join(__dirname, '..', '..', 'state', 'public_sync_status.json');
+const PUBLIC_SYNC_STALE_SECONDS = 26 * 60 * 60;
+
+function readPublicSyncStatus(now = Date.now(), statusPath = PUBLIC_SYNC_STATUS_PATH) {
+  let raw;
+  try {
+    raw = fs.readFileSync(statusPath, 'utf8');
+  } catch (err) {
+    const missing = err && err.code === 'ENOENT';
+    return {
+      present: false,
+      status: missing ? 'no_status_file' : 'unreadable',
+      error: missing ? null : String((err && err.message) || err).slice(0, 160),
+      last_run_at: null,
+      age_seconds: null,
+      stale: true,
+    };
+  }
+  let record;
+  try {
+    record = JSON.parse(raw);
+  } catch (err) {
+    return {
+      present: false,
+      status: 'unreadable',
+      error: String((err && err.message) || err).slice(0, 160),
+      last_run_at: null,
+      age_seconds: null,
+      stale: true,
+    };
+  }
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    return { present: false, status: 'unreadable', error: 'status file is not an object',
+             last_run_at: null, age_seconds: null, stale: true };
+  }
+  const ranAt = Date.parse(record.last_run_at || '');
+  const ageSeconds = Number.isFinite(ranAt) ? Math.max(0, Math.floor((now - ranAt) / 1000)) : null;
+  return {
+    ...record,
+    present: true,
+    // A missing or unparseable timestamp is itself stale: we cannot claim the
+    // job ran. Silence must never read as health.
+    age_seconds: ageSeconds,
+    stale: ageSeconds === null || ageSeconds > PUBLIC_SYNC_STALE_SECONDS,
+  };
+}
+
+app.get('/api/public-sync/status', (_req, res) => {
+  res.json(readPublicSyncStatus());
+});
+
+liveDigestRoute.register(app);
+openaliceStatus.register(app);
+frozenFeedsRoute.register(app);
+
+// No readJson injection: that parameter exists so a test can substitute the
+// file reader. Passing this module's own readJson calls it as
+// readJson(buildEvidencePayload) - one argument, where it expects (file,
+// fallback) - so it throws internally and returns undefined, and the route
+// answers 200 with an empty body. buildEvidencePayload uses the reader it
+// already has; nothing needs to be injected.
+registerEvidenceRoutes(app);
+
 app.get('/api/alphainsider/status', (_req, res) => proxyFreeHarnessJson('/alphainsider/status', res));
 app.get('/api/alphainsider/strategies', (_req, res) => proxyFreeHarnessJson('/alphainsider/strategies', res));
 app.get('/api/alphainsider/positions', (req, res) => proxyFreeHarnessJson('/alphainsider/positions', res, { strategy_id: req.query.strategy_id }));
+// /api/alphainsider/poller and /api/alphainsider/trader are registered from
+// their own module rather than inline here. AlphaInsiderPanel.tsx fetches the
+// poller on mount, so when a rewrite of this file dropped the inline route the
+// panel kept rendering while its equity/cash figures silently fell back to
+// dashes. A separate file is what lets the route survive the next rewrite.
+alphaInsiderStats.register(app);
+// The strategy-search honest verdict: qualified_strict over combinations, the
+// three edge states, fee/venue, and report staleness. Own-file route module,
+// so a rewrite of this file cannot silently drop it.
+strategySearchRoute.register(app);
 
 app.get('/api/summary', (_req, res) => {
   res.json(buildSnapshot('summary'));
@@ -1991,15 +2319,34 @@ function getTaskBoard(perColumn = 25) {
       count += 1;
       if (rows.length >= perColumn) continue;
       claimed.add(task.task_id);
-      rows.push(Object.fromEntries(BOARD_TASK_FIELDS.filter((field) => task[field] !== undefined).map((field) => [field, task[field]])));
+      const row = Object.fromEntries(BOARD_TASK_FIELDS.filter((field) => task[field] !== undefined).map((field) => [field, task[field]]));
+      // Only rows in the completion column carry a truth label. Labelling
+      // QUEUED or IN_PROGRESS work would imply a completion claim that does
+      // not exist yet.
+      if (column.id === 'done') {
+        const verdict = classifyTaskTruth(task);
+        row.completion_truth = verdict.truth;
+        row.evidence_score = verdict.score === undefined ? null : verdict.score;
+        row.evidence_reason = verdict.reason || null;
+      }
+      rows.push(row);
     }
     groups[column.id] = rows;
     counts[column.id] = count;
   }
 
+  // counts.done is the raw COMPLETE count and stays that way: it is what the
+  // pipeline asserts. completion states how many of those are actually
+  // supported by evidence, so a reader is never left to assume they agree.
+  const claimedComplete = all.filter((task) => {
+    const status = String(task.status || '').toUpperCase();
+    return status === 'COMPLETE' || status === 'DONE';
+  });
+
   return {
     groups,
     counts,
+    completion: summarizeTasks(claimedComplete),
     total: all.length,
     perColumn,
     // Tasks in a status the board does not draw, so the UI can say so.
@@ -2042,7 +2389,20 @@ app.get('/api/jarvis/tasks', (_req, res) => {
 });
 
 app.get('/api/jarvis/audit', (req, res) => {
-  res.json({ events: getJarvisAudit(req.query.limit) });
+  // reachable_window discloses that this is a bounded read, matching
+  // /api/events. Without it the response is byte-identical whether there are
+  // genuinely zero jarvis_command events or the 512KB tail simply did not reach
+  // any -- and a reader has no way to tell "no commands were issued" from "the
+  // query is broken". An empty list that cannot be distinguished from an
+  // unreachable window is a HUD asserting something it did not measure.
+  //
+  // The zero is true today: a full scan of events.log finds no jarvis_command
+  // records at all. That is exactly why the disclosure matters -- the number
+  // looks right, so nothing prompts anyone to check whether it is.
+  res.json({
+    events: getJarvisAudit(req.query.limit),
+    reachable_window: true,
+  });
 });
 
 app.post('/api/jarvis/command', (req, res) => {
@@ -2102,14 +2462,46 @@ function getVerifyState() {
   if (!st) return { present: false };
   const tally = st.verdict_tally || {};
   const scanned = (tally.OK || 0) + (tally.DODGE || 0) + (tally.SHORT || 0) + (tally.FAIL || 0) + (tally.EMPTY || 0);
-  const realWorkRatePct = scanned > 0 ? Math.round(((tally.OK || 0) / scanned) * 1000) / 10 : null;
+
+  // This is an OUTPUT QUALITY rate, not a real-work rate, and the distinction is
+  // the whole point of this function.
+  //
+  // The verdicts come from hive/lib/verify.py, which classifies a result as
+  // EMPTY / FAIL / SHORT / DODGE / OK. "OK" there means only: the model produced
+  // something that is not junk and did not leak a failure marker. It says nothing
+  // about whether the work was done, whether an artifact exists, whether a commit
+  // landed, or whether anyone checked.
+  //
+  // Dividing OK by the verdict total and calling the result "real work" reported
+  // 100% on the live hive while verify_state.json contained no commit, artifact,
+  // verifier, sha, proof or deployment field at all -- verified by reading the
+  // file. A number that reads 100% while its own evidence contains nothing is
+  // worse than no number, because it invites scaling decisions.
+  //
+  // So the honest ratio is named for what it measures, and the numerator and
+  // denominator are both published. A real-work rate needs an independent
+  // verifier and a durable artifact; neither exists in this pipeline yet, so
+  // verifiedWork is reported as null rather than inferred from a filter.
+  const outputQualityRatePct = scanned > 0 ? Math.round(((tally.OK || 0) / scanned) * 1000) / 10 : null;
+
   return {
     present: true,
     at: st.at,
     verdict_tally: tally,
     requeued: st.requeued || [],
     quarantined: st.quarantined || [],
-    realWorkRatePct,
+    // Numerator and denominator, always together. A rate with no stated
+    // population cannot be reasoned about.
+    verdict_tally_total: scanned,
+    // NOT real-work. Output quality: the share of results that were not junk.
+    outputQualityRatePct,
+    // No independent verifier and no durable-artifact check exist in this
+    // pipeline, so independently verified work is unmeasured, not zero and not
+    // high. null means "not measured"; 0 would be a claim.
+    verifiedWork: null,
+    verifiedWorkDenominator: null,
+    verificationCoverage: null,
+    verificationBasis: 'none: no independent verifier and no artifact ledger in this pipeline',
   };
 }
 
@@ -2141,174 +2533,26 @@ app.get('/api/terminals', (_req, res) => {
   res.json(terminalSnapshot());
 });
 
-// ---------- spawned terminals ----------
-//
-// The GET above reports the shells a HUMAN is sitting in, collected by
-// collect-terminals.py. The routes below are the other half: terminals the HUD
-// started itself. They are kept in a separate hive file
-// (spawned_terminals.json) because the collector rewrites terminals.json in
-// full every 60 seconds and would erase them; see manager.js.
-//
-// Every route here runs arbitrary commands, so all of them use the hardened
-// local gate: isLocalRequest rejects anything proxied through Tailscale
-// Serve, which arrives on loopback and would otherwise pass a socket check.
-const terminalGuard = (req, res) => {
-  if (!isLocalRequest(req)) {
-    return sendError(res, 403, 'local_only', 'terminal control is available only from this machine');
-  }
-  return null;
-};
-
-app.get('/api/terminals/spawned', (_req, res) => {
-  res.set('Cache-Control', 'no-store');
-  const collected = readJsonCached(path.join(HIVE, 'terminals.json'), null);
-  res.json(terminalManager.collectedTerminals(collected));
-});
-
-app.post('/api/terminals/spawn', async (req, res) => {
-  if (terminalGuard(req, res)) return;
-  try {
-    const terminal = await terminalManager.spawnOne(req.body || {});
-    liveHub?.publish(['terminalsSpawned']);
-    res.json({ ok: true, terminal });
-  } catch (error) {
-    sendError(res, error.statusCode || 500, 'TERMINAL_SPAWN_REJECTED', error.message);
-  }
-});
-
-app.post('/api/terminals/bulk', async (req, res) => {
-  if (terminalGuard(req, res)) return;
-  const body = req.body || {};
-  try {
-    // Orchestrate mode reaches `claude --permission-mode bypassPermissions` on a
-    // fresh worktree, so it is a separate branch that insists on confirmation
-    // rather than a shape the generic array path could be tricked into.
-    if (body.mode === 'orchestrate') {
-      const outcome = await terminalManager.spawnOrchestrate(body);
-      liveHub?.publish(['terminalsSpawned']);
-      return res.json({ ok: true, mode: 'orchestrate', ...outcome });
-    }
-    const results = await terminalManager.spawnBulk(body.terminals || [], { limit: body.limit });
-    liveHub?.publish(['terminalsSpawned']);
-    // Per-item outcomes, so one rejected command does not read as a failed batch.
-    res.json({
-      ok: results.every((r) => r.ok),
-      requested: results.length,
-      spawned: results.filter((r) => r.ok).length,
-      results,
-    });
-  } catch (error) {
-    sendError(res, error.statusCode || 500, 'TERMINAL_BULK_REJECTED', error.message);
-  }
-});
-
-// Literal sub-paths are registered BEFORE the ':id' routes below. Express
-// matches in registration order, so a ':id' route placed first would swallow
-// /spawn, /bulk, /reap and /health -- answering a spawn attempt as "unknown
-// terminal 404" and a POST as 405. Keep every literal name above this line.
-app.post('/api/terminals/reap', (req, res) => {
-  if (terminalGuard(req, res)) return;
-  const body = req.body || {};
-  res.json({ ok: true, ...terminalManager.reap({
-    maxAgeHours: body.maxAgeHours,
-    statuses: Array.isArray(body.statuses) ? body.statuses : undefined,
-  }) });
-});
-
-app.get('/api/terminals/health', (_req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json(terminalManager.health());
-});
-
-// Peers this HUD may dispatch work to. Read-only and ungated on purpose: it
-// reveals host names and reachability, which the merged terminal view already
-// exposes, and it performs no action. Acting on a peer requires a 'remote'
-// spawn, which is gated and allowlisted like any other.
-app.get('/api/terminals/peers', async (_req, res) => {
-  res.set('Cache-Control', 'no-store');
-  res.json({ peers: await terminalManager.peers() });
-});
-
-app.get('/api/terminals/:id', (req, res) => {
-  if (terminalGuard(req, res)) return;
-  const terminal = terminalManager.get(req.params.id);
-  if (!terminal) return sendError(res, 404, 'unknown_terminal', `No terminal ${req.params.id}`);
-  const logs = terminalManager.logs(req.params.id, { lines: 50 });
-  res.set('Cache-Control', 'no-store');
-  res.json({ terminal, logs: logs.lines, log_bytes: logs.bytes });
-});
-
-app.get('/api/terminals/:id/logs', (req, res) => {
-  if (terminalGuard(req, res)) return;
-  try {
-    res.set('Cache-Control', 'no-store');
-    res.json(terminalManager.logs(req.params.id, { lines: req.query.lines }));
-  } catch (error) {
-    sendError(res, error.statusCode || 500, 'TERMINAL_LOGS_FAILED', error.message);
-  }
-});
-
-// Follow a terminal's output. SSE rather than a websocket because this is a
-// one-way stream and the socket path already reserves /api/live/socket.
-app.get('/api/terminals/:id/follow', (req, res) => {
-  if (terminalGuard(req, res)) return;
-  let terminal;
-  try { terminal = terminalManager.get(req.params.id); } catch { terminal = null; }
-  if (!terminal) return sendError(res, 404, 'unknown_terminal', `No terminal ${req.params.id}`);
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-  res.write(`event: hello\ndata: ${JSON.stringify({ id: terminal.id, status: terminal.status })}\n\n`);
-
-  let cursor = terminalManager.logsSince(req.params.id, 0).at || 0;
-  const drop = () => { clearInterval(timer); try { res.end(); } catch { /* closed */ } };
-  req.on('close', drop);
-  res.on('error', drop);
-  const timer = setInterval(() => {
-    let next;
-    try { next = terminalManager.logsSince(req.params.id, cursor); } catch { drop(); return; }
-    if (next.chunk) {
-      cursor = next.at;
-      res.write(`event: output\ndata: ${JSON.stringify({ chunk: next.chunk })}\n\n`);
-    }
-    const live = terminalManager.get(req.params.id);
-    if (!live || live.status !== 'running') {
-      res.write(`event: status\ndata: ${JSON.stringify({ status: live ? live.status : 'gone' })}\n\n`);
-      drop();
-    }
-  }, 700);
-});
-
-app.post('/api/terminals/:id/kill', async (req, res) => {
-  if (terminalGuard(req, res)) return;
-  try {
-    const terminal = await terminalManager.kill(req.params.id, { signal: (req.body || {}).signal });
-    liveHub?.publish(['terminalsSpawned']);
-    res.json({ ok: true, terminal });
-  } catch (error) {
-    sendError(res, error.statusCode || 500, 'TERMINAL_KILL_FAILED', error.message);
-  }
-});
-
-app.post('/api/terminals/:id/signal', async (req, res) => {
-  if (terminalGuard(req, res)) return;
-  try {
-    const terminal = await terminalManager.signal(req.params.id, (req.body || {}).signal);
-    res.json({ ok: true, terminal });
-  } catch (error) {
-    sendError(res, error.statusCode || 500, 'TERMINAL_SIGNAL_FAILED', error.message);
-  }
-});
-
 function getProcesses() {
-  return readJson(path.join(HIVE, 'processes.json'), { processes: [] });
+  const raw = readJson(path.join(HIVE, 'processes.json'), { processes: [] });
+  // processView() is the only thing that decides whether a process may be called
+  // RUNNING, and the only thing that redacts a command line. Doing it here keeps
+  // the rule in one place: the payload now names where it came from, how old the
+  // observation is, and whether that age supports the status it carries.
+  return processView({
+    ...raw,
+    source: 'hive/processes.json',
+    live: !!(raw && raw.collected_at),
+  });
 }
 
 app.get('/api/processes', (_req, res) => {
   res.json(buildSnapshot('processes'));
 });
+// Wedged one-shot invocations (gate runs, test suites) that never finished.
+// collect-wedged-processes.py writes the feed on a timer; this serves it
+// read-only, the same defensive posture as the processes reader above.
+registerWedgedRoutes(app, HIVE);
 
 function getProjects() {
   return readJson(path.join(HIVE, 'projects.json'), { projects: [] });
@@ -2669,22 +2913,28 @@ function build(name, produce, options = {}) {
 const RESOURCES = {
   summary: build('summary', () => {
     const agents = mergedAgents();
-    return { ...hiveStatus(), fleet: getFleet(), godId: getRegistry().godId, agents, floors: rollupFloors(agents) };
+    const roster = getFleet();
+    const rosterAge = rosterFreshness(roster);
+    // Each agent inherits breaker and the counters from this roster, so each row
+    // carries the age of the observation it inherited them from. This is the same
+    // measurement as fleet.stale, not a second contract: one fact, surfaced where
+    // it is used. It deliberately does not touch status or display, which are
+    // derived from live sessions and heartbeats and stay present-tense.
+    for (const a of agents) {
+      if (!a) continue;
+      a.rosterStale = rosterAge.stale;
+      a.rosterAgeSeconds = rosterAge.age_seconds;
+      a.rosterObservedAt = rosterAge.observed_at;
+    }
+    return { ...hiveStatus(), fleet: { ...roster, ...rosterAge }, godId: getRegistry().godId, ...registryFreshness(getRegistry().godId), agents, floors: rollupFloors(agents) };
   }),
   agents: build('agents', () => ({ agents: mergedAgents() })),
   queue: build('queue', () => getQueueSummary()),
-  projects: build('projects', () => getProjects()),
+  projects: build('projects', () => getProjectStatus()),
   taskCounts: build('taskCounts', () => ({ counts: getFloorTaskCounts() })),
   taskBoard: build('taskBoard', () => getTaskBoard(25)),
   sessions: build('sessions', () => ({ sessions: sessionRows() })),
   processes: build('processes', () => getProcesses()),
-  // Terminals this host started. A cheap signature keeps the socket from
-  // pushing an identical payload on every hive write, and the 5s floor keeps a
-  // fast-moving terminal list from turning into a push storm.
-  terminalsSpawned: build('terminalsSpawned', () => ({
-    spawned: terminalManager.list(),
-    health: terminalManager.health(),
-  }), { signature: () => `${terminalManager.list().length}:${terminalManager.activeCount()}:${terminalManager.health().log_bytes}`, minIntervalMs: 5000 }),
   verify: build('verify', () => getVerifyState()),
   officeManager: build('officeManager', () => getOfficeManagerStatus()),
   jevStats: build('jevStats', () => {
@@ -3367,8 +3617,42 @@ function injectHudLauncher(html) {
 
 // ---------- static web app ----------
 
+// Canonical floor route. Restored verbatim by floor_route_guard.py.
+//
+// The operator rule is that floors are never deleted. This route was removed
+// three times in one day while hive/lib/floor_health.py kept computing every
+// floor correctly the whole time: the data was never the problem, the route was.
+//
+// The derivation deliberately does NOT live here. It lives in the tracked
+// module server/floor_health.js, which exists for exactly this reason:
+// server/index.js is large and concurrently edited, and an inline version of
+// this route was silently lost three times. Restoring this file therefore
+// restores a thin call to durable, tested code rather than a second copy of
+// the logic that can drift from it.
+//
+// HIVE is passed explicitly: the module's default resolves to
+// ~/openalice-fleet/hive, which is not this deployment's tree. Without the
+// override every floor correctly reports UNKNOWN ("script is missing") - honest,
+// but useless. That binding bug was already fixed once in 91e12e1; the override
+// is what keeps it fixed.
+const { getFloorHealth } = require('./floor_health');
+
+app.get('/api/floors', (_req, res) => {
+  const result = getFloorHealth(HIVE);
+  if (!result || !Array.isArray(result.floors) || result.floors.length === 0) {
+    // A short or empty floor list is indistinguishable from a deleted floor,
+    // so it is an error rather than an empty success.
+    return sendError(res, 503, 'FLOOR_HEALTH_EMPTY',
+      'floor_health returned no floors; floors are never removed');
+  }
+  res.json(Object.assign({}, result, {
+    policy: 'floors are permanent; growth is additive only; never delete',
+  }));
+});
+
 const dist = path.join(__dirname, '..', 'web', 'dist');
 // Unknown /api paths must not fall through to the SPA and return HTML 200.
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown API route' }));
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown API route' }));
 if (fs.existsSync(dist)) {
   // Serve the SPA shell ourselves so the launcher can be injected. express.static
@@ -3394,6 +3678,15 @@ if (fs.existsSync(dist)) {
 } else {
   app.get('*', (_req, res) => res.status(503).send('web/dist is missing — run `npm run build`'));
 }
+
+// Express 4 does not catch async handler rejections; without these a single throw
+// kills the process and launchd restarts it.
+process.on('unhandledRejection', (reason) => {
+  console.error('[office-hud] unhandled rejection:', reason && reason.stack ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[office-hud] uncaught exception:', err && err.stack ? err.stack : err);
+});
 
 // ---------- process bootstrap ----------
 // Everything above is pure wiring: requiring this module yields the express app
@@ -3499,27 +3792,6 @@ function bootstrap() {
 
   startWatch();
 
-  // Spawned terminals outlive a HUD restart (launchd KeepAlive restarts this
-  // process within a second of any exit), so the registry is loaded and
-  // reconciled against live process state before anything is served. Without
-  // this a restart would report every still-running terminal as missing, and a
-  // naive fix -- trusting the file -- would report dead ones as running.
-  terminalManager.load().then((count) => {
-    console.log(`[office-hud] spawned terminals: ${count} reconciled`);
-  }).catch((error) => {
-    console.warn('[office-hud] spawned terminal load failed:', error.message);
-  });
-
-  // Reap finished terminals and their logs. Hourly is deliberate: the cutoff is
-  // measured in hours, so a minute-level sweep would only churn the registry.
-  // unref'd so it never holds the process open on the way down.
-  const reaper = setInterval(() => {
-    try { terminalManager.reap(); } catch (error) {
-      console.warn('[office-hud] terminal reap failed:', error.message);
-    }
-  }, 60 * 60 * 1000);
-  reaper.unref?.();
-
   // The engines are constructed at module scope; bootstrap only starts them.
   alertEngine.start();
   autonomy.evaluate();
@@ -3576,9 +3848,15 @@ module.exports = {
   internals: {
     injectHudLauncher, hudLauncherSnippet, tournamentPayload,
     readJson, readJsonCached, readText, readTail, readJsonl, clampLimit,
+    readPublicSyncStatus, PUBLIC_SYNC_STALE_SECONDS,
+    // Exported so a test can compare the success and failure shapes directly.
+    // Both branches previously returned different keys, which only surfaced
+    // under load when a slow probe tripped the 2s abort.
+    getHarnessHealth,
     getFloorTaskCounts, getTaskBoard, getGraphifyCommunities, withHiveFileLock,
     getAgentDetail, getLedger, resolveResource, PARAMETERIZED,
     mergedAgents, sessionRows, rollupFloors, getWorkEvents, getQueueSummary,
+    classifyCompletionEvidence,
     isLocalRequest, isIdentifier, requestError, sendError, buildSnapshot,
     portalTarget, rewriteUpstreamLocation, portalSlugForPort, PORTAL_SERVICES,
     parseLaunchctlList, getFleetLaunchdState,
@@ -3586,3 +3864,4 @@ module.exports = {
     HIVE, FLEET_ROOT, SERVICE_PORTS, JSON_CACHE_MS, RESOURCES,
   },
 };
+
