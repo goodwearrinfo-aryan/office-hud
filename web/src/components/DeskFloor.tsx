@@ -65,13 +65,27 @@ export default function DeskFloor() {
     return () => { alive = false; };
   }, []);
 
-  // The follow pane. Read-only by construction: it opens the SSE stream, never
-  // POSTs a key, and calls itself a reader rather than a terminal.
-  const { data: spawned } = useLive<{ terminals?: { id: string; status?: string }[] }>('/api/terminals/spawned');
-  const terminals = spawned?.terminals ?? [];
-  const [attached, setAttached] = useState<string | null>(null);
-  const [model, setModel] = useState<FollowModel>(EMPTY_MODEL);
-  const stream = useRef<EventSource | null>(null);
+// The follow pane. It reads the terminal's output over SSE. Typing is a
+    // separate, explicit act: the reader never POSTs on its own, and the input
+    // form only appears for a running tmux terminal, so watching stays passive.
+    const { data: spawned } = useLive<{ terminals?: { id: string; status?: string; type?: string }[] }>('/api/terminals/spawned');
+    const terminals = spawned?.terminals ?? [];
+    const [attached, setAttached] = useState<string | null>(null);
+    const [model, setModel] = useState<FollowModel>(EMPTY_MODEL);
+    const [draft, setDraft] = useState('');
+    const [sending, setSending] = useState(false);
+    const [sendNote, setSendNote] = useState<string | null>(null);
+    const stream = useRef<EventSource | null>(null);
+
+    // A background terminal is a one-shot command with no stdin handle, so the
+    // server refuses input for it. Mirror that here rather than offering a box
+    // that would only ever return an error.
+    const attachedTerminal = terminals.find(t => t.id === attached);
+    const writable = Boolean(
+      attachedTerminal
+      && attachedTerminal.type === 'tmux'
+      && (attachedTerminal.status === 'running' || attachedTerminal.status === 'starting'),
+    );
 
   useEffect(() => {
     if (!attached) { setModel(EMPTY_MODEL); return undefined; }
@@ -184,8 +198,53 @@ export default function DeskFloor() {
                     <option value="">Choose a terminal to read…</option>
                     {terminals.map(t => <option key={t.id} value={t.id}>{t.id}{t.status ? ` — ${t.status}` : ''}</option>)}
                   </select>
-                  {attached && <span className="badge badge-neutral">read-only</span>}
-                </div>
+{attached && <span className="badge badge-neutral">{writable ? 'writable' : 'read-only'}</span>}
+                  </div>
+                  {attached && writable && (
+                    <form
+                      className="flex gap-2 items-center"
+                      onSubmit={async (event) => {
+                        event.preventDefault();
+                        const text = draft.trim();
+                        if (!text || !attached) return;
+                        setSending(true);
+                        setSendNote(null);
+                        try {
+                          const response = await fetch(`/api/terminals/${encodeURIComponent(attached)}/input`, {
+                            method: 'POST',
+                            headers: { 'content-type': 'application/json' },
+                            body: JSON.stringify({ text }),
+                          });
+                          const payload = await response.json().catch(() => ({}));
+                          if (!response.ok || payload?.ok === false) {
+                            setSendNote(payload?.error?.message || `input failed (HTTP ${response.status})`);
+                          } else {
+                            setDraft('');
+                          }
+                        } catch (error: any) {
+                          setSendNote(String(error?.message || error));
+                        } finally {
+                          setSending(false);
+                        }
+                      }}
+                    >
+                      <input
+                        className="input"
+                        value={draft}
+                        onChange={e => setDraft(e.target.value)}
+                        placeholder="Type a command and press Enter…"
+                        aria-label="Send input to the attached terminal"
+                        disabled={sending}
+                      />
+                      <button className="btn" type="submit" disabled={sending || !draft.trim()}>{sending ? 'Sending…' : 'Send'}</button>
+                    </form>
+                  )}
+                  {attached && !writable && (
+                    <p className="panel-note">
+                      This terminal is read-only: only a running tmux terminal accepts typed input. Spawn one to drive it.
+                    </p>
+                  )}
+                  {sendNote && <p className="panel-note text-alert">{sendNote}</p>}
                 {model.dropped > 0 && <p className="panel-note">{model.dropped} earlier lines dropped to keep the buffer bounded.</p>}
                 {model.note && <p className="panel-note text-alert">{model.note}</p>}
                 {empty && <p className="panel-note">{empty}</p>}
