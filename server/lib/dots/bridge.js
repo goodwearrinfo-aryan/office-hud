@@ -10,6 +10,8 @@
 const path = require('path');
 const os = require('os');
 
+const HIVE = process.env.OFFICE_HUD_HIVE || path.join(os.homedir(), 'openalice-fleet', 'hive');
+
 const { getWorld, runSystems, buildAgentsPayload } = require('.');
 const {
   agentLivenessSystem,
@@ -246,8 +248,6 @@ module.exports = {
   produceTerminalsDots,
   produceTerminalsSpawnedDots,
   
-  // Floors
-  produceFloorsDots,
-  
-  HIVE
+// Floors
+  produceFloorsDots
 };
