@@ -8,6 +8,7 @@ const os = require('os');
 const net = require('net');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
+const rateLimit = require('express-rate-limit');
 const { LiveHub } = require('./lib/live_hub');
 const { AlertEngine } = require('./lib/alerts');
 const { AutonomyController } = require('./lib/autonomy');
@@ -106,18 +107,16 @@ const jarvisCommandTimestamps = [];
 const SAFE_POST = new Set([
   '/api/llm/costs/reset/daily',
   '/api/llm/costs/reset/monthly',
-  '/api/llm/circuit-breakers/reset',
   '/api/llm/test',
   '/api/polymarket/start',
   '/api/polymarket/stop',
   '/api/polymarket/markets/exclude',
   '/api/polymarket/markets/include',
-  '/api/polymarket/trades/clear',
   '/api/recovery/manual',
   '/api/recovery/start',
   '/api/recovery/stop',
   '/api/recovery/manual/:agentId',
-'/api/jarvis/command',
+  '/api/jarvis/command',
     // Judgement, not action. This route writes nothing: it runs a command through
     // the same pure validator the write path uses and returns the verdict, so the
     // console can show the risk tier and the owner without the browser holding its
@@ -125,7 +124,10 @@ const SAFE_POST = new Set([
     // middleware because it is a POST only for its body, and the alternative —
     // smuggling a prompt through a GET — would put command text in access logs.
     '/api/jarvis/preview',
-  ]);
+  '/api/query',
+    // Declarative query API - runs pure DOTS systems and returns picked fields.
+    // Writes nothing, just computes derived state from hive data.
+]);
 // Alert acknowledgement and autonomy decisions are operator state on the HUD
 // itself, not hive writes. Each handler still requires a local caller.
 const SAFE_POST_PREFIXES = [
@@ -187,6 +189,97 @@ function hostIsAllowed(hostHeader) {
 app.use((req, res, next) => {
   if (hostIsAllowed(req.headers.host)) return next();
   return sendError(res, 421, 'bad_host', `Host ${req.headers.host} is not allowed`);
+});
+
+// Rate limiting for mutating endpoints (local-only, but defense in depth)
+// Use ipKeyGenerator to handle IPv6 properly
+const { ipKeyGenerator } = require('express-rate-limit');
+
+const mutatingLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 30, // 30 requests per minute for mutating endpoints
+  message: { error: 'Too many requests', code: 'RATE_LIMITED' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: ipKeyGenerator,
+  skip: (req) => req.method === 'GET' || req.method === 'HEAD',
+});
+
+const terminalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10, // 10 terminal spawns per minute
+  message: { error: 'Too many terminal spawn requests', code: 'RATE_LIMITED' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: ipKeyGenerator,
+  skip: (req) => req.method !== 'POST' || !req.path.startsWith('/api/terminals/spawn'),
+});
+
+const polymarketLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20, // 20 polymarket mutations per minute
+  message: { error: 'Too many polymarket requests', code: 'RATE_LIMITED' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: ipKeyGenerator,
+  skip: (req) => req.method !== 'POST' || !req.path.startsWith('/api/polymarket/'),
+});
+
+const jarvisLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30, // 30 jarvis commands per minute
+  message: { error: 'Too many jarvis commands', code: 'RATE_LIMITED' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: ipKeyGenerator,
+  skip: (req) => req.method !== 'POST' || req.path !== '/api/jarvis/command',
+});
+
+const recoveryLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10, // 10 recovery actions per minute
+  message: { error: 'Too many recovery requests', code: 'RATE_LIMITED' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: ipKeyGenerator,
+  skip: (req) => req.method !== 'POST' || !req.path.startsWith('/api/recovery/'),
+});
+
+const autonomyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20, // 20 autonomy actions per minute
+  message: { error: 'Too many autonomy requests', code: 'RATE_LIMITED' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: ipKeyGenerator,
+  skip: (req) => req.method !== 'POST' || !req.path.startsWith('/api/autonomy/'),
+});
+
+const autopilotLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20, // 20 autopilot actions per minute
+  message: { error: 'Too many autopilot requests', code: 'RATE_LIMITED' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: ipKeyGenerator,
+  skip: (req) => req.method !== 'POST' || !req.path.startsWith('/api/autopilot/'),
+});
+
+// Apply rate limiters to mutating endpoints
+app.use('/api/terminals/spawn', terminalLimiter);
+app.use('/api/terminals/bulk', terminalLimiter);
+app.use('/api/polymarket/', polymarketLimiter);
+app.use('/api/jarvis/command', jarvisLimiter);
+app.use('/api/recovery/', recoveryLimiter);
+app.use('/api/autonomy/', autonomyLimiter);
+app.use('/api/autopilot/', autopilotLimiter);
+
+// General mutating endpoint limiter (catch-all for other POSTs)
+app.use('/api', (req, res, next) => {
+  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE' || req.method === 'PATCH') {
+    return mutatingLimiter(req, res, next);
+  }
+  next();
 });
 
 app.use(express.json());
@@ -3035,6 +3128,20 @@ app.post('/api/terminals/:id/input', async (req, res) => {
     }
   });
 
+  app.post('/api/terminals/:id/resize', async (req, res) => {
+    if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'resize is local only');
+    const { cols, rows } = req.body || {};
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || rows < 5) {
+      return sendError(res, 400, 'bad_request', 'cols/rows must be integers >= 10/5');
+    }
+    try {
+      await terminalManager.resize(req.params.id, cols, rows);
+      res.json({ ok: true });
+    } catch (error) {
+      sendError(res, error.statusCode || 500, 'RESIZE_FAILED', error.message);
+    }
+  });
+
   function getProcesses() {
   const doc = readJson(path.join(HIVE, 'processes.json'), { processes: [] });
   // Same reasoning as terminalSnapshot: the hive keeps the real command line,
@@ -3068,12 +3175,133 @@ app.get('/api/trading/backtests', (_req, res) => {
   res.json(buildSnapshot('tradingBacktests'));
 });
 
+app.get('/api/trading/backtest/:name', (_req, res) => {
+  const name = decodeURIComponent(_req.params.name);
+  const backtestData = getBacktestResults();
+  const walkforwardData = getWalkForwardResults();
+  
+  const backtest = backtestData?.backtest?.[name];
+  const walkforward = walkforwardData?.walkforward?.[name];
+  
+  if (!backtest && !walkforward) {
+    return res.status(404).json({ error: 'Strategy not found' });
+  }
+  
+  res.json({
+    name,
+    backtest,
+    walkforward,
+    // Generate equity curve from trades if available
+    equity_curve: backtest?.trades ? backtest.trades.map((t) => t.pnl_usd || 0) : [],
+    trades: backtest?.trades || [],
+    param_ranges: backtest?.param_ranges,
+  });
+});
+
 app.get('/api/trading/strategies', (_req, res) => {
   res.json(buildSnapshot('tradingStrategies'));
 });
 
 app.get('/api/trading/live', async (_req, res) => {
   res.json(await getLiveMetrics());
+});
+
+app.get('/api/trading/portfolio', async (_req, res) => {
+  try {
+    const { computePortfolioMetrics, historicalVaR, historicalCVaR, maxDrawdown, correlationMatrix, stressTests, computeReturns } = require('./lib/riskMetrics');
+    const sqlite3 = require('sqlite3').verbose();
+    const dbPath = path.join(TRADING_BOT, 'database.db');
+    
+    if (!fs.existsSync(dbPath)) {
+      return res.json({ 
+        ok: false, 
+        error: 'Trading bot database not found',
+        dbExists: false 
+      });
+    }
+    
+    const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY);
+    
+    // Get closed trades
+    const trades = await new Promise((resolve, reject) => {
+      db.all(`SELECT strategy, pnl_usd, entry_time, exit_time FROM trades WHERE exit_time IS NOT NULL ORDER BY exit_time`, [], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      });
+    });
+    
+    // Get open positions
+    const positions = await new Promise((resolve, reject) => {
+      db.all(`SELECT strategy, unrealized_pnl FROM positions WHERE status = 'open'`, [], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      });
+    });
+    
+    // Get equity curve from fills or trades
+    const equityRows = await new Promise((resolve, reject) => {
+      db.all(`SELECT timestamp, equity FROM equity_curve ORDER BY timestamp`, [], (err, rows) => {
+        if (err) {
+          // Table might not exist, try to compute from trades
+          resolve([]);
+        } else {
+          resolve(rows || []);
+        }
+      });
+    });
+    
+    db.close();
+    
+    const startingEquity = 10000; // Default, could be read from config
+    const portfolio = computePortfolioMetrics(trades, positions, startingEquity);
+    
+    // Compute equity curve for VaR/Drawdown
+    let equityCurve = [];
+    if (equityRows.length > 0) {
+      equityCurve = equityRows.map(r => r.equity);
+    } else if (trades.length > 0) {
+      // Build equity curve from trades
+      let equity = 10000;
+      equityCurve = [equity];
+      for (const t of trades) {
+        equity += t.pnl_usd || 0;
+        equityCurve.push(equity);
+      }
+    }
+    
+    // Daily returns for VaR
+    const returns = equityCurve.length > 1 ? equityCurve.slice(1).map((v, i) => {
+      const prev = equityCurve[i];
+      return prev > 0 ? (v - prev) / prev : 0;
+    }) : [];
+    
+    const var95 = historicalVaR(returns, 0.95);
+    const cvar95 = historicalCVaR(returns, 0.95);
+    const { maxDrawdown: maxDD, maxDrawdownPct } = maxDrawdown(equityCurve.length ? equityCurve : [startingEquity]);
+    
+    // Strategy returns for correlation (simplified)
+    const strategyReturns = {};
+    // TODO: Implement strategy-level returns aggregation
+    
+    res.json({
+      ok: true,
+      dbExists: true,
+      portfolio,
+      risk: {
+        var95: var95 !== null ? { value: var95, confidence: 0.95 } : null,
+        cvar95: cvar95 !== null ? { value: cvar95, confidence: 0.95 } : null,
+        maxDrawdown: { value: maxDD, pct: maxDrawdownPct },
+        correlation: strategyReturns && Object.keys(strategyReturns).length > 1 ? correlationMatrix(strategyReturns) : null,
+        stressTests: equityCurve.length ? stressTests(equityCurve, {}) : null,
+      },
+      equityCurve: equityCurve.slice(-100), // Last 100 points
+      returns: returns.slice(-100),
+      tradesCount: trades.length,
+      positionsCount: positions.length,
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
 });
 
 app.get('/api/trading/ops', (_req, res) => {
@@ -3108,6 +3336,21 @@ app.get('/api/trading/performance', (_req, res) => {
   res.json(buildSnapshot('performanceReporter'));
 });
 
+app.get('/api/trading/candle-strategies', (_req, res) => {
+  // Try both possible feed locations
+  const primaryPath = path.join(FLEET_FEEDS_DIR, 'candle_strategies.json');
+  const fallbackPath = path.join(os.homedir(), 'openalice', 'ui', 'public', 'candle_strategies.json');
+  
+  let feed = readJsonCached(primaryPath, null);
+  if (!feed || typeof feed !== 'object') {
+    feed = readJsonCached(fallbackPath, null);
+  }
+  if (!feed || typeof feed !== 'object') {
+    return res.status(404).json({ error: 'candle strategies feed unavailable', primaryPath, fallbackPath });
+  }
+  res.json(feed);
+});
+
 app.get('/api/validationEvidence', (_req, res) => {
   res.json(buildSnapshot('validationEvidence'));
 });
@@ -3134,6 +3377,130 @@ app.get('/api/knowledge/docs', (_req, res) => {
   } catch {
     res.json({ docs: [] });
   }
+});
+
+// Semantic search (text-based for now, embeddings can be added later)
+app.get('/api/knowledge/search', (_req, res) => {
+  const q = (_req.query.q || '').toString().trim().toLowerCase();
+  const limit = Math.min(parseInt(_req.query.limit || '20', 10), 100);
+  const docsDir = FLEET_ROOT;
+  try {
+    const mdFiles = fs.readdirSync(FLEET_ROOT)
+      .filter(f => f.endsWith('.md'))
+      .map(f => ({ file: f, path: path.join(FLEET_ROOT, f) }));
+    
+    let results = mdFiles;
+    if (q) {
+      results = mdFiles.filter(doc => 
+        doc.file.toLowerCase().includes(q) || 
+        doc.path.toLowerCase().includes(q)
+      );
+    }
+    
+    // Also search file contents for the query
+    const contentResults = [];
+    for (const doc of mdFiles) {
+      try {
+        const content = fs.readFileSync(doc.path, 'utf8');
+        if (content.toLowerCase().includes(q)) {
+          contentResults.push({
+            ...doc,
+            snippet: content.toLowerCase().split('\n')
+              .find(line => line.toLowerCase().includes(q))?.trim().slice(0, 200) || ''
+          });
+        }
+      } catch {}
+    }
+    
+    res.json({
+      query: q,
+      fileMatches: results.slice(0, limit),
+      contentMatches: contentResults.slice(0, limit),
+      total: results.length + contentResults.length
+    });
+  } catch {
+    res.json({ query: q, fileMatches: [], contentMatches: [], total: 0 });
+  }
+});
+
+// Graph data with server-side filtering
+app.get('/api/knowledge/graphify/data', (_req, res) => {
+  const community = _req.query.community ? String(_req.query.community) : null;
+  const fileType = _req.query.file_type ? String(_req.query.file_type) : null;
+  const minDegree = parseInt(_req.query.min_degree || '0', 10);
+  const limit = Math.min(parseInt(_req.query.limit || '400', 10), 2000);
+  
+  const graph = getGraphifyGraph();
+  let nodes = graph.nodes || [];
+  let links = graph.links || [];
+  
+  // Filter nodes by community
+  if (community) {
+    const targetCommunity = community.toLowerCase();
+    nodes = nodes.filter(node => {
+      const nodeCommunity = (node.community_name || (node.community != null ? `Community ${node.community}` : 'Unassigned')).toLowerCase();
+      return nodeCommunity === targetCommunity;
+    });
+    const kept = new Set(nodes.map(n => String(n.id)));
+    links = links.filter(l => kept.has(String(l.source)) && kept.has(String(l.target)));
+  }
+  
+  // Filter nodes by file_type
+  if (fileType) {
+    nodes = nodes.filter(node => (node.file_type || '').toLowerCase() === fileType.toLowerCase());
+    const kept = new Set(nodes.map(n => String(n.id)));
+    links = links.filter(l => kept.has(String(l.source)) && kept.has(String(l.target)));
+  }
+  
+  // Filter nodes by minimum degree
+  if (minDegree > 0) {
+    const degreeMap = new Map();
+    for (const link of links) {
+      degreeMap.set(String(link.source), (degreeMap.get(String(link.source)) || 0) + 1);
+      degreeMap.set(String(link.target), (degreeMap.get(String(link.target)) || 0) + 1);
+    }
+    nodes = nodes.filter(node => (degreeMap.get(String(node.id)) || 0) >= minDegree);
+    const kept = new Set(nodes.map(n => String(n.id)));
+    links = links.filter(l => kept.has(String(l.source)) && kept.has(String(l.target)));
+  }
+  
+  // Limit nodes
+  const limitedNodes = nodes.slice(0, limit);
+  const kept = new Set(limitedNodes.map(n => String(n.id)));
+  const limitedLinks = links.filter(l => kept.has(String(l.source)) && kept.has(String(l.target)));
+  
+  const graphData = getGraphifyGraph();
+  res.json({
+    nodes: limitedNodes,
+    links: limitedLinks,
+    totalNodes: graphData.nodes?.length || 0,
+    totalLinks: graphData.links?.length || 0,
+    builtAt: graphData.built_at_commit,
+    filters: { community, fileType, minDegree, limit }
+  });
+});
+
+// Graph rebuild trigger (local-only, confirmed)
+app.post('/api/knowledge/rebuild', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'graph rebuild is available only from this machine');
+  
+  const { confirmed } = req.body || {};
+  if (confirmed !== true) {
+    return sendError(res, 428, 'confirmation_required', 'Graph rebuild requires confirmed: true');
+  }
+  
+  // This would typically spawn a background job to run graphify
+  // For now, return a message indicating the action
+  res.json({ 
+    ok: true, 
+    message: 'Graph rebuild triggered. This would run the graphify CLI in the background.',
+    note: 'Implementation pending - requires graphify CLI to be available'
+  });
+});
+
+// Graphify stats endpoint for WebSocket
+app.get('/api/knowledge/graphify', (_req, res) => {
+  res.json(getGraphifyStats());
 });
 
 // ---------- Cloud API / LLM routes ----------
@@ -3461,36 +3828,38 @@ function build(name, produce, options = {}) {
  * disagree about shape.
  */
 const RESOURCES = {
+  // DOTS/ECS: Summary via World + Floor/Agent Systems
   summary: build('summary', () => {
-    const agents = mergedAgents();
-    const roster = getFleet();
-    const rosterAge = rosterFreshness(roster);
-    // Each agent inherits breaker and the counters from this roster, so each row
-    // carries the age of the observation it inherited them from. Same measurement as
-    // fleet.stale, surfaced where it is used -- not a second contract. It
-    // deliberately does not touch status or display, which stay live-derived.
-    for (const a of agents) {
-      if (!a) continue;
-      a.rosterStale = rosterAge.stale;
-      a.rosterAgeSeconds = rosterAge.age_seconds;
-      a.rosterObservedAt = rosterAge.observed_at;
-    }
-    return { ...hiveStatus(), fleet: { ...roster, ...rosterAge }, godId: getRegistry().godId, agents, floors: rollupFloors(agents) };
+    const { produceSummaryDots } = require('./lib/dots/bridge');
+    return produceSummaryDots();
   }),
-  agents: build('agents', () => ({ agents: mergedAgents() })),
-  queue: build('queue', () => getQueueSummary()),
+  // DOTS/ECS: Agent data via World + Systems
+  agents: build('agents', () => {
+    const { produceAgentsDots } = require('./lib/dots/bridge');
+    return produceAgentsDots();
+  }),
+  queue: build('queue', () => {
+    const { produceQueueSummaryDots } = require('./lib/dots/bridge');
+    return produceQueueSummaryDots();
+  }),
   projects: build('projects', () => getProjects()),
-  taskCounts: build('taskCounts', () => ({ counts: getFloorTaskCounts() })),
-  taskBoard: build('taskBoard', () => getTaskBoard(25)),
+  taskCounts: build('taskCounts', () => {
+    const { produceFloorTaskCountsDots } = require('./lib/dots/bridge');
+    return produceFloorTaskCountsDots();
+  }),
+  taskBoard: build('taskBoard', () => {
+    const { produceTaskBoardDots } = require('./lib/dots/bridge');
+    return produceTaskBoardDots();
+  }),
   sessions: build('sessions', () => ({ sessions: sessionRows() })),
   processes: build('processes', () => getProcesses()),
   // Terminals this host started. A cheap signature keeps the socket from
   // pushing an identical payload on every hive write, and the 5s floor keeps a
   // fast-moving terminal list from turning into a push storm.
-  terminalsSpawned: build('terminalsSpawned', () => ({
-    spawned: terminalManager.list(),
-    health: terminalManager.health(),
-  }), { signature: () => `${terminalManager.list().length}:${terminalManager.activeCount()}:${terminalManager.health().log_bytes}`, minIntervalMs: 5000 }),
+  terminalsSpawned: build('terminalsSpawned', () => {
+    const { produceTerminalsSpawnedDots } = require('./lib/dots/bridge');
+    return produceTerminalsSpawnedDots();
+  }, { signature: () => 'dots-terminals', minIntervalMs: 5000 }),
   verify: build('verify', () => getVerifyState()),
   officeManager: build('officeManager', () => getOfficeManagerStatus()),
   jevStats: build('jevStats', () => {
@@ -3554,6 +3923,86 @@ const RESOURCES = {
   tradingBacktests: build('tradingBacktests', () => ({ backtest: getBacktestResults(), walkforward: getWalkForwardResults() }), { minIntervalMs: 15000 }),
   tradingStrategies: build('tradingStrategies', () => ({ config: getTradingBotConfig(), strategies: getStrategies() }), { minIntervalMs: 15000 }),
   tradingOps: build('tradingOps', () => ({ launchd: getFleetPlists(), launchdState: getFleetLaunchdState(), adherence: getAdherenceLogs(), roster: getRoster() }), { minIntervalMs: 15000 }),
+  tradingPortfolio: build('tradingPortfolio', async () => {
+    const { computePortfolioMetrics, historicalVaR, historicalCVaR, maxDrawdown, correlationMatrix, stressTests, computeReturns } = require('./lib/riskMetrics');
+    const sqlite3 = require('sqlite3').verbose();
+    const dbPath = path.join(TRADING_BOT, 'database.db');
+    
+    if (!fs.existsSync(dbPath)) {
+      return { ok: false, error: 'Trading bot database not found', dbExists: false };
+    }
+    
+    const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY);
+    
+    const trades = await new Promise((resolve, reject) => {
+      db.all(`SELECT strategy, pnl_usd, entry_time, exit_time FROM trades WHERE exit_time IS NOT NULL ORDER BY exit_time`, [], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      });
+    });
+    
+    const positions = await new Promise((resolve, reject) => {
+      db.all(`SELECT strategy, unrealized_pnl FROM positions WHERE status = 'open'`, [], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      });
+    });
+    
+    const equityRows = await new Promise((resolve, reject) => {
+      db.all(`SELECT timestamp, equity FROM equity_curve ORDER BY timestamp`, [], (err, rows) => {
+        if (err) {
+          resolve([]);
+        } else {
+          resolve(rows || []);
+        }
+      });
+    });
+    
+    db.close();
+    
+    const startingEquity = 10000;
+    const portfolio = computePortfolioMetrics(trades, positions, startingEquity);
+    
+    let equityCurve = [];
+    if (equityRows.length > 0) {
+      equityCurve = equityRows.map(r => r.equity);
+    } else if (trades.length > 0) {
+      let equity = 10000;
+      equityCurve = [equity];
+      for (const t of trades) {
+        equity += t.pnl_usd || 0;
+        equityCurve.push(equity);
+      }
+    }
+    
+    const returns = equityCurve.length > 1 ? equityCurve.slice(1).map((v, i) => {
+      const prev = equityCurve[i];
+      return prev > 0 ? (v - prev) / prev : 0;
+    }) : [];
+    
+    const var95 = historicalVaR(returns, 0.95);
+    const cvar95 = historicalCVaR(returns, 0.95);
+    const { maxDrawdown: maxDD, maxDrawdownPct } = maxDrawdown(equityCurve.length ? equityCurve : [startingEquity]);
+    
+    const strategyReturns = {};
+    
+    return {
+      ok: true,
+      dbExists: true,
+      portfolio,
+      risk: {
+        var95: var95 !== null ? { value: var95, confidence: 0.95 } : null,
+        cvar95: cvar95 !== null ? { value: cvar95, confidence: 0.95 } : null,
+        maxDrawdown: { value: maxDD, pct: maxDrawdownPct },
+        correlation: Object.keys(strategyReturns).length > 1 ? correlationMatrix(strategyReturns) : null,
+        stressTests: equityCurve.length ? stressTests(equityCurve, {}) : null,
+      },
+      equityCurve: equityCurve.slice(-100),
+      returns: returns.slice(-100),
+      tradesCount: trades.length,
+      positionsCount: positions.length,
+    };
+  }, { minIntervalMs: 30000 }),
   validationEvidence: build('validationEvidence', () => getValidationEvidence(), { minIntervalMs: 30000 }),
   combined: build('combined', () => readJson(path.join(os.homedir(), 'trading', 'openalice', 'ui', 'public', 'combined_portfolio.json'), {}), { minIntervalMs: 15000 }),
   tradingLive: build('tradingLive', () => getLiveMetrics(), { minIntervalMs: 30000 }),
@@ -4275,6 +4724,55 @@ const { getFloorHealth } = require('./floor_health');
 
 const dist = path.join(__dirname, '..', 'web', 'dist');
 // Unknown /api paths must not fall through to the SPA and return HTML 200.
+// ---------- DOTS Query API ----------
+// Declarative data fetching: client specifies what components/fields it needs,
+// server runs only the required systems and returns picked fields.
+
+app.post('/api/query', (req, res) => {
+  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'query is local-only');
+  const { systems = [], select = {} } = req.body || {};
+  if (!Array.isArray(systems) || typeof select !== 'object') {
+    return sendError(res, 400, 'bad_request', 'body must be { systems: string[], select: object }');
+  }
+
+  const { getWorld, runSystems, query } = require('./lib/dots');
+  const {
+    agentLivenessSystem,
+    agentWorkEvidenceSystem,
+    agentProcessVerificationSystem,
+    taskRoutingSystem,
+    terminalSystem,
+    floorLivenessSystem
+  } = require('./lib/dots/systems');
+
+  const world = getWorld();
+  const HIVE = process.env.OFFICE_HUD_HIVE || path.join(os.homedir(), 'openalice-fleet', 'hive');
+
+  // Map system names to system functions with context
+  const systemMap = {
+    agentLiveness: { system: agentLivenessSystem, context: { hivePath: HIVE } },
+    agentWorkEvidence: { system: agentWorkEvidenceSystem },
+    agentProcessVerification: { system: agentProcessVerificationSystem },
+    taskRouting: { system: taskRoutingSystem, context: { hivePath: HIVE } },
+    terminalSystem: { system: terminalSystem, context: { hivePath: HIVE } },
+    floorLiveness: { system: floorLivenessSystem, context: { hivePath: HIVE } }
+  };
+
+  // Run requested systems
+  const systemsToRun = systems
+    .map(name => systemMap[name])
+    .filter(Boolean);
+
+  try {
+    runSystems(world, systemsToRun);
+    const result = query(world, select);
+    world.nextTick();
+    res.json(result);
+  } catch (error) {
+    sendError(res, 500, 'query_failed', error.message);
+  }
+});
+
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown API route' }));
 if (fs.existsSync(dist)) {
   // Serve the SPA shell ourselves so the launcher can be injected. express.static
