@@ -136,7 +136,7 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
   // Heartbeats outnumber work events ~30:1 in this hive. Requesting the tail
   // unfiltered filled this panel with nothing but heartbeats, so "Recent
   // activity" showed no activity. Heartbeats are still available through
-  // /api/events without the exclusion — this asks for what actually happened.
+  // /api/events without the exclusion -- this asks for what actually happened.
   const { data: eventData } = useLive<{ events: FleetEvent[] }>('/api/events?limit=200&exclude=heartbeat');
   const { data: jarvisData, refresh: refreshJarvisTasks } = useLive<JarvisTasksResponse>('/api/jarvis/tasks');
 
@@ -296,7 +296,7 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
               onClick={voice.listening ? voice.stop : voice.start}
               aria-pressed={voice.listening}
               aria-label={voice.listening ? 'Stop listening' : 'Dictate the command'}
-              title={voice.listening ? 'Stop listening' : 'Dictate the command (does not send — review before routing)'}
+              title={voice.listening ? 'Stop listening' : 'Dictate the command (does not send -- review before routing)'}
             >
               {voice.listening ? '■' : '●'}
             </button>
@@ -344,10 +344,10 @@ export default function JarvisConsole({ onSelectAgent, onNavigate }: JarvisProps
       </section>
 
       <section className="jarvis-metrics" aria-label="Fleet metrics">
-        <div className="jarvis-metric"><span>FLEET REACHABLE</span><strong>{reachable || '—'}</strong><small>{busy} working · {idle} standing by{stale ? ` · ${stale} stale` : ''}{breaker ? ` · ${breaker} breaker` : ''}</small></div>
-        <div className="jarvis-metric"><span>QUEUE PRESSURE</span><strong>{queue?.queued ?? '—'}</strong><small>{queue?.inProgress ?? 0} active claims</small></div>
-        <div className="jarvis-metric"><span>SESSION HEALTH</span><strong className={freshSessions ? 'text-green' : 'text-alert'}>{freshSessions || '—'}</strong><small>{offline} offline{stale ? ` · ${stale} stale claims` : ''}</small></div>
-        <div className="jarvis-metric"><span>PORT MESH</span><strong>{onlineServices}/{services.length || '—'}</strong><small>{harness?.ok ? 'harness online' : 'harness checking'}</small></div>
+        <div className="jarvis-metric"><span>FLEET REACHABLE</span><strong>{reachable || '--'}</strong><small>{busy} working · {idle} standing by{stale ? ` · ${stale} stale` : ''}{breaker ? ` · ${breaker} breaker` : ''}</small></div>
+        <div className="jarvis-metric"><span>QUEUE PRESSURE</span><strong>{queue?.queued ?? '--'}</strong><small>{queue?.inProgress ?? 0} active claims</small></div>
+        <div className="jarvis-metric"><span>SESSION HEALTH</span><strong className={freshSessions ? 'text-green' : 'text-alert'}>{freshSessions || '--'}</strong><small>{offline} offline{stale ? ` · ${stale} stale claims` : ''}</small></div>
+        <div className="jarvis-metric"><span>PORT MESH</span><strong>{onlineServices}/{services.length || '--'}</strong><small>{harness?.ok ? 'harness online' : 'harness checking'}</small></div>
         <div className="jarvis-metric"><span>RUN COST</span><strong>${totalCost.toFixed(2)}</strong><small>{queue?.completionsLastHour ?? 0} completions / hour</small></div>
       </section>
 

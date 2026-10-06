@@ -44,7 +44,7 @@ const NAMES: Record<string, string> = {
 };
 
 function fmt(value: number | null | undefined, digits = 2) {
-  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '--';
 }
 
 function tone(value: number | null | undefined) {

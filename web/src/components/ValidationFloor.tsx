@@ -45,10 +45,10 @@ type ValidationEvidence = {
 };
 
 const num = (v: number | null | undefined, digits = 2, suffix = '') =>
-  v === null || v === undefined || Number.isNaN(v) ? '—' : `${v.toFixed(digits)}${suffix}`;
+  v === null || v === undefined || Number.isNaN(v) ? '--' : `${v.toFixed(digits)}${suffix}`;
 
 const age = (s: number | null | undefined) => {
-  if (s === null || s === undefined) return '—';
+  if (s === null || s === undefined) return '--';
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
@@ -117,7 +117,7 @@ export default function ValidationFloor() {
           </span>
         </div>
         <div className="text-[10px] font-mono text-hud-dim">
-          scope {promo.scope} · decided {promo.decided_at ?? '—'} · prereg {data.preregistration.registered_at ?? '—'}
+          scope {promo.scope} · decided {promo.decided_at ?? '--'} · prereg {data.preregistration.registered_at ?? '--'}
           {data.preregistration.sha256 ? ` · sha ${data.preregistration.sha256.slice(0, 12)}` : ''}
         </div>
         {promo.reasons.length > 0 && (
@@ -185,7 +185,7 @@ export default function ValidationFloor() {
                 <span className="flex items-center gap-3 text-hud-dim">
                   <span>{reg.interval}</span>
                   <span>{reg.arms.join(', ')}</span>
-                  <span>registered {reg.registered_at ?? '—'}</span>
+                  <span>registered {reg.registered_at ?? '--'}</span>
                   {reg.sha256 && <span>sha {reg.sha256.slice(0, 12)}</span>}
                 </span>
               </div>
@@ -205,9 +205,9 @@ export default function ValidationFloor() {
             <div key={a.name} className="panel-surface px-3 py-2 flex items-center justify-between font-mono text-[10px]">
               <span className="text-hud-text">{a.name}</span>
               <span className="flex items-center gap-3">
-                <span className="text-hud-dim">updated {a.updated ?? '—'}</span>
+                <span className="text-hud-dim">updated {a.updated ?? '--'}</span>
                 <span className="text-hud-dim">age {age(a.age_seconds)} / stale after {age(a.stale_after_seconds)}</span>
-                <span className={a.status === 'stale' ? 'text-hud-amber' : 'text-hud-green'}>{a.status ?? '—'}</span>
+                <span className={a.status === 'stale' ? 'text-hud-amber' : 'text-hud-green'}>{a.status ?? '--'}</span>
               </span>
             </div>
           ))}

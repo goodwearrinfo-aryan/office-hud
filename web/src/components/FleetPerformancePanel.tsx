@@ -44,7 +44,7 @@ interface FleetPerformance {
 const numberFmt = new Intl.NumberFormat();
 
 function pct(value: number | null | undefined): string {
-  return value === null || value === undefined ? '—' : `${Math.round(value * 100)}%`;
+  return value === null || value === undefined ? '--' : `${Math.round(value * 100)}%`;
 }
 
 function ago(iso: string | null | undefined): string {
@@ -107,7 +107,7 @@ export default function FleetPerformancePanel() {
       </div>
 
       <p className="text-hud-dim text-xs mb-3">
-        Rolled up from the hive {ago(data.generatedAt)}. Read-only — nothing here changes fleet state.
+        Rolled up from the hive {ago(data.generatedAt)}. Read-only -- nothing here changes fleet state.
       </p>
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-2 mb-3">
@@ -154,7 +154,7 @@ export default function FleetPerformancePanel() {
       {tasks.quarantineRate !== null && tasks.quarantineRate > 0.2 && (
         <p className="panel p-3 mb-3 text-sm border-l-2 border-hud-red">
           <span className="text-hud-red">{pct(tasks.quarantineRate)}</span> of all tasks are
-          quarantined. That is counted separately from completion on purpose — it is not part of the{' '}
+          quarantined. That is counted separately from completion on purpose -- it is not part of the{' '}
           {pct(tasks.completionRate)} completion rate above.
         </p>
       )}

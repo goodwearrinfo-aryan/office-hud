@@ -38,7 +38,7 @@ export default function GodConsole({ onClose }: Props) {
         <div className="flex items-center justify-between p-4 border-b border-hud-edge">
           <div className="flex items-center gap-3">
             <span className="text-lg font-mono text-hud-amber">GOD</span>
-            <span className="font-semibold">Michael — God Console</span>
+            <span className="font-semibold">Michael -- God Console</span>
             <span className="badge badge-info">NVIDIA nemotron-3-ultra</span>
           </div>
           <div className="flex items-center gap-2">

@@ -5,11 +5,11 @@ type StrategiesResponse = {
 };
 
 function formatNumber(value: number | null | undefined, digits = 2) {
-  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '--';
 }
 
 function formatPercent(value: number | null | undefined, digits = 1) {
-  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : '—';
+  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : '--';
 }
 
 function valueTone(value: number | null | undefined) {

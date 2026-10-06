@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { EMPTY_MODEL, emptyStateText, parseFrame, reduce, type FollowModel } from '../terminalFollow';
 
 /**
- * F18 — The Desk: what this office has been told, what it is doing, what became of
+ * F18 -- The Desk: what this office has been told, what it is doing, what became of
  * it, and whether this machine is even allowed to say.
  *
  * WHY THIS FLOOR IS A FLOOR AND NOT A PANEL
@@ -21,7 +21,7 @@ import { EMPTY_MODEL, emptyStateText, parseFrame, reduce, type FollowModel } fro
  * The self-account is the part that lies. Measured off the live audit while
  * building this: `status: "ok"`, `count: 0`, `scanned: 375`, and a window that had
  * read 524288 bytes of a 15755023-byte log with `truncated: true`. So "no commands"
- * was true inside the window and said nothing about the file — and `ok: true` is
+ * was true inside the window and said nothing about the file -- and `ok: true` is
  * exactly the kind of green an operator stops reading. This floor therefore states
  * the window every time it reports an absence, and never reports one without a
  * completed read behind it. See web/src/deskTruth.ts.
@@ -129,7 +129,7 @@ export default function DeskFloor() {
         {dispatch.available ? (
           <p className="panel-note">
             This machine may queue work for the office. The gate accepts a loopback socket, so a
-            browser here and an SSH port-forward here are treated identically — which means anyone
+            browser here and an SSH port-forward here are treated identically -- which means anyone
             who can reach this port can dispatch.
           </p>
         ) : (
@@ -154,7 +154,7 @@ export default function DeskFloor() {
         </div>
         {tasks.length === 0 && pendingProposals.length === 0 ? (
           <p className="panel-note">
-            Nothing queued. That is an absence of work, not a sign the office is healthy — the
+            Nothing queued. That is an absence of work, not a sign the office is healthy -- the
             record of past commands is below, and it has its own caveat.
           </p>
         ) : (
@@ -190,13 +190,13 @@ export default function DeskFloor() {
         {inFlight.length === 0 ? (
           <div className="desk-follow">
             {terminals.length === 0 ? (
-              <p className="panel-note">No task reports a claim, and this HUD has started no terminals — so there is no output to attach to.</p>
+              <p className="panel-note">No task reports a claim, and this HUD has started no terminals -- so there is no output to attach to.</p>
             ) : (
               <>
                 <div className="flex gap-2 items-center">
                   <select className="input" value={attached ?? ''} onChange={e => setAttached(e.target.value || null)}>
                     <option value="">Choose a terminal to read…</option>
-                    {terminals.map(t => <option key={t.id} value={t.id}>{t.id}{t.status ? ` — ${t.status}` : ''}</option>)}
+                    {terminals.map(t => <option key={t.id} value={t.id}>{t.id}{t.status ? ` -- ${t.status}` : ''}</option>)}
                   </select>
 {attached && <span className="badge badge-neutral">{writable ? 'writable' : 'read-only'}</span>}
                   </div>

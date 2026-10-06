@@ -15,7 +15,7 @@ type PolymarketStatus = {
 };
 
 const formatBytes = (value?: number) => {
-  if (!value || !Number.isFinite(value)) return '—';
+  if (!value || !Number.isFinite(value)) return '--';
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
@@ -85,7 +85,7 @@ export default function LiveTrading() {
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div className="panel-surface p-3"><div className="text-xs text-hud-dim">Database</div><div className="font-mono mt-1">{live?.dbExists ? 'Present' : 'Not found'}</div></div>
-          <div className="panel-surface p-3"><div className="text-xs text-hud-dim">Tables</div><div className="font-mono mt-1">{live?.tableNames?.length ? live.tableNames.length : '—'}</div></div>
+          <div className="panel-surface p-3"><div className="text-xs text-hud-dim">Tables</div><div className="font-mono mt-1">{live?.tableNames?.length ? live.tableNames.length : '--'}</div></div>
           <div className="panel-surface p-3"><div className="text-xs text-hud-dim">Log</div><div className="font-mono mt-1">{live?.logExists ? formatBytes(live.logSize) : 'Not found'}</div></div>
           <div className="panel-surface p-3"><div className="text-xs text-hud-dim">Mode</div><div className="font-mono mt-1">Read only</div></div>
         </div>

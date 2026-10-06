@@ -40,10 +40,10 @@ export default function OfflineBanner() {
 
   const hard = navigatorOffline || (cached && status.state === 'offline');
   const label = navigatorOffline
-    ? 'NO NETWORK — showing cached data'
+    ? 'NO NETWORK -- showing cached data'
     : status.state === 'connecting'
       ? 'RECONNECTING to the HUD server…'
-      : 'SERVER UNREACHABLE — showing cached data';
+      : 'SERVER UNREACHABLE -- showing cached data';
 
   return (
     <div className={`offline-banner ${hard ? 'offline-banner--hard' : ''}`} role="status">

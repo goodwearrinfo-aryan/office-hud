@@ -7,6 +7,7 @@ import FleetPerformancePanel from './components/FleetPerformancePanel';
 import GodPanel from './components/GodPanel';
 import FleetFloor from './components/FleetFloor';
 import DeskFloor from './components/DeskFloor';
+import ActivityBoard from './components/ActivityBoard';
 import FloorTable from './components/FloorTable';
 import FloorProbeStatus from './components/FloorProbeStatus';
 import OfficeScene from './components/OfficeScene';
@@ -18,30 +19,32 @@ import ProjectsBoard from './components/ProjectsBoard';
 import TradingLab from './components/TradingLab';
 import StrategyLab from './components/StrategyLab';
 import LiveTrading from './components/LiveTrading';
+import TradingMonitor from './components/TradingMonitor';
 import OpsFloor from './components/OpsFloor';
 import KnowledgeFloor from './components/KnowledgeFloor';
 import RiskMetrics from './components/RiskMetrics';
 import KnowledgeGraph from './components/KnowledgeGraph';
-import GodConsole from './components/GodConsole';
 import CommandPalette from './components/CommandPalette';
-import TimeMachine from './components/TimeMachine';
-import ValidationFloor from './components/ValidationFloor';
-import CombinedPortfolioPanel from './components/CombinedPortfolioPanel';
 import Overview from './components/Overview';
+import TimeMachine from './components/TimeMachine';
 import OfflineBanner from './components/OfflineBanner';
 import StreamStatus from './components/StreamStatus';
 import GlobalSearch from './components/GlobalSearch';
 import AlphaInsiderPanel from './components/AlphaInsiderPanel';
 import AutonomyPanel from './components/AutonomyPanel';
 import JarvisConsole from './components/JarvisConsole';
+import GodConsole from './components/GodConsole';
 import AlertRail from './components/AlertRail';
 import ExportButton from './components/ExportButton';
 import NativeTitleStrip, { type NativeConnectionTone } from './components/NativeTitleStrip';
 import { markNative, onShellCommand, parseDeepLink } from './native';
 import { useConnectionStatus } from './api';
 
-class ErrorBoundary extends React.Component<any, { hasError: boolean }> {
-      constructor(props: any) {
+class ErrorBoundary extends React.Component<
+     { children: React.ReactNode; fallback?: React.ReactNode },
+     { hasError: boolean }
+   > {
+      constructor(props: { children: React.ReactNode; fallback?: React.ReactNode }) {
        super(props);
        this.state = { hasError: false };
      }
@@ -55,7 +58,7 @@ class ErrorBoundary extends React.Component<any, { hasError: boolean }> {
 
      public render() {
        if (this.state.hasError) {
-         return <div className="panel p-4 text-hud-red">Something went wrong with this floor.</div>;
+         return this.props.fallback ?? <div className="panel p-4 text-hud-red">Something went wrong with this floor.</div>;
        }
 
        return this.props.children;
@@ -64,7 +67,8 @@ class ErrorBoundary extends React.Component<any, { hasError: boolean }> {
 
 type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16'
   | 'f17'
-  | 'f18';
+  | 'f18'
+  | 'f19';
 
 export default function App() {
   const [floor, setFloor] = useState<FloorId>('f3');
@@ -134,15 +138,13 @@ export default function App() {
       // Floor navigation
       //
       // F1-F10 on the number row, F11-F12 on the only keys still free. F13-F16
-      // get a two-key sequence rather than stealing a binding an operator
-      // already uses: a floor reachable only by clicking the nav is reachable,
-      // but a floor whose shortcut silently overrode an existing one would not
-      // be. `[` then the digit, so `[3` is F13 and `[4` is F14.
+      // map to F1-F4 function keys. `[` then 3-6 retained as fallback.
       let pendingBracket = false;
       const map: Record<string, FloorId> = {
         '1': 'f1', '2': 'f2', '3': 'f3', '4': 'f4', '5': 'f5',
         '6': 'f6', '7': 'f7', '8': 'f8', '9': 'f9', '0': 'f10',
         '-': 'f11', '=': 'f11', 'Backspace': 'f12',
+        'F1': 'f13', 'F2': 'f14', 'F3': 'f15', 'F4': 'f16',
       };
       if (pendingBracket) {
         pendingBracket = false;
@@ -174,8 +176,11 @@ export default function App() {
   const totalCost = agents.reduce((n, a) => n + (a.usd ?? 0), 0);
   const activeCount = agents.filter((a) => a.display === 'busy' || a.display === 'idle').length;
 
+  // `key={floor}` remounts the boundary on navigation, which clears a caught
+  // error. Without it one failing floor left every other floor stuck on the
+  // fallback until a full page reload.
   const floorContent = (
-     <ErrorBoundary>
+     <ErrorBoundary key={floor}>
        <div className="flex-1 overflow-auto p-4">
       {floor === 'f1' && (
         <div className="flex items-start justify-between gap-4">
@@ -195,7 +200,12 @@ export default function App() {
       )}
       {floor === 'f4' && <ProjectsBoard onSelect={(id) => setDrawerId(id)} />}
       {floor === 'f5' && <ExecutiveHQ />}
-      {floor === 'f6' && <TradingLab />}
+      {floor === 'f6' && (
+        <div className="h-full">
+          <TradingLab />
+          <TradingMonitor />
+        </div>
+      )}
       {floor === 'f7' && <StrategyLab />}
       {floor === 'f8' && <LiveTrading />}
       {floor === 'f9' && (
@@ -220,11 +230,12 @@ export default function App() {
       {floor === 'f11' && <RiskMetrics />}
       {floor === 'f12' && <KnowledgeGraph />}
       {floor === 'f13' && <TimeMachine />}
-      {floor === 'f14' && <ValidationFloor />}
-      {floor === 'f15' && <CombinedPortfolioPanel />}
+      {floor === 'f14' && <FleetFloor />}
+      {floor === 'f15' && <AlphaInsiderPanel />}
       {floor === 'f16' && <Overview onNavigate={setFloor} />}
       {floor === 'f17' && <FleetFloor />}
       {floor === 'f18' && <DeskFloor />}
+      {floor === 'f19' && <ActivityBoard />}
       {floor === 'f16' && (
         <div className="mt-6 grid grid-cols-1 xl:grid-cols-2 gap-4">
           <AlphaInsiderPanel />
@@ -261,7 +272,7 @@ export default function App() {
         </div>
         <div className="flex-1 flex items-center justify-center gap-4 text-xs text-hud-dim">
           <span className="font-mono text-hud-dim max-w-xs truncate">
-            {summary?.label ?? 'no hive'} · {summary?.hive?.replace(/^\/Users\/[^/]+\//, '~/') ?? '—'}
+            {summary?.label ?? 'no hive'} · {summary?.hive?.replace(/^\/Users\/[^/]+\//, '~/') ?? '--'}
           </span>
           <span className="font-mono tabular-nums">{clock}</span>
           <span className="flex items-center gap-1.5">
@@ -301,34 +312,52 @@ export default function App() {
 
       {/* Agent Drawer */}
       {drawerId && (
-        <AgentDrawer
-          agentId={drawerId}
-          summary={agents.find((a) => a.id === drawerId)}
-          onClose={() => setDrawerId(null)}
-        />
+        <ErrorBoundary fallback={<div className="panel p-4 text-hud-red">The agent drawer failed to render. Close it and try another agent.</div>}>
+          <AgentDrawer
+            agentId={drawerId}
+            summary={agents.find((a) => a.id === drawerId)}
+            onClose={() => setDrawerId(null)}
+          />
+        </ErrorBoundary>
       )}
 
       {/* God Console */}
-      {godConsoleOpen && <GodConsole onClose={() => setGodConsoleOpen(false)} />}
+      {godConsoleOpen && (
+        <ErrorBoundary fallback={<div className="panel p-4 text-hud-red">The God Console failed to render. Press Esc to close.</div>}>
+          <GodConsole onClose={() => setGodConsoleOpen(false)} />
+        </ErrorBoundary>
+      )}
 
       {/* Jarvis console */}
       {jarvisOpen && (
-        <JarvisConsole
-          onSelectAgent={(id) => { setJarvisOpen(false); setDrawerId(id); }}
-          onNavigate={(f) => { setJarvisOpen(false); setFloor(f); }}
-        />
+        <ErrorBoundary fallback={<div className="panel p-4 text-hud-red">The Jarvis console failed to render. Press Esc to close.</div>}>
+          <JarvisConsole
+            onSelectAgent={(id) => { setJarvisOpen(false); setDrawerId(id); }}
+            onNavigate={(f) => { setJarvisOpen(false); setFloor(f); }}
+          />
+        </ErrorBoundary>
       )}
 
       {/* Global search */}
       {searchOpen && (
-        <GlobalSearch
-          onSelectAgent={(id) => { setSearchOpen(false); setDrawerId(id); }}
-        />
+        <ErrorBoundary fallback={<div className="panel p-4 text-hud-red">Global search failed to render. Press Esc to close.</div>}>
+          <GlobalSearch
+            onSelectAgent={(id) => { setSearchOpen(false); setDrawerId(id); }}
+          />
+        </ErrorBoundary>
       )}
 
       {/* Command Palette */}
       {showCommandPalette && (
-        <CommandPalette onClose={() => setShowCommandPalette(false)} agents={agents} />
+        <ErrorBoundary
+          fallback={
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70" onClick={() => setShowCommandPalette(false)}>
+              <div className="panel p-4 text-hud-red">The command palette failed to render. Press Esc or click to close.</div>
+            </div>
+          }
+        >
+          <CommandPalette onClose={() => setShowCommandPalette(false)} agents={agents} />
+        </ErrorBoundary>
       )}
 
       {/* Help modal */}
@@ -340,21 +369,21 @@ export default function App() {
               <button onClick={() => setShowHelp(false)} className="text-hud-dim hover:text-hud-text text-xl">×</button>
             </div>
             <div className="space-y-2 text-sm text-hud-dim font-mono">
-              <div className="grid grid-cols-2 gap-4">
-                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">1-0</kbd> Floors F1–F10</div>
-                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">- / =</kbd> Floor F11 (Risk)</div>
-                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">Backspace</kbd> Floor F12 (Graph)</div>
-                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">[</kbd> then <kbd className="bg-hud-edge px-2 py-0.5 rounded">3</kbd>–<kbd className="bg-hud-edge px-2 py-0.5 rounded">6</kbd> Floors F13–F16</div>
-                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">?</kbd> This help</div>
-                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">Esc</kbd> Close modal/drawer</div>
-                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">⌘T</kbd> Toggle theme</div>
-                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">⌘K</kbd> Command palette</div>
-                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">⌘G</kbd> God console</div>
-                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">Click desk</kbd> Open agent drawer</div>
-              </div>
+<div className="grid grid-cols-2 gap-4">
+                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">1-0</kbd> Floors F1–F10</div>
+                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">- / =</kbd> Floor F11 (Risk)</div>
+                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">Backspace</kbd> Floor F12 (Graph)</div>
+                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">F1–F4</kbd> Floors F13–F16</div>
+                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">?</kbd> This help</div>
+                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">Esc</kbd> Close modal/drawer</div>
+                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">⌘T</kbd> Toggle theme</div>
+                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">⌘K</kbd> Command palette</div>
+                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">⌘G</kbd> God console</div>
+                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">Click desk</kbd> Open agent drawer</div>
+               </div>
             </div>
             <div className="mt-4 pt-4 border-t border-hud-edge text-[10px] text-hud-dim">
-              Floors: F1 Sessions · F2 Ledger · F3 Agents · F4 Projects · F5 HQ · F6 Trading Lab · F7 Strategy Lab · F8 Live Trading · F9 24x7 Ops · F10 Knowledge · F11 Risk Metrics · F12 Knowledge Graph · F13 Time Machine · F14 Validation · F15 Combined Portfolio · F16 Overview
+              Floors: F1 Sessions · F2 Ledger · F3 Agents · F4 Projects · F5 HQ · F6 Trading Lab · F7 Strategy Lab · F8 Live Trading · F9 24x7 Ops · F10 Knowledge · F11 Risk Metrics · F12 Knowledge Graph · F13 Time Machine · F14 Fleet · F15 Alpha Insider · F16 Overview
             </div>
           </div>
         </div>

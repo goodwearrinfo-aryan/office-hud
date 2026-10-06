@@ -1,15 +1,15 @@
 import { useLive } from '../api';
 
 function formatNumber(value: number | null | undefined, digits = 2): string {
-  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '--';
 }
 
 function formatPercentValue(value: number | null | undefined, digits = 1): string {
-  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : '—';
+  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : '--';
 }
 
 function formatCurrency(value: number | null | undefined): string {
-  return typeof value === 'number' && Number.isFinite(value) ? `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—';
+  return typeof value === 'number' && Number.isFinite(value) ? `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '--';
 }
 
 function tone(value: number | null | undefined) {
@@ -60,7 +60,7 @@ export default function TradingMonitor() {
       {/* Alpha Insider Multistrat */}
       <Section title="ALPHA INSIDER MULTISTRAT" running={multistrat?.state === 'ok'} error={multistrat?.lastError}>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
-          <Metric label="STATE" value={multistrat?.state?.toUpperCase() || '—'} tone={multistrat?.state === 'ok' ? 'text-hud-green' : 'text-hud-red'} />
+          <Metric label="STATE" value={multistrat?.state?.toUpperCase() || '--'} tone={multistrat?.state === 'ok' ? 'text-hud-green' : 'text-hud-red'} />
           <Metric label="OPEN POSITIONS" value={String(multistrat?.openPositions ?? 0)} />
           <Metric label="REALIZED PNL" value={formatNumber(multistrat?.realizedPnl)} tone={tone(multistrat?.realizedPnl)} />
           <Metric label="DAILY REALIZED" value={formatCurrency(multistrat?.dailyRealized)} tone={tone(multistrat?.dailyRealized)} />
@@ -69,12 +69,12 @@ export default function TradingMonitor() {
           <div className="panel-surface p-2">
             <div className="text-[10px] text-hud-dim">STRATEGIES</div>
             <div className="font-mono text-sm text-hud-text">
-              {multistrat?.strategies?.join(', ') || '—'}
+              {multistrat?.strategies?.join(', ') || '--'}
             </div>
           </div>
           <div className="panel-surface p-2">
             <div className="text-[10px] text-hud-dim">FEED UPDATED</div>
-            <div className="font-mono text-sm text-hud-text">{multistrat?.updatedAt ? new Date(multistrat.updatedAt).toLocaleTimeString() : '—'}</div>
+            <div className="font-mono text-sm text-hud-text">{multistrat?.updatedAt ? new Date(multistrat.updatedAt).toLocaleTimeString() : '--'}</div>
           </div>
         </div>
         <div className="panel-surface p-2">
@@ -104,7 +104,7 @@ export default function TradingMonitor() {
             <div className="font-mono text-sm text-hud-text">
               {strategyMonitor?.lastSignal
                 ? `${strategyMonitor.lastSignal.direction} ${strategyMonitor.lastSignal.symbol} @ ${strategyMonitor.lastSignal.price} (${formatPercentValue(strategyMonitor.lastSignal.confidence)})`
-                : '—'}
+                : '--'}
             </div>
           </div>
           <div className="panel-surface p-2">
@@ -112,7 +112,7 @@ export default function TradingMonitor() {
             <div className="font-mono text-sm text-hud-text">
               {strategyMonitor?.lastTrade
                 ? `${strategyMonitor.lastTrade.side} ${strategyMonitor.lastTrade.symbol} @ ${strategyMonitor.lastTrade.price} P&L: ${formatPercentValue(strategyMonitor.lastTrade.pnl_pct)}`
-                : '—'}
+                : '--'}
             </div>
           </div>
         </div>
@@ -153,7 +153,7 @@ export default function TradingMonitor() {
           <Metric label="SYMBOLS TRACKED" value={String(Object.keys(marketData?.symbols || {}).length)} />
           <Metric label="ANOMALIES" value={String(marketData?.anomalies?.length ?? 0)} tone={marketData?.anomalies?.length ? 'text-hud-red' : 'text-hud-green'} />
           <Metric label="WS HEALTH" value={marketData?.wsHealth?.connected ? 'CONNECTED' : 'DISCONNECTED'} tone={marketData?.wsHealth?.connected ? 'text-hud-green' : 'text-hud-red'} />
-          <Metric label="LAST CHECK" value={marketData?.lastCheck ? new Date(marketData.lastCheck).toLocaleTimeString() : '—'} />
+          <Metric label="LAST CHECK" value={marketData?.lastCheck ? new Date(marketData.lastCheck).toLocaleTimeString() : '--'} />
         </div>
         {marketData?.anomalies?.length && (
           <div className="panel-surface p-2">
@@ -228,7 +228,7 @@ export default function TradingMonitor() {
       <Section title="PERFORMANCE REPORTER" running={!!performance?.reportsAvailable}>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
           <Metric label="REPORTS AVAILABLE" value={String(performance?.reportsAvailable ?? 0)} />
-          <Metric label="LATEST" value={performance?.latestReport?.created || '—'} />
+          <Metric label="LATEST" value={performance?.latestReport?.created || '--'} />
         </div>
         {performance?.latestReport && (
           <div className="panel-surface p-2">

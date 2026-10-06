@@ -150,7 +150,7 @@ export default function KnowledgeGraph() {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3 text-[10px] font-mono text-hud-dim">
         <span>NODES {graph ? graph.nodes.length : 0}{truncated ? ` / ${graph?.totalNodes}` : ''}</span>
         <span>LINKS {graph ? graph.links.length : 0}{graph && graph.links.length < graph.totalLinks ? ` / ${graph.totalLinks}` : ''}</span>
-        <span>BUILT {graph?.builtAt ? graph.builtAt.slice(0, 10) : '—'}</span>
+        <span>BUILT {graph?.builtAt ? graph.builtAt.slice(0, 10) : '--'}</span>
         {truncated && <span>render capped at {MAX_NODES} nodes for responsiveness</span>}
       </div>
       <div ref={wrapRef} className="panel h-[calc(100vh-220px)] relative">

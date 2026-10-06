@@ -115,7 +115,7 @@ export default function AgentDrawer({ agentId, summary, onClose }: { agentId: st
 
         <div className="grid grid-cols-4 gap-px bg-hud-edge text-center text-xs">
           {[
-            ['status', agent?.display ?? '—'],
+            ['status', agent?.display ?? '--'],
             ['backlog', String(agent?.inboxBacklog ?? 0)],
             ['cost', `$${(agent?.usd ?? 0).toFixed(2)}`],
             ['heartbeat', ageLabel(agent?.heartbeatAgeSec ?? null)],
@@ -167,7 +167,7 @@ export default function AgentDrawer({ agentId, summary, onClose }: { agentId: st
             <div className="space-y-4">
               {data.identity ? <Markdown source={data.identity} /> : <div className="text-hud-dim text-sm">No identity.md</div>}
               <div className="panel p-3 font-mono text-[11px] text-hud-dim break-all">
-                cwd: {agent?.cwd ?? '—'}
+                cwd: {agent?.cwd ?? '--'}
                 {!agent?.cwdValid && <span className="text-hud-red"> (missing on disk)</span>}
               </div>
             </div>
@@ -197,7 +197,7 @@ export default function AgentDrawer({ agentId, summary, onClose }: { agentId: st
                 <div className="space-y-2">
                   {data.recentEvents.map((event, index) => (
                     <div key={`${event.timestamp}-${event.task_id}-${index}`} className="panel-surface p-3">
-                      <div className="flex justify-between gap-2 text-[10px] font-mono"><span className="text-hud-blue">{event.type}</span><span className="text-hud-dim">{event.timestamp ? new Date(event.timestamp).toLocaleString() : '—'}</span></div>
+                      <div className="flex justify-between gap-2 text-[10px] font-mono"><span className="text-hud-blue">{event.type}</span><span className="text-hud-dim">{event.timestamp ? new Date(event.timestamp).toLocaleString() : '--'}</span></div>
                       {event.task_id && <div className="text-[10px] font-mono text-hud-amber mt-1">{event.task_id}</div>}
                       {event.result && <div className="text-xs text-hud-dim mt-1 break-words">{event.result.length > 280 ? `${event.result.slice(0, 280)}…` : event.result}</div>}
                     </div>

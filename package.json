@@ -8,11 +8,11 @@
     "build": "npm run -w web build",
     "start": "node server/index.js",
     "make:app": "node scripts/make-app.js",
-    "test": "node --test --experimental-strip-types --test-timeout=100000 \"server/test/*.test.js\" \"server/test/*.test.ts\"",
-    "test:watch": "node --test --watch \"server/test/*.test.js\"",
-    "test:server": "node --test \"server/test/*.test.js\"",
-    "test:store": "node --test --experimental-strip-types server/test/store.test.ts",
-    "test:quiet": "node --test --experimental-strip-types \"server/test/*.test.js\" \"server/test/*.test.ts\" 2>&1 | grep -vE \"ExperimentalWarning|Use .node --trace-warnings\""
+    "test": "node --test --experimental-strip-types --test-timeout=100000 --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"server/test/*.test.js\" \"server/test/*.test.ts\"",
+    "test:watch": "node --test --watch --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"server/test/*.test.js\"",
+    "test:server": "node --test --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"server/test/*.test.js\"",
+    "test:store": "node --test --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON server/test/store.test.ts",
+    "test:quiet": "node --test --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"server/test/*.test.js\" \"server/test/*.test.ts\" 2>&1 | grep -vE \"ExperimentalWarning|Use .node --trace-warnings\""
   },
   "workspaces": [
     "server",

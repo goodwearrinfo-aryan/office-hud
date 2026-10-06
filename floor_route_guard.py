@@ -128,6 +128,10 @@ def main() -> int:
     code = floors_status()
     if code == 200:
         save_state({"last_action": now, "last_result": "ok", "floors_http": 200})
+        # One compact line per healthy run: the log is the only place that
+        # proves the guard is alive. Previously healthy runs wrote nothing, so
+        # a working guard was indistinguishable from a dead one.
+        log("OK floors_http=200 action=none")
         print(json.dumps({"status": "ok", "floors_http": 200, "action": "none"}))
         return 0
 
@@ -141,7 +145,15 @@ def main() -> int:
         print(json.dumps({"status": "error", "detail": "cannot read server/index.js: %s" % exc}))
         return 1
 
-    route_present = "app.get('/api/floors'" in src
+    # "Route present" must match BOTH shapes the route has been served in:
+    # inline (`app.get('/api/floors', ...)`) and the current module mount
+    # (`require('./floor_route')` -> floorRoute.register(app)). Matching only the
+    # inline shape misdiagnoses the mounted route as deleted whenever the service
+    # is briefly down, and the restore insert then collides with the existing
+    # `const { getFloorHealth } = require('./floor_health')` -> node --check
+    # SyntaxError -> RESTORE REVERTED (observed 2026-10-05T18:16:01).
+    route_present = ("app.get('/api/floors'" in src
+                     or "require('./floor_route')" in src)
 
     if route_present:
         action = "restart_only"

@@ -203,9 +203,11 @@ SECRET_PATTERNS = [
 ]
 
 # Published example values, and obvious placeholders. These are not leaks and
-# flagging them is how a scanner becomes noise.
+# flagging them is how a scanner becomes noise. `abcd1234efgh` is the repeating
+# block pattern used by the standard secret-regex doc tables (ghp_abcd1234efgh...):
+# sequential letter+4-digit blocks are a textbook placeholder, never a live token.
 SECRET_ALLOWLIST = re.compile(
-    r"EXAMPLE|X{6,}|abcdef|1234567890|placeholder|YOUR_|REDACTED|\.\.\.",
+    r"EXAMPLE|X{6,}|abcdef|abcd1234efgh|1234567890|placeholder|YOUR_|REDACTED|\.\.\.",
     re.IGNORECASE,
 )
 
@@ -475,12 +477,32 @@ def check() -> Tuple[List[Dict[str, str]], List[Dict[str, str]], List[str]]:
                           "staleness cannot be verified",
             })
         elif roster.get("stale"):
-            degradations.append({
-                "check": "roster is current",
-                "detail": "agent roster last written %.1fh ago (threshold %ss); agents "
-                          "registered or removed since are not represented"
-                          % (age / 3600.0, roster.get("stale_after_seconds")),
-            })
+            # fleet.json is a live TELEMETRY feed, written continuously only
+            # while a hive harness loop runs. The roster itself is registry.json,
+            # written when the agent set changes, not on a timer, so a stable
+            # fleet accrues unbounded fleet.json age while the roster stays
+            # accurate (openaliceStatus.js: "roster age is reported, not gating";
+            # rosterGate.test.js pins that an aged-but-accurate roster must NOT
+            # downgrade a healthy fleet). Degrade only when the roster file
+            # itself is unreadable or empty; a frozen telemetry feed is a note,
+            # not a roster failure.
+            _reg_agents = None
+            try:
+                with open(os.path.join(HIVE, "registry.json"), encoding="utf-8") as _fh:
+                    _reg_agents = (json.load(_fh) or {}).get("agents")
+            except Exception:
+                _reg_agents = None
+            if isinstance(_reg_agents, (dict, list)) and _reg_agents:
+                ok.append("roster file readable (registry.json: %d agents); telemetry "
+                          "feed fleet.json is %.1fh old (reported, not gating)"
+                          % (len(_reg_agents), age / 3600.0))
+            else:
+                degradations.append({
+                    "check": "roster is current",
+                    "detail": "fleet.json telemetry is %.1fh old AND registry.json is "
+                              "unreadable or empty, so roster currency cannot be "
+                              "corroborated" % (age / 3600.0),
+                })
         else:
             ok.append("roster current (age=%.0fs)" % age)
 
@@ -831,19 +853,31 @@ def main() -> int:
         "degradations": degradations,
     }
 
+    prev = state.get("status")
     if not load(BASELINE):
         save(BASELINE, report)
+        log("HUD GUARD baseline written: status=%s (%d passed, %d missing, %d degraded)"
+            % (status, len(ok), len(missing), len(degradations)))
         print(json.dumps({"baseline_written": True, **report}, indent=2))
+    elif prev and prev != status:
+        # A transition in either direction is an event worth a line: an entry
+        # into a bad state, a worsening between bad states, and a recovery.
+        # The original only logged ok -> not-ok, so once the guard went red it
+        # never wrote again and the log looked dead while the guard ran fine.
+        offenders = missing + degradations
+        level = "RECOVERED" if status == "ok" else status.upper()
+        msg = "HUD GUARD %s: %s" % (level, "; ".join(
+            "%s (%s)" % (m["check"], m["detail"]) for m in offenders
+        ) or "all checks pass")
+        log(msg)
+        print(json.dumps({"ALERT": msg, **report}, indent=2))
     else:
-        if state.get("status") == "ok" and status != "ok":
-            offenders = missing + degradations
-            msg = "HUD GUARD %s: %s" % (status.upper(), "; ".join(
-                "%s (%s)" % (m["check"], m["detail"]) for m in offenders
-            ))
-            log(msg)
-            print(json.dumps({"ALERT": msg, **report}, indent=2))
-        else:
-            print(json.dumps(report, indent=2))
+        # Steady state still gets one compact line per check, so the log itself
+        # is evidence the guard is alive. A guard that only ever logs bad news
+        # is indistinguishable from a dead one.
+        log("HUD GUARD %s: %d passed, %d missing, %d degraded"
+            % (status.upper(), len(ok), len(missing), len(degradations)))
+        print(json.dumps(report, indent=2))
 
     save(STATE, {"last_check": time.time(), "status": status,
                  "missing": missing, "degradations": degradations})

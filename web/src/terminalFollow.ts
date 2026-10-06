@@ -9,7 +9,7 @@
  * reader, and it says what it is.
  *
  * Why the rules live here: every one of them is a case where a silent failure reads
- * as a quiet terminal. A dropped connection, an unreadable id, an empty buffer —
+ * as a quiet terminal. A dropped connection, an unreadable id, an empty buffer --
  * all of them produce a blank box, and a blank box is indistinguishable from a
  * terminal doing nothing. See server/test/terminalFollow.test.ts.
  */
@@ -117,7 +117,7 @@ export function reduce(model: FollowModel, frame: ReturnType<typeof parseFrame>)
 export function emptyStateText(model: FollowModel, terminalCount: number): string | null {
   if (model.state === 'unavailable') return model.note ?? 'No terminal is available to read.';
   if (model.state === 'connecting') return 'Connecting to the terminal stream…';
-  if (model.state === 'reconnecting') return 'The stream dropped. Reconnecting — output during the gap is not recovered.';
+  if (model.state === 'reconnecting') return 'The stream dropped. Reconnecting -- output during the gap is not recovered.';
   if (model.state === 'closed') return model.note ?? 'The terminal has ended.';
   if (model.lines.length > 0) return null;
   if (terminalCount === 0) return 'This HUD has started no terminals, so there is no output to read.';

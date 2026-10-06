@@ -1,7 +1,8 @@
 import { useLive, useViewers, type FleetLaunchdState, type JarvisTasksResponse, type ProjectRecord, type QueueSummary, type Summary, type TerminalsPayload } from '../api';
 
-type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16'   | 'f17'
-  | 'f18';
+type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16' | 'f17'
+  | 'f18'
+  | 'f19';
 
 interface BadgeData {
   summary: Summary | null;
@@ -14,12 +15,16 @@ interface BadgeData {
   failedLaunchd: number;
   staleHosts: number;
   fleetHosts: number;
+  terminalsTotal: number;
   /**
    * Work the office has been told and has not started. Counted from the queue
    * rather than from the command history, because a command that was queued and
    * then claimed is not pending any more.
    */
   pendingCommands: number;
+  replay: { eventsAvailable: number } | null;
+  fleet: TerminalsPayload | null;
+  alphainsider: { length: number } | null;
 }
 
 interface FloorDefinition {
@@ -43,16 +48,17 @@ const FLOORS: FloorDefinition[] = [
   { id: 'f10', label: 'F10', name: 'Knowledge', badge: data => (data.taskCounts['f10'] ?? 0), taskCount: true },
   { id: 'f11', label: 'F11', name: 'Risk Metrics', badge: data => (data.taskCounts['f11'] ?? 0), taskCount: true },
   { id: 'f12', label: 'F12', name: 'Knowledge Graph', badge: data => (data.taskCounts['f12'] ?? 0), taskCount: true },
-  { id: 'f13', label: 'F13', name: 'Time Machine', badge: data => data.viewers },
-  { id: 'f14', label: 'F14', name: 'Validation', badge: data => (data.taskCounts['f14'] ?? 0), taskCount: true },
-  { id: 'f15', label: 'F15', name: 'Combined', badge: () => 0 },
-  { id: 'f16', label: 'F16', name: 'Overview', badge: data => data.failedLaunchd },
+  { id: 'f13', label: 'F13', name: 'Time Machine', badge: data => data.replay?.eventsAvailable ?? 0 },
+  { id: 'f14', label: 'F14', name: 'Fleet', badge: data => data.fleet?.hosts?.length ?? 0 },
+  { id: 'f15', label: 'F15', name: 'Alpha Insider', badge: data => data.alphainsider?.length ?? 0 },
+  { id: 'f16', label: 'F16', name: 'Overview', badge: data => (data.queue?.inProgress ?? 0) + (data.queue?.queued ?? 0) },
   // The one figure on this nav that should be readable without opening the
   // floor: how many machines have stopped reporting.
   { id: 'f17', label: 'F17', name: 'Fleet', badge: data => data.staleHosts },
   // The one desk figure readable without opening the floor: work that has been
   // given to the office and has not started.
   { id: 'f18', label: 'F18', name: 'The Desk', badge: data => data.pendingCommands },
+  { id: 'f19', label: 'F19', name: 'Workspaces', badge: data => data.terminalsTotal },
 ];
 
 interface Props {
@@ -72,6 +78,8 @@ export default function FloorNav({ current, onChange, summary }: Props) {
   // The fleet badge counts machines that have gone quiet. /api/terminals is already
   // being served for F17, so this costs a subscription rather than another route.
   const { data: fleet } = useLive<TerminalsPayload>('/api/terminals');
+  const { data: replay } = useLive<{ eventsAvailable: number }>('/api/replay/window');
+  const { data: alphainsider } = useLive<{ length: number }>('/api/alphainsider/strategies');
   // Pulled here rather than counted in App so the badge costs one shared socket
   // subscription instead of a second one. A command that was queued and has since
   // been claimed is not pending, which is why this reads the queue and not history.
@@ -91,6 +99,10 @@ export default function FloorNav({ current, onChange, summary }: Props) {
     staleHosts: fleet?.stale_hosts?.length ?? 0,
     pendingCommands: queuedJarvis,
     fleetHosts: fleet?.hosts?.length ?? 0,
+    terminalsTotal: fleet?.terminals?.length ?? 0,
+    replay,
+    fleet,
+    alphainsider,
   };
 
   return (
@@ -139,7 +151,7 @@ export default function FloorNav({ current, onChange, summary }: Props) {
         })}
       </div>
       <div className="p-3 border-t border-hud-edge text-[10px] font-mono text-hud-dim">
-        <kbd className="bg-hud-edge px-1.5 py-0.5 rounded mr-1">1</kbd>–<kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">0</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">-</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">=</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">Bksp</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">.</kbd> switch floors
+        <kbd className="bg-hud-edge px-1.5 py-0.5 rounded mr-1">1</kbd>–<kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">0</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">-</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">=</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">Bksp</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">.</kbd> F1–F4: F13–F16
       </div>
     </nav>
   );

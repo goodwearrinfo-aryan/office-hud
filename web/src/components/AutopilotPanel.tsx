@@ -63,7 +63,7 @@ function ago(ms: number | null | undefined): string {
  * Generation one of the autopilot is verification-only: on each tick it runs the
  * suite in a throwaway worktree and files the result. It proposes no code edits.
  * That is why this leads with the last verification and the failure baseline
- * rather than a list of changes — for now the honest summary of what the loop is
+ * rather than a list of changes -- for now the honest summary of what the loop is
  * doing is "it ran the tests and this is what happened".
  *
  * Landing is the operator's decision and the only way a proposal changes state.
@@ -188,7 +188,7 @@ export default function AutopilotPanel() {
 
       {verify?.baselineSeeded && (
         <p className="text-hud-dim text-xs mb-3">
-          Baseline seeded from this run. It only ever tightens — a new failure is reported, never
+          Baseline seeded from this run. It only ever tightens -- a new failure is reported, never
           absorbed.
         </p>
       )}
@@ -262,7 +262,7 @@ export default function AutopilotPanel() {
                   {p.state.toUpperCase()}
                 </span>
                 <span className="font-mono text-hud-cyan">{p.branch}</span>
-                {p.note ? <span className="text-hud-dim">— {p.note}</span> : null}
+                {p.note ? <span className="text-hud-dim">-- {p.note}</span> : null}
               </div>
             ))}
           </div>
@@ -274,7 +274,7 @@ export default function AutopilotPanel() {
         {data.sharedTreeDirty === null || data.sharedTreeDirty === undefined
           ? 'an unknown number of'
           : numberFmt.format(data.sharedTreeDirty)}{' '}
-        uncommitted change(s). The autopilot reasons in its own worktree, so that does not block it —
+        uncommitted change(s). The autopilot reasons in its own worktree, so that does not block it --
         but anything it reports is against {data.ref ?? 'origin/main'}, not your working tree.
         Stale worktrees: {numberFmt.format(data.staleWorktrees ?? 0)}.
       </p>

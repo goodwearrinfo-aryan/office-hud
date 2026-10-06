@@ -7,8 +7,8 @@ import { canDispatch, needsTypeConfirmation, ownerLabel, previewJarvisCommand, r
  *
  * WHY A COMPONENT FOR IT
  * ----------------------
- * There were three compose flows — GodConsole's staged card, JarvisConsole's modal,
- * and (planned) the desk — and the first two had already drifted apart once. The
+ * There were three compose flows -- GodConsole's staged card, JarvisConsole's modal,
+ * and (planned) the desk -- and the first two had already drifted apart once. The
  * risk tier was re-derived in the browser from a private copy of the danger rule,
  * which is how a command got labelled OPS TASK and then refused with a 428. The
  * copy is gone now, but the *shape* of the bug was three UIs each deciding when
@@ -68,7 +68,7 @@ export default function CommandCompose({
 
   // Ask the server as the operator types, debounced, and ignore the answer to a
   // prompt that has since changed. Without the sequence check a slow response for
-  // "rm -rf" can land after "refresh the snapshot" and stage the wrong tier — the
+  // "rm -rf" can land after "refresh the snapshot" and stage the wrong tier -- the
   // original drift, arriving by a different road.
   const ask = useCallback((text: string) => {
     const trimmed = text.trim();
@@ -148,7 +148,7 @@ export default function CommandCompose({
 
   const confirmCard = staged && (
     <div className="jarvis-confirm-card" style={compact ? { margin: '0.5rem 0 0' } : undefined}>
-      <span>DESTRUCTIVE — needs authorization</span>
+      <span>DESTRUCTIVE -- needs authorization</span>
       <p>{prompt.trim()}</p>
       <div>
         <span>{ownerLabel(preview)}</span>
@@ -196,7 +196,7 @@ export default function CommandCompose({
       {!staged && preview && preview.ok && (
         <p className="panel-note" style={{ margin: '0.25rem 0 0' }}>
           {`Would route to ${ownerLabel(preview)}`}
-          {routingLabel(preview) ? ` — ${routingLabel(preview)}` : ''}
+          {routingLabel(preview) ? ` -- ${routingLabel(preview)}` : ''}
           {` · ${riskLabel(preview)}`}
         </p>
       )}

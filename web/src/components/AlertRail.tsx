@@ -17,7 +17,7 @@ const SEVERITY_LABEL: Record<string, string> = {
 };
 
 function ago(ms: number | null | undefined): string {
-  if (!ms) return '—';
+  if (!ms) return '--';
   const diff = Math.max(0, Date.now() - ms);
   const minutes = Math.floor(diff / 60000);
   if (minutes < 1) return 'just now';

@@ -59,24 +59,24 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function money(value: number | null | undefined) {
-  if (!isFiniteNumber(value)) return '—';
+  if (!isFiniteNumber(value)) return '--';
   return `${value < 0 ? '-' : ''}$${Math.abs(value).toFixed(2)}`;
 }
 
 function price(value: number | null | undefined) {
-  if (!isFiniteNumber(value)) return '—';
+  if (!isFiniteNumber(value)) return '--';
   return value.toFixed(3);
 }
 
 function share(value: number | null | undefined) {
-  if (!isFiniteNumber(value)) return '—';
+  if (!isFiniteNumber(value)) return '--';
   return `${(value * 100).toFixed(1)}%`;
 }
 
 function stamp(value: string | null | undefined) {
-  if (!value) return '—';
+  if (!value) return '--';
   const parsed = new Date(value);
-  if (!Number.isFinite(parsed.getTime())) return '—';
+  if (!Number.isFinite(parsed.getTime())) return '--';
   return parsed.toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
@@ -291,7 +291,7 @@ export default function OpsFloor() {
           <div className="flex items-center justify-between gap-3 mb-3">
             <h3 className="font-mono text-hud-amber text-sm">SERVICE PORTS</h3>
             <span className="badge badge-success">
-              ONE PORT · {portal?.entryPort ?? '—'} · /port/&lt;service&gt;/
+              ONE PORT · {portal?.entryPort ?? '--'} · /port/&lt;service&gt;/
             </span>
           </div>
           <div className="table-container">
@@ -322,7 +322,7 @@ export default function OpsFloor() {
                     <td className="font-mono">{service.port}</td>
                     <td className="text-hud-dim">{service.role}</td>
                     <td><StatusBadge ok={service.status === 'online'} label={service.status === 'online' ? 'LISTENING' : 'OFFLINE'} /></td>
-                    <td className="text-hud-dim">—</td>
+                    <td className="text-hud-dim">--</td>
                   </tr>
                 ))}
                 {services.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-hud-dim">{serviceError || portalError ? 'Service status unavailable' : 'Loading service status…'}</td></tr>}
@@ -368,23 +368,23 @@ export default function OpsFloor() {
 
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-4">
           <Metric label="ENGINE STATE" value={polymarketError ? 'ERROR' : polymarket ? (polymarket.present ? (polymarket.mode ?? 'present').toUpperCase() : 'ABSENT') : 'LOADING'} tone={polymarketError ? 'text-hud-red' : polymarket?.present ? 'text-hud-green' : 'text-hud-dim'} />
-          <Metric label="PAPER TRADES" value={polymarketError || marketsError ? 'ERROR' : tradeCount === null ? '—' : String(tradeCount)} tone={tradeCount === null ? 'text-hud-dim' : 'text-hud-text'} />
+          <Metric label="PAPER TRADES" value={polymarketError || marketsError ? 'ERROR' : tradeCount === null ? '--' : String(tradeCount)} tone={tradeCount === null ? 'text-hud-dim' : 'text-hud-text'} />
           <Metric label="NET P&L" value={polymarketError ? 'ERROR' : money(netPnl)} tone={polymarketError ? 'text-hud-red' : isFiniteNumber(netPnl) ? netPnl < 0 ? 'text-hud-red' : 'text-hud-green' : 'text-hud-dim'} />
           <Metric label="REALIZED EDGE" value={polymarketError ? 'ERROR' : share(polymarket?.realized_edge ?? null)} tone={isFiniteNumber(polymarket?.realized_edge) ? 'text-hud-text' : 'text-hud-dim'} />
           <Metric label="PROFITABILITY GATE" value={polymarketError ? 'ERROR' : gate ? gate.status ?? 'UNKNOWN' : 'NO GATE FILE'} tone={gate?.requirements_met ? 'text-hud-green' : gate ? 'text-hud-amber' : 'text-hud-dim'} />
-          <Metric label="EXCLUSIONS" value={marketsError ? 'ERROR' : exclusionsFile ? exclusionsFile.valid ? String(exclusionsFile.count ?? 0) : 'INVALID' : '—'} tone={marketsError || (exclusionsFile && !exclusionsFile.valid) ? 'text-hud-red' : 'text-hud-text'} />
+          <Metric label="EXCLUSIONS" value={marketsError ? 'ERROR' : exclusionsFile ? exclusionsFile.valid ? String(exclusionsFile.count ?? 0) : 'INVALID' : '--'} tone={marketsError || (exclusionsFile && !exclusionsFile.valid) ? 'text-hud-red' : 'text-hud-text'} />
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 mb-4">
           <div className="panel-surface px-3 py-2">
             <div className="text-[10px] font-mono text-hud-dim">SIGNAL AUDIT</div>
             <div className="mt-1 font-mono text-sm">
-              {polymarketError ? 'ERROR' : audit ? `${audit.allowed} allowed / ${audit.rejected} rejected of ${audit.total}` : '—'}
+              {polymarketError ? 'ERROR' : audit ? `${audit.allowed} allowed / ${audit.rejected} rejected of ${audit.total}` : '--'}
             </div>
           </div>
           <div className="panel-surface px-3 py-2">
             <div className="text-[10px] font-mono text-hud-dim">OPEN POSITIONS</div>
-            <div className="mt-1 font-mono text-sm">{marketsError ? 'ERROR' : openPositions ?? '—'}</div>
+            <div className="mt-1 font-mono text-sm">{marketsError ? 'ERROR' : openPositions ?? '--'}</div>
           </div>
           <div className="panel-surface px-3 py-2">
             <div className="text-[10px] font-mono text-hud-dim">ENGINE STATE UPDATED</div>
@@ -394,7 +394,7 @@ export default function OpsFloor() {
 
         {actionError && <p className="text-hud-red text-xs font-mono mb-3" role="alert">Action failed: {actionError}</p>}
         {actionMessage && <p className="text-hud-green text-xs font-mono mb-3" role="status">{actionMessage}</p>}
-        {clearResult && <p className="text-hud-dim text-xs font-mono mb-3">Cleanup preserved {clearResult.preserved.signal_history_count} signals · backup {clearResult.backup_path || '—'}</p>}
+        {clearResult && <p className="text-hud-dim text-xs font-mono mb-3">Cleanup preserved {clearResult.preserved.signal_history_count} signals · backup {clearResult.backup_path || '--'}</p>}
 
         <div className="table-container mb-4">
           <table className="table">
@@ -403,11 +403,11 @@ export default function OpsFloor() {
               {marketRows.map(row => (
                 <tr key={row.id}>
                   <td className="font-mono text-xs" title={row.id}>{shortId(row.id)}</td>
-                  <td className="font-mono">{row.market?.trades ?? '—'}</td>
-                  <td className="font-mono">{row.market?.signals ?? '—'}</td>
-                  <td className="font-mono">{row.market ? row.market.open_positions : '—'}</td>
+                  <td className="font-mono">{row.market?.trades ?? '--'}</td>
+                  <td className="font-mono">{row.market?.signals ?? '--'}</td>
+                  <td className="font-mono">{row.market ? row.market.open_positions : '--'}</td>
                   <td className="font-mono">{price(row.market?.last_price ?? null)}</td>
-                  <td className="text-hud-dim text-xs">{row.market?.categories?.length ? row.market.categories.join(', ') : '—'}</td>
+                  <td className="text-hud-dim text-xs">{row.market?.categories?.length ? row.market.categories.join(', ') : '--'}</td>
                   <td>{row.exclusion ? <span className="badge badge-danger">EXCLUDED</span> : row.market ? <span className="badge badge-success">ACTIVE</span> : <span className="badge badge-neutral">NO STATE</span>}</td>
                   <td>
                     {row.exclusion ? (
@@ -497,7 +497,7 @@ export default function OpsFloor() {
             <div className="flex justify-between"><span className="text-hud-dim">Launchd definitions</span><span className="font-mono">{opsError ? 'ERROR' : launchdDefinitions}</span></div>
             <div className="flex justify-between"><span className="text-hud-dim">Adherence log</span><span className={`font-mono ${adherencePresent ? 'text-hud-green' : 'text-hud-dim'}`}>{opsError ? 'ERROR' : adherencePresent ? 'PRESENT' : 'MISSING'}</span></div>
             <div className="flex justify-between"><span className="text-hud-dim">Roster agents</span><span className="font-mono">{opsError ? 'ERROR' : rosterAgents}</span></div>
-            <div className="flex justify-between"><span className="text-hud-dim">Harness route</span><span className="font-mono text-xs truncate max-w-[60%]" title={`${harness?.provider ?? ''}:${harness?.model ?? ''}`}>{harnessError ? 'ERROR' : `${harness?.provider ?? '—'}:${harness?.model ?? '—'}`}</span></div>
+            <div className="flex justify-between"><span className="text-hud-dim">Harness route</span><span className="font-mono text-xs truncate max-w-[60%]" title={`${harness?.provider ?? ''}:${harness?.model ?? ''}`}>{harnessError ? 'ERROR' : `${harness?.provider ?? '--'}:${harness?.model ?? '--'}`}</span></div>
           </div>
         </div>
 

@@ -39,6 +39,7 @@ const COMPONENTS_WITH_COVERAGE = [
   ['FloorNav', 80],
   ['DeskFloor', 120],
   ['FleetFloor', 120],
+  ['ActivityBoard', 80],
   ['OfficeScene', 80],
   ['AgentDrawer', 80],
   ['LiveTrading', 60],
@@ -111,6 +112,24 @@ test('FloorNav keeps a populated routing table', () => {
   }
   assert.ok(source.includes('FLOORS.map'), 'FloorNav must render the FLOORS table');
 });
+test('App keeps a failing floor from blanking the whole shell', () => {
+  // A render error in any one floor used to take down the whole app, and an
+  // un-keyed boundary left the fallback stuck across navigation until reload.
+  // The shell must mount each overlay behind its own boundary and remount the
+  // floor boundary when the floor changes, so one bad floor stays contained.
+  const app = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'src', 'App.tsx'), 'utf8');
+  assert.ok(app.includes('key={floor}'), 'the floor boundary must be keyed on `floor` so navigation clears a caught error');
+  const boundaries = (app.match(/<ErrorBoundary/g) || []).length;
+  assert.ok(boundaries >= 6, `App.tsx mounts ${boundaries} error boundaries, expected the floor plus each overlay (>=6)`);
+  for (const overlay of ['CommandPalette', 'AgentDrawer', 'GlobalSearch']) {
+    const at = app.indexOf(`<${overlay}`);
+    assert.ok(at > 0, `App.tsx must still render ${overlay}`);
+    const pre = app.slice(0, at);
+    const boundary = pre.lastIndexOf('<ErrorBoundary');
+    assert.ok(boundary > -1 && boundary > pre.lastIndexOf('</ErrorBoundary>'), `${overlay} must sit inside its own ErrorBoundary`);
+  }
+});
+
 test('the follow pane keeps a working input path', () => {
   // The pane grew a send form when terminals became writable. Assert the form
   // and the endpoint it posts to, so removing either is caught here rather than

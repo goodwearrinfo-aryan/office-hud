@@ -21,7 +21,7 @@ function value(input: unknown, fallback: string) {
 /** Provider numerics arrive as decimal strings; keep significant digits honest. */
 function decimal(input: unknown, digits: number): string {
   const parsed = typeof input === 'number' ? input : Number(input);
-  if (input === null || input === undefined || input === '' || !Number.isFinite(parsed)) return '—';
+  if (input === null || input === undefined || input === '' || !Number.isFinite(parsed)) return '--';
   return parsed.toLocaleString('en-US', { maximumFractionDigits: digits });
 }
 
@@ -42,11 +42,11 @@ function parsePositions(payload: PositionPayload | null): AlphaInsiderPosition[]
     // mark or pnl - reading those names made every cell render as a dash.
     symbol: value(record.symbol ?? record.stock, `position-${index}`),
     side: value(record.side, 'LONG'),
-    quantity: value(record.amount, '—'),
-    entry: '—',
-    mark: value(record.price, '—'),
-    pnl: '—',
-    pnlPercent: '—',
+    quantity: value(record.amount, '--'),
+    entry: '--',
+    mark: value(record.price, '--'),
+    pnl: '--',
+    pnlPercent: '--',
   }));
 }
 
@@ -91,11 +91,11 @@ export default function AlphaInsiderPanel() {
     () => (poller?.positions ?? []).map((record, index) => ({
       symbol: value(record.symbol, `position-${index}`),
       side: value(record.side, 'LONG'),
-      quantity: value(record.amount, '—'),
-      entry: '—',
-      mark: value(record.price, '—'),
-      pnl: '—',
-      pnlPercent: '—',
+      quantity: value(record.amount, '--'),
+      entry: '--',
+      mark: value(record.price, '--'),
+      pnl: '--',
+      pnlPercent: '--',
     })),
     [poller],
   );
@@ -116,11 +116,11 @@ export default function AlphaInsiderPanel() {
       </div>
       <div className="jarvis-alpha-metrics">
         <div><span>DATA SOURCE</span><strong>{status ? 'LIVE API' : statusError ? 'OFFLINE' : 'CONNECTING'}</strong></div>
-        <div><span>STRATEGIES</span><strong>{strategies.length || '—'}</strong></div>
-        <div><span>OPEN LEGS</span><strong>{hasPollerBook ? (openCount || 0) : (positions.length || '—')}</strong></div>
-        <div><span>EQUITY</span><strong>{equity === null || equity === undefined ? '—' : decimal(equity, 6)}</strong></div>
-        <div><span>CASH AT REST</span><strong>{cash === null || cash === undefined ? '—' : decimal(cash, 6)}</strong></div>
-        <div><span>SCOPES</span><strong>{status?.scopes?.length || '—'}</strong></div>
+        <div><span>STRATEGIES</span><strong>{strategies.length || '--'}</strong></div>
+        <div><span>OPEN LEGS</span><strong>{hasPollerBook ? (openCount || 0) : (positions.length || '--')}</strong></div>
+        <div><span>EQUITY</span><strong>{equity === null || equity === undefined ? '--' : decimal(equity, 6)}</strong></div>
+        <div><span>CASH AT REST</span><strong>{cash === null || cash === undefined ? '--' : decimal(cash, 6)}</strong></div>
+        <div><span>SCOPES</span><strong>{status?.scopes?.length || '--'}</strong></div>
       </div>
       {strategyError && <p className="jarvis-alpha-error">Strategy feed unavailable: {strategyError}</p>}
       {positionsError && <p className="jarvis-alpha-error">Position feed unavailable: {positionsError}</p>}
@@ -135,11 +135,11 @@ export default function AlphaInsiderPanel() {
           <div className="jarvis-alpha-list-title">OPEN RISK LEGS</div>
           {shownPositions.slice(0, 4).map(position => <div className="jarvis-alpha-row" key={`${position.symbol}-${position.side}`}><div><strong>{position.symbol}</strong><small>{position.side} · amt {position.quantity}</small></div><span>{position.mark}</span></div>)}
           {closedOut
-            ? <div className="jarvis-loading">Flat. Cash only — no open legs.</div>
+            ? <div className="jarvis-loading">Flat. Cash only -- no open legs.</div>
             : !shownPositions.length && !positionsError && <div className="jarvis-loading">No positions reported.</div>}
         </div>
       </div>
-      <div className="jarvis-alpha-boundary"><span>READ-ONLY PROVIDER</span><small>OpenAlice mirrors provider signals into its paper book; provider mutation endpoints are not exposed. Equity and cash are the provider's own account figures — a settled cash row is not an open position.</small></div>
+      <div className="jarvis-alpha-boundary"><span>READ-ONLY PROVIDER</span><small>OpenAlice mirrors provider signals into its paper book; provider mutation endpoints are not exposed. Equity and cash are the provider's own account figures -- a settled cash row is not an open position.</small></div>
     </section>
   );
 }
