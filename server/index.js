@@ -1482,6 +1482,173 @@ function getLiveMetrics() {
   });
 }
 
+// Alpha Insider Multistrat status
+function getAlphaInsiderMultistratStatus() {
+  const statePath = path.join(FLEET_ROOT, 'state', 'alphainsider_multistrat.json');
+  const feedPath = path.join(os.homedir(), 'trading', 'openalice', 'ui', 'public', 'alphainsider_multistrat.json');
+  const state = readJson(statePath, {});
+  const feed = readJson(feedPath, {});
+  return {
+    state: state.status || 'unknown',
+    openPositions: (state.positions || []).length,
+    closedTrades: (state.closed_trades || []).length,
+    realizedPnl: state.realized_pnl || 0,
+    dailyRealized: state.daily_realized || 0,
+    lastRun: state.last_run,
+    lastError: state.last_error,
+    strategies: Object.keys((state.positions || []).reduce((acc, p) => {
+      acc[p.strategy] = (acc[p.strategy] || 0) + 1;
+      return acc;
+    }, {})),
+    feed: feed,
+    updatedAt: feed.ts || state.last_run,
+  };
+}
+
+// Strategy Monitor status
+function getStrategyMonitorStatus() {
+  const logPath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'strategy_monitor.log');
+  const statePath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'strategy_monitor_state.json');
+  const state = readJson(statePath, {});
+  const signals = state.signals || [];
+  const trades = state.trades || [];
+  const winRate = trades.length > 0 ? trades.filter(t => t.pnl_pct > 0).length / trades.length * 100 : 0;
+  const pf = trades.length > 0 ? Math.abs(trades.filter(t => t.pnl_pct > 0).reduce((sum, t) => sum + t.pnl_pct, 0) / trades.filter(t => t.pnl_pct <= 0).reduce((sum, t) => sum + t.pnl_pct, 0)) : 0;
+  return {
+    running: fs.existsSync(logPath),
+    lastCheck: state.last_check,
+    signalsGenerated: signals.length,
+    tradesExecuted: trades.length,
+    winRate: Math.round(winRate * 100) / 100,
+    profitFactor: Math.round(pf * 100) / 100,
+    lastSignal: signals[signals.length - 1] || null,
+    lastTrade: trades[trades.length - 1] || null,
+    updatedAt: state.updated_at,
+  };
+}
+
+// Risk Monitor status
+function getRiskMonitorStatus() {
+  const statePath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'risk_monitor_state.json');
+  const haltPath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'risk_halt.json');
+  const blockPath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'block_new_positions.json');
+  const state = readJson(statePath, {});
+  const halt = readJson(haltPath, null);
+  const block = readJson(blockPath, null);
+  return {
+    running: state.status === 'running' || state.status === 'ok',
+    currentEquity: state.current_equity || 10000,
+    peakEquity: state.peak_equity || 10000,
+    dailyPnl: state.daily_pnl || 0,
+    dailyStartEquity: state.daily_start_equity || 10000,
+    totalDrawdown: state.total_drawdown || 0,
+    consecutiveLosses: state.consecutive_losses || 0,
+    openPositions: state.open_positions || 0,
+    haltActive: halt !== null,
+    blockNewPositions: block !== null,
+    limits: state.limits || {},
+    health: state.health || {},
+    lastError: state.last_error,
+    updatedAt: state.updated_at,
+  };
+}
+
+// Market Data Monitor status
+function getMarketDataMonitorStatus() {
+  const logPath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'market_data_monitor.log');
+  const statePath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'market_data_monitor_state.json');
+  const state = readJson(statePath, {});
+  return {
+    running: fs.existsSync(logPath),
+    lastCheck: state.last_check,
+    symbols: state.symbols || {},
+    wsHealth: state.ws_health || {},
+    anomalies: state.anomalies || [],
+    lastAnomaly: state.last_anomaly || null,
+    updatedAt: state.updated_at,
+  };
+}
+
+// Alert Monitor status
+function getAlertMonitorStatus() {
+  const statePath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'alert_monitor_state.json');
+  const alertsLog = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'alerts_monitor.log');
+  const state = readJson(statePath, {});
+  const alerts = state.alerts || [];
+  const counts = {
+    critical: alerts.filter(a => a.severity === 'CRITICAL').length,
+    warning: alerts.filter(a => a.severity === 'WARNING').length,
+    info: alerts.filter(a => a.severity === 'INFO').length,
+  };
+  return {
+    running: fs.existsSync(alertsLog),
+    totalAlerts: alerts.length,
+    counts,
+    unacknowledged: alerts.filter(a => !a.acknowledged).length,
+    recentAlerts: alerts.slice(-10).reverse(),
+    deduplication: state.deduplication || {},
+    updatedAt: state.updated_at,
+  };
+}
+
+// Paper Trading Ops status
+function getPaperTradingOpsStatus() {
+  const statePath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'paper_trading_state.json');
+  const journalPath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'live_journal.json');
+  const state = readJson(statePath, {});
+  const journal = readJson(journalPath, {});
+  const trades = state.trades || [];
+  const fills = state.fills || [];
+  const winRate = trades.length > 0 ? trades.filter(t => t.pnl_usd > 0).length / trades.length * 100 : 0;
+  return {
+    running: true,
+    lastReconciliation: state.last_reconciliation,
+    reconciliation: state.reconciliation || {},
+    tradesExecuted: trades.length,
+    fillsRecorded: fills.length,
+    winRate: Math.round(winRate * 100) / 100,
+    totalRealizedPnl: journal.total_realized_pnl || 0,
+    totalUnrealizedPnl: journal.total_unrealized_pnl || 0,
+    totalEquity: journal.total_equity || 10000,
+    peakEquity: journal.peak_equity || 10000,
+    maxDrawdown: journal.max_drawdown || 0,
+    maxDrawdownPct: journal.max_drawdown_pct || 0,
+    openPosition: state.open_position || null,
+    updatedAt: state.updated_at,
+  };
+}
+
+// Performance Reporter data
+function getPerformanceReporterData() {
+  const reportsDir = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'reports');
+  let reports = [];
+  if (fs.existsSync(reportsDir)) {
+    try {
+      reports = fs.readdirSync(reportsDir)
+        .filter(f => f.endsWith('.json'))
+        .map(f => {
+          const content = readJson(path.join(reportsDir, f), {});
+          return {
+            file: f,
+            totalStrategies: content.overview?.total_strategies || 0,
+            totalTrades: content.overview?.total_trades || 0,
+            avgReturn: content.overview?.avg_total_return_pct || 0,
+            avgSharpe: content.overview?.avg_sharpe || 0,
+            bestStrategy: content.best_strategy?.name || 'N/A',
+            worstStrategy: content.worst_strategy?.name || 'N/A',
+            created: f.match(/performance_(\d{8}_\d{6})/)?.[1] || 'unknown',
+          };
+        })
+        .sort((a, b) => b.created.localeCompare(a.created));
+    } catch {}
+  }
+  return {
+    reportsAvailable: reports.length,
+    latestReport: reports[0] || null,
+    allReports: reports.slice(0, 20),
+  };
+}
+
 // `launchctl list` prints:  <pid|->  <last-exit-code>  <label>
 // A dash in the pid column means the job is loaded but not currently running,
 // which is the normal state for the many on-demand jobs in this fleet — so it
@@ -2150,7 +2317,14 @@ function getPolymarketRuntime() {
 // ---------- routes ----------
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, ...hiveStatus(), ts: Date.now() });
+  let probeResult = { ok: false, checks: [] };
+  try {
+    const output = execFileSync('/usr/bin/python3', [path.join(__dirname, 'health_probe.py')]);
+    probeResult = JSON.parse(output.toString());
+  } catch (_) {
+    probeResult = { ok: false, checks: [] };
+  }
+  res.json({ ...probeResult, ...hiveStatus(), ts: Date.now() });
 });
 
 app.get('/api/alphainsider/status', (_req, res) => proxyFreeHarnessJson('/alphainsider/status', res));
@@ -2254,6 +2428,7 @@ const BOARD_COLUMNS = [
 const BOARD_TASK_FIELDS = [
   'task_id', 'title', 'status', 'project_id', 'assigned_agent', 'claimed_by',
   'created_at', 'started_at', 'completed_at', 'updated_at', 'heartbeat', 'priority',
+  'verified', 'result',
 ];
 
 function taskSortTime(task) {
@@ -2307,10 +2482,12 @@ function getTaskBoard(perColumn = 25) {
       return status === 'COMPLETE' || status === 'DONE';
     });
 
+    const completion = summarizeTasks(claimedComplete);
     return {
       groups,
       counts,
-      completion: summarizeTasks(claimedComplete),
+      completion,
+      evidenced: completion,
       total: all.length,
       perColumn,
     // Tasks in a status the board does not draw, so the UI can say so.
@@ -2903,6 +3080,34 @@ app.get('/api/trading/ops', (_req, res) => {
   res.json(buildSnapshot('tradingOps'));
 });
 
+app.get('/api/trading/alphainsider', (_req, res) => {
+  res.json(buildSnapshot('alphainsiderMultistrat'));
+});
+
+app.get('/api/trading/strategy-monitor', (_req, res) => {
+  res.json(buildSnapshot('strategyMonitor'));
+});
+
+app.get('/api/trading/risk-monitor', (_req, res) => {
+  res.json(buildSnapshot('riskMonitor'));
+});
+
+app.get('/api/trading/market-data', (_req, res) => {
+  res.json(buildSnapshot('marketDataMonitor'));
+});
+
+app.get('/api/trading/alerts', (_req, res) => {
+  res.json(buildSnapshot('alertMonitor'));
+});
+
+app.get('/api/trading/paper-ops', (_req, res) => {
+  res.json(buildSnapshot('paperTradingOps'));
+});
+
+app.get('/api/trading/performance', (_req, res) => {
+  res.json(buildSnapshot('performanceReporter'));
+});
+
 app.get('/api/validationEvidence', (_req, res) => {
   res.json(buildSnapshot('validationEvidence'));
 });
@@ -3352,6 +3557,13 @@ const RESOURCES = {
   validationEvidence: build('validationEvidence', () => getValidationEvidence(), { minIntervalMs: 30000 }),
   combined: build('combined', () => readJson(path.join(os.homedir(), 'trading', 'openalice', 'ui', 'public', 'combined_portfolio.json'), {}), { minIntervalMs: 15000 }),
   tradingLive: build('tradingLive', () => getLiveMetrics(), { minIntervalMs: 30000 }),
+  alphainsiderMultistrat: build('alphainsiderMultistrat', () => getAlphaInsiderMultistratStatus(), { minIntervalMs: 30000 }),
+  strategyMonitor: build('strategyMonitor', () => getStrategyMonitorStatus(), { minIntervalMs: 30000 }),
+  riskMonitor: build('riskMonitor', () => getRiskMonitorStatus(), { minIntervalMs: 30000 }),
+  marketDataMonitor: build('marketDataMonitor', () => getMarketDataMonitorStatus(), { minIntervalMs: 30000 }),
+  alertMonitor: build('alertMonitor', () => getAlertMonitorStatus(), { minIntervalMs: 30000 }),
+  paperTradingOps: build('paperTradingOps', () => getPaperTradingOpsStatus(), { minIntervalMs: 30000 }),
+  performanceReporter: build('performanceReporter', () => getPerformanceReporterData(), { minIntervalMs: 60000 }),
   polymarketStatus: build('polymarketStatus', () => getPolymarketRuntime(), { minIntervalMs: 30000 }),
   polymarketMarkets: build('polymarketMarkets', () => getPolymarketMarkets(), {
     onError: (error) => ({ error: error.message, markets: [], exclusions: { present: false, valid: false, count: null, items: [], error: error.message } }),
