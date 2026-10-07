@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "useDefineForClassFields": true,
+    "lib": [
+      "ES2019",
+      "DOM"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "classic",
+    "jsx": "react-jsx"
+  },
+  "exclude": [
+    "node_modules",
+    "src/components/Charts.tsx"
+  ],
+  "include": [
+    "src"
+  ]
+}

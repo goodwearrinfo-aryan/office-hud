@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "useDefineForClassFields": true,
+    "lib": [
+      "ES2019",
+      "DOM"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "classic",
+    "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": {
+      "chart.js": ["/Users/a/trading/openalice-fleet/office-hud/node_modules/chart.js"],
+      "react-chartjs-2": ["/Users/a/trading/openalice-fleet/office-hud/node_modules/react-chartjs-2"],
+      "*": ["*", "/Users/a/trading/openalice-fleet/office-hud/node_modules/*"]
+    },
+    "jsx": "react-jsx"
+  },
+  "exclude": [
+    "node_modules"
+  ],
+  "include": [
+    "simple.ts"
+  ]
+}
