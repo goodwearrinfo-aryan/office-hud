@@ -147,8 +147,19 @@ function computeEvidence(agent, session, processId, heartbeatAgeSec, currentTask
   const sessionFresh = session?.fresh === true;
   const hasTask = !!currentTaskId;
   const taskStatus = session?.taskStatus || null;
-  const processLiveness = processId ? (isPidAlive(processId) ? 'alive' : 'dead') : 'no-pid';
-  const processVerified = processId ? isPidAlive(processId) : false;
+  // A local isPidAlive check of a REMOTE pid always reads 'dead' — the process
+  // is not on this machine. When the remote merge attached host-verified
+  // evidence (the remote host checked the PID itself), that evidence is the
+  // trusted reading and the local check must not overwrite it with 'dead'.
+  let processLiveness;
+  let processVerified;
+  if (session?.processLiveness) {
+    processLiveness = session.processLiveness;
+    processVerified = session.processLiveness === 'alive' || session.processLiveness === 'remote-verified';
+  } else {
+    processLiveness = processId ? (isPidAlive(processId) ? 'alive' : 'dead') : 'no-pid';
+    processVerified = processId ? isPidAlive(processId) : false;
+  }
 
   return {
     hasSession,
@@ -158,7 +169,8 @@ function computeEvidence(agent, session, processId, heartbeatAgeSec, currentTask
     heartbeatAgeSec,
     processId,
     processLiveness,
-    processVerified
+    processVerified,
+    remoteHost: session?.remoteHost || null
   };
 }
 
@@ -242,6 +254,51 @@ function agentLivenessSystem(world, context) {
       }
     }
   }
+
+  // Merge remote-host agent sessions carrying host-verified process evidence.
+  //
+  // hive/remote/<host>/terminals.json holds each remote host's collected agent
+  // sessions. The remote host's own collector stamps process_alive after
+  // checking the PID directly on its machine (os.kill(pid, 0)) — that is the
+  // trusted evidence the HUD truth standard demands, because a remote PID
+  // string alone is a claim, not evidence. Only FRESH host docs are consulted
+  // (a frozen remote doc is not evidence about now), a session older than the
+  // stale window is skipped, and fresher LOCAL evidence always wins.
+  const remoteDir = path.join(hivePath, 'remote');
+  let remoteEntries = [];
+  try { remoteEntries = fs.readdirSync(remoteDir, { withFileTypes: true }); } catch { remoteEntries = []; }
+  for (const entry of remoteEntries) {
+    if (!entry.isDirectory()) continue;
+    let doc = null;
+    try { doc = JSON.parse(fs.readFileSync(path.join(remoteDir, entry.name, 'terminals.json'), 'utf8')); } catch { continue; }
+    if (!doc || typeof doc !== 'object' || !Array.isArray(doc.agent_sessions)) continue;
+    const collectedAt = doc.collected_at ? Date.parse(doc.collected_at) : NaN;
+    const docFresh = Number.isFinite(collectedAt) && (Date.now() - collectedAt) / 1000 <= 300;
+    if (!docFresh) continue;
+    for (const s of doc.agent_sessions) {
+      if (!s || typeof s !== 'object' || !s.agent_id) continue;
+      const ageSec = s.heartbeat_age_sec != null
+        ? s.heartbeat_age_sec
+        : (s.last_heartbeat ? Math.max(0, Math.floor((Date.now() - Date.parse(s.last_heartbeat)) / 1000)) : null);
+      if (ageSec == null || ageSec > 300) continue;
+      const remoteHb = s.last_heartbeat ? Date.parse(s.last_heartbeat) : 0;
+      const existing = sessions.get(s.agent_id);
+      if (existing && existing.lastHeartbeat && existing.lastHeartbeat >= remoteHb && existing.lastHeartbeat > 0) continue;
+      const hostVerified = s.process_alive === true && !!s.pid_verified_by;
+      sessions.set(s.agent_id, {
+        fresh: true,
+        hasTask: existing?.hasTask || false,
+        taskStatus: existing?.taskStatus || null,
+        currentTaskId: s.current_task_id || existing?.currentTaskId || null,
+        lastHeartbeat: remoteHb || Date.now(),
+        heartbeatAgeSec: ageSec,
+        remote: true,
+        remoteHost: entry.name,
+        remoteProcessId: (s.process_id != null ? s.process_id : existing?.remoteProcessId) || null,
+        processLiveness: hostVerified ? 'remote-verified' : 'remote-unverified',
+      });
+    }
+  }
   
   // Get process info from registry
   const registryAgents = registry.agents || {};
@@ -255,8 +312,11 @@ function agentLivenessSystem(world, context) {
     const regAgent = registryAgents[agentId] || {};
     const session = sessions.get(agentId) || { fresh: false, hasTask: false, taskStatus: null, heartbeatAgeSec: null };
     
-    // Get process ID from registry
-    const processId = regAgent.processId || fleetAgent.processId || null;
+    // Get process ID from registry. The remote merge may attach the real PID
+    // reported by the remote host's collector (host-verified via process_alive)
+    // when neither local source has one — labeled in evidence.processLiveness,
+    // never presented as locally verified.
+    const processId = regAgent.processId || fleetAgent.processId || session.remoteProcessId || null;
     
     // Get current task from session (now tracked via events)
     const currentTaskId = session.currentTaskId || null;
@@ -345,7 +405,19 @@ function agentProcessVerificationSystem(world) {
   for (const agent of world.queryAgents()) {
     const processId = agent.processId;
     const evidence = agent.evidence || {};
-    
+
+    // A host-verified remote reading must not be overwritten by a local check:
+    // isPidAlive(remotePid) always reads 'dead' because the process is not on
+    // this machine. 'remote-verified' means the remote host's own collector
+    // checked the PID directly, which is the trusted evidence.
+    const remoteReading = evidence.processLiveness === 'remote-verified'
+      || evidence.processLiveness === 'remote-unverified';
+    if (remoteReading) {
+      agent.evidence = evidence;
+      world.setAgent(agent);
+      continue;
+    }
+
     if (processId) {
       const alive = isPidAlive(processId);
       evidence.processLiveness = alive ? 'alive' : 'dead';
@@ -354,11 +426,11 @@ function agentProcessVerificationSystem(world) {
       evidence.processLiveness = 'no-pid';
       evidence.processVerified = false;
     }
-    
+
     agent.evidence = evidence;
     world.setAgent(agent);
   }
-  
+
   return world;
 }
 
