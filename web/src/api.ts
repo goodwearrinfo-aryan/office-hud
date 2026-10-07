@@ -1294,6 +1294,105 @@ export type {
   AutonomyState, AutonomyPolicy, AutonomyProposal, AutonomyAuditEntry, CapacityAssessment,
 };
 
+// From deskTruth.ts
+export type { PreviewLike, RateLimitLike } from './deskTruth';
+
+// Task Board
+export interface TaskBoardPayload {
+  rows: TaskRecord[];
+}
+
+// Terminals Spawned
+export interface TerminalsSpawnedPayload {
+  terminals: Array<{ id: string; status?: string; type?: string }>;
+}
+
+// TradingMonitor - 7 interfaces from server endpoints
+export interface AlphaInsiderMultistratStatus {
+  state: string;
+  openPositions: number;
+  closedTrades: number;
+  realizedPnl: number;
+  dailyRealized: number;
+  lastRun: string | null;
+  lastError: string | null;
+  strategies: string[];
+  feed: any;
+  updatedAt: string | null;
+}
+
+export interface StrategyMonitorStatus {
+  running: boolean;
+  lastCheck: string | null;
+  signalsGenerated: number;
+  tradesExecuted: number;
+  winRate: number;
+  profitFactor: number;
+  lastSignal: any | null;
+  lastTrade: any | null;
+  updatedAt: string | null;
+}
+
+export interface RiskMonitorStatus {
+  running: boolean;
+  currentEquity: number;
+  peakEquity: number;
+  dailyPnl: number;
+  dailyStartEquity: number;
+  totalDrawdown: number;
+  consecutiveLosses: number;
+  openPositions: number;
+  haltActive: boolean;
+  blockNewPositions: boolean;
+  limits: any;
+  health: any;
+  lastError: string | null;
+  updatedAt: string | null;
+}
+
+export interface MarketDataMonitorStatus {
+  running: boolean;
+  lastCheck: string | null;
+  symbols: any;
+  wsHealth: any;
+  anomalies: any[];
+  lastAnomaly: any | null;
+  updatedAt: string | null;
+}
+
+export interface AlertMonitorStatus {
+  running: boolean;
+  totalAlerts: number;
+  counts: { critical: number; warning: number; info: number };
+  unacknowledged: number;
+  recentAlerts: any[];
+  deduplication: any;
+  updatedAt: string | null;
+}
+
+export interface PaperTradingOpsStatus {
+  running: boolean;
+  lastReconciliation: string | null;
+  reconciliation: any;
+  tradesExecuted: number;
+  fillsRecorded: number;
+  winRate: number;
+  totalRealizedPnl: number;
+  totalUnrealizedPnl: number;
+  totalEquity: number;
+  peakEquity: number;
+  maxDrawdown: number;
+  maxDrawdownPct: number;
+  openPosition: any | null;
+  updatedAt: string | null;
+}
+
+export interface PerformanceReporterData {
+  reportsAvailable: number;
+  latestReport: any | null;
+  allReports: any[];
+}
+
 /** Panel path -> resource name, for the endpoints the server pushes. */
 const RESOURCE_BY_PATH: Record<string, string> = {
   '/api/summary': 'summary',

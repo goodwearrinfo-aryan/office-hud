@@ -94,7 +94,7 @@ function hiveWithPartialProbe(rows) {
   return hive;
 }
 
-test('a probe reporting one floor is padded to all twelve, and the gaps say why', async () => {
+test('a probe reporting one floor is padded to all twenty-two, and the gaps say why', async () => {
   floorRoute.resetFloorCache();
   const hive = hiveWithPartialProbe([
     { floor: 'f1', state: 'BUSY', manager_alive: true, task_counts: { COMP: 3 } },
@@ -111,7 +111,7 @@ test('a probe reporting one floor is padded to all twelve, and the gaps say why'
     assert.equal(f.state, 'UNKNOWN', `${f.floor} must not inherit a healthy state`);
     assert.match(f.reason, /not reported/, `${f.floor} says it was not reported`);
   }
-  assert.deepEqual(payload.summary, { BUSY: 1, UNKNOWN: 11 });
+  assert.deepEqual(payload.summary, { BUSY: 1, UNKNOWN: 21 });
 });
 
 test('a probe that fails loudly is reported as unverified, not swallowed', async () => {

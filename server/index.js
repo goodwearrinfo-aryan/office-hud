@@ -48,6 +48,7 @@ const FLEET_ROOT = path.dirname(HIVE);
 const { isLocalRequest } = require('./lib/local_only');
 const { TerminalManager } = require('./lib/terminal/manager');
 const { redactCommand, redactEntry, redactAll } = require('./lib/redact');
+const { isLaptop, getPolymarketRuntimeRemote, getPolymarketStateRemote, getPolymarketMarketsRemote } = require('./lib/polymarket_remote');
 const alphaInsiderStats = require('./alphainsider_stats_route');
 // Route modules kept in their own files so a rewrite of this one cannot silently
 // drop them -- the failure mode that lost the AlphaInsider stats routes twice.
@@ -66,13 +67,13 @@ const terminalManager = new TerminalManager({
   hive: HIVE,
   ...(process.env.OFFICE_MAX_TERMINALS ? { maxConcurrent: Number(process.env.OFFICE_MAX_TERMINALS) } : {}),
 });
-const POLYMARKET_ROOT = '/Users/a/polymarket';
+const POLYMARKET_ROOT = path.join(os.homedir(), 'polymarket');
 const POLYMARKET_RESEARCH = path.join(POLYMARKET_ROOT, 'research');
 const POLYMARKET_STATE_PATH = path.join(POLYMARKET_RESEARCH, 'engine_state.json');
 const POLYMARKET_EXCLUSIONS_PATH = path.join(POLYMARKET_RESEARCH, 'market_exclusions.json');
 const POLYMARKET_BACKUP_DIR = path.join(POLYMARKET_ROOT, 'backups');
 const POLYMARKET_LAUNCHD_LABEL = 'com.aryan.pm-engine';
-const POLYMARKET_LAUNCHD_INSTALLED_PLIST = '/Users/a/Library/LaunchAgents/com.aryan.pm-engine.plist';
+const POLYMARKET_LAUNCHD_INSTALLED_PLIST = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.aryan.pm-engine.plist');
 const POLYMARKET_LAUNCHD_TARGET = `gui/${typeof process.getuid === 'function' ? process.getuid() : 501}/${POLYMARKET_LAUNCHD_LABEL}`;
 const TRADING_BOT = process.env.TRADING_BOT_PATH || path.join(os.homedir(), 'trading-bot');
 const PAPER_BENCHMARK = process.env.PAPER_BENCHMARK_PATH || path.join(os.homedir(), 'trading', 'paper-benchmark');
@@ -2352,6 +2353,11 @@ function getPolymarketLaunchdStatus() {
 }
 
 function getPolymarketRuntime() {
+  // On laptop, polymarket runs on mini - fetch remote status
+  if (isLaptop()) {
+    const remote = getPolymarketRuntimeRemote();
+    if (remote) return remote;
+  }
   const checkedAt = new Date().toISOString();
   const enginePath = path.join(POLYMARKET_RESEARCH, 'profitability_engine_fixed.py');
   const installedPlist = readPolymarketPlist();
@@ -2610,12 +2616,15 @@ app.get('/api/task-board', (_req, res) => {
 
 app.get('/api/tasks', (req, res) => {
   if (req.query.summary === '1' || req.query.summary === 'true') {
-    return res.json(getQueueSummary());
+    const { produceQueueSummaryDots } = require('./lib/dots/bridge');
+    return res.json(produceQueueSummaryDots());
   }
   if (req.query.counts === '1' || req.query.counts === 'true') {
-    return res.json({ counts: getFloorTaskCounts() });
+    const { produceFloorTaskCountsDots } = require('./lib/dots/bridge');
+    return res.json(produceFloorTaskCountsDots());
   }
-  res.json(getTasks());
+  const { produceTasksDots } = require('./lib/dots/bridge');
+  res.json(produceTasksDots());
 });
 
 app.get('/api/jarvis/tasks', (_req, res) => {
@@ -2786,7 +2795,8 @@ function getVerifyState() {
 }
 
 app.get('/api/verify', (_req, res) => {
-  res.json(buildSnapshot('verify'));
+  const { produceVerifyDots } = require('./lib/dots/bridge');
+  res.json(produceVerifyDots());
 });
 
 app.get('/api/office-manager', (_req, res) => {
@@ -2802,7 +2812,8 @@ app.get('/api/services/health', async (_req, res) => {
 });
 
 app.get('/api/sessions', (_req, res) => {
-  res.json(buildSnapshot('sessions'));
+  const { produceSessionsDots } = require('./lib/dots/bridge');
+  res.json(produceSessionsDots());
 });
 
 // Terminals across every host that publishes into this hive. A host that has
@@ -3166,7 +3177,8 @@ function getProjects() {
 }
 
 app.get('/api/projects', (_req, res) => {
-  res.json(buildSnapshot('projects'));
+  const { produceProjectsDots } = require('./lib/dots/bridge');
+  res.json(produceProjectsDots());
 });
 
 // ---------- trading bot routes ----------
@@ -3588,6 +3600,11 @@ app.post('/api/llm/test', async (req, res) => {
 
 // ---------- Polymarket Paper Trading ----------
 function getPolymarketState() {
+  // On laptop, polymarket runs on mini - fetch remote state
+  if (isLaptop()) {
+    const remote = getPolymarketStateRemote();
+    if (remote) return remote;
+  }
   const loaded = loadPolymarketState();
   const state = loaded?.state || null;
   const gate = readJsonCached(path.join(POLYMARKET_RESEARCH, 'profitability_gate.json'), null);
@@ -3621,6 +3638,11 @@ app.get('/api/polymarket', (_req, res) => {
 });
 
 function getPolymarketMarkets() {
+  // On laptop, polymarket runs on mini - fetch remote markets
+  if (isLaptop()) {
+    const remote = getPolymarketMarketsRemote();
+    if (remote) return remote;
+  }
   const loaded = loadPolymarketState();
   const exclusions = readMarketExclusions();
   return {

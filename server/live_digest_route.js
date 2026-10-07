@@ -22,6 +22,8 @@
 'use strict';
 
 const fs = require('node:fs');
+const path = require('path');
+const os = require('os');
 
 // Its own mtime-keyed cache rather than importing index.js's readJsonCached.
 // That helper is defined inline in a file multiple live sessions rewrite, so
@@ -53,7 +55,7 @@ function readJsonCached(file, fallback) {
   return value;
 }
 
-const LIVE_DIGEST_PATH = '/Users/a/trading/live_digest.json';
+const LIVE_DIGEST_PATH = process.env.LIVE_DIGEST_PATH || path.join(os.homedir(), 'trading', 'live_digest.json');
 
 // The digest embeds its own generated_at, so staleness is a property of the data
 // rather than something the route has to guess. Expose it rather than letting a

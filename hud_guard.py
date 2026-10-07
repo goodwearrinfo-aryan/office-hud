@@ -43,7 +43,13 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
-HUD_ROOT = "/Users/a/trading/openalice-fleet/office-hud"
+# Dynamic path resolution - supports both launchd env vars and direct execution
+_hud_root = os.environ.get("OFFICE_HUD_ROOT")
+if _hud_root:
+    HUD_ROOT = _hud_root
+else:
+    HUD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 BASE = "http://127.0.0.1:4747"
 STATE = os.path.join(HUD_ROOT, "hud_guard_state.json")
 BASELINE = os.path.join(HUD_ROOT, "hud_guard_baseline.json")
@@ -53,7 +59,12 @@ LOG = os.path.join(HUD_ROOT, "hud_guard.log")
 # so a floor deletion stays detectable rather than looking like a smaller list.
 FLOOR_LEDGER = os.path.join(HUD_ROOT, "floor_ledger.json")
 # The hive is the runtime data root; identity.md lives under it.
-HIVE = "/Users/a/trading/openalice-fleet/hive"
+_hive = os.environ.get("OPENALICE_HIVE") or os.environ.get("OFFICE_HUD_HIVE")
+if _hive:
+    HIVE = _hive
+else:
+    HIVE = os.path.join(os.path.dirname(HUD_ROOT), "hive")
+
 THROTTLE_SEC = 9 * 60
 
 REQUIRED_VIEWS = [

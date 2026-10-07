@@ -37,7 +37,7 @@ class Client {
 class LiveHub {
   /**
    * @param {{snapshot: (name: string) => any, alerts?: () => any[], heartbeatMs?: number,
-   *          isHostAllowed?: (host?: string) => boolean}} options
+   *          isHostAllowed?: (host?: string) => boolean, maxClients?: number}} options
    */
   constructor(options) {
     this.snapshot = options.snapshot;
@@ -46,6 +46,7 @@ class LiveHub {
     // close over the parameter.
     this.isHostAllowed = options.isHostAllowed;
     this.heartbeatMs = options.heartbeatMs || 25000;
+    this.maxClients = options.maxClients || 50;
     this.clients = new Map();
     this.sequence = 0;
     this.heartbeat = null;
@@ -56,7 +57,7 @@ class LiveHub {
   attach(server) {
     this.transport = attachWebSocketServer(server, {
       path: SOCKET_PATH,
-      maxClients: 12,
+      maxClients: this.maxClients,
       onConnection: (connection) => this._addClient(connection),
       isHostAllowed: this.isHostAllowed,
     });

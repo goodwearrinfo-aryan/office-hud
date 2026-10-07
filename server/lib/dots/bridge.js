@@ -25,6 +25,7 @@ const {
   buildTerminalsPayload,
   buildTerminalsSpawnedPayload,
   floorLivenessSystem,
+  floorProbeSystem,
   buildFloorsPayload,
   buildSummaryPayload,
   getRosterAge
@@ -75,6 +76,16 @@ function runFloorSystems(world) {
   ]);
 }
 
+/**
+ * Common system runner for floor probe (runs Python probe)
+ * @param {World} world
+ */
+function runFloorProbeSystems(world) {
+  runSystems(world, [
+    { system: floorProbeSystem, context: { hivePath: HIVE } }
+  ]);
+}
+
 // ==================== AGENTS ====================
 
 /**
@@ -118,18 +129,21 @@ function produceTasksDots() {
   runAgentSystems(world);
   runTaskSystems(world);
   
-  const tasks = world.getAllTasks().map(t => ({
-    task_id: t.id.replace('task:', ''),
-    title: t.title,
-    objective: t.objective,
-    status: t.status,
-    risk: t.risk,
-    assigned_agent: t.assignedAgent?.replace('agent:', ''),
-    claimed_by: t.claimedBy?.replace('agent:', ''),
-    claimed_at: t.claimedAt ? new Date(t.claimedAt).toISOString() : null,
-    result: t.result,
-    floor: t.floorId.replace('floor:', '')
-  }));
+  const tasks = [];
+  world.forEachTask((idx, t) => {
+    tasks.push({
+      task_id: t.id.replace('task:', ''),
+      title: t.title,
+      objective: t.objective,
+      status: t.status,
+      risk: t.risk,
+      assigned_agent: t.assignedAgent?.replace('agent:', ''),
+      claimed_by: t.claimedBy?.replace('agent:', ''),
+      claimed_at: t.claimedAt ? new Date(t.claimedAt).toISOString() : null,
+      result: t.result,
+      floor: t.floorId.replace('floor:', '')
+    });
+  });
   
   world.nextTick();
   return { tasks };
@@ -206,16 +220,139 @@ function produceTerminalsSpawnedDots() {
   return payload;
 }
 
+// ==================== PROJECTS ====================
+
+/**
+ * Produce projects payload
+ * @returns {Object} - { projects: [...] }
+ */
+function produceProjectsDots() {
+  const world = getWorld();
+  runAgentSystems(world);
+  runTaskSystems(world);
+  
+  const projectsPath = path.join(HIVE, 'projects.json');
+  let projectsData = { projects: [] };
+  try {
+    projectsData = JSON.parse(fs.readFileSync(projectsPath, 'utf8'));
+  } catch {
+    // File doesn't exist or is invalid
+  }
+  
+  // Enhance projects with task counts from World
+  const tasks = world.getAllTasks();
+  const projectTaskCounts = {};
+  for (const task of tasks) {
+    const projectId = task.floorId?.replace('floor:', 'f') || 'unknown';
+    projectTaskCounts[projectId] = (projectTaskCounts[projectId] || 0) + 1;
+  }
+  
+  const projects = (projectsData.projects || []).map(p => ({
+    ...p,
+    task_count: projectTaskCounts[p.project_id] || 0
+  }));
+  
+  const payload = { projects };
+  return payload;
+}
+
+/**
+ * Produce sessions payload
+ * @returns {Object} - { sessions: [...] }
+ */
+function produceSessionsDots() {
+  const now = Date.now();
+  const SESSION_STALE_MS = 5 * 60 * 1000;
+  
+  const stamp = (session, extra = {}) => {
+    const heartbeat = session.last_heartbeat ? Date.parse(session.last_heartbeat) : 
+                     session.updated_at ? Date.parse(session.updated_at) : 
+                     session.started_at ? Date.parse(session.started_at) : null;
+    const heartbeatAgeSec = heartbeat == null ? null : Math.max(0, Math.floor((now - heartbeat) / 1000));
+    const status = String(session.status || 'UNKNOWN').toUpperCase();
+    const terminal = ['STOPPED', 'DEAD', 'ERROR', 'STALE'].includes(status);
+    return {
+      ...session,
+      ...extra,
+      heartbeat_age_sec: heartbeatAgeSec,
+      fresh: heartbeatAgeSec != null && heartbeatAgeSec <= SESSION_STALE_MS / 1000 && !terminal,
+    };
+  };
+  
+  // Local sessions
+  const sessionsPath = path.join(HIVE, 'sessions.json');
+  let localSessions = { sessions: [] };
+  try {
+    localSessions = JSON.parse(fs.readFileSync(sessionsPath, 'utf8'));
+  } catch {
+    // File doesn't exist
+  }
+  
+  // Remote sessions from terminal snapshot
+  const { buildTerminalsPayload } = require('./systems');
+  const terminalWorld = getWorld();
+  runTerminalSystems(terminalWorld);
+  const terminalData = buildTerminalsPayload(terminalWorld);
+  const remoteSessions = terminalData.sessions || [];
+  
+  const sessions = [
+    ...(localSessions.sessions || []).map(s => stamp(s, { host: s.host || require('os').hostname().split('.')[0] })),
+    ...remoteSessions.map(s => stamp(s))
+  ].sort((a, b) => {
+    if (a.fresh !== b.fresh) return a.fresh ? -1 : 1;
+    return (b.heartbeat_age_sec ?? Infinity) - (a.heartbeat_age_sec ?? Infinity);
+  });
+  
+  return { sessions };
+}
+
+/**
+ * Produce verify payload
+ * @returns {Object}
+ */
+function produceVerifyDots() {
+  const verifyPath = path.join(HIVE, 'verify_state.json');
+  let st = null;
+  try {
+    st = JSON.parse(fs.readFileSync(verifyPath, 'utf8'));
+  } catch {
+    return { present: false };
+  }
+  
+  const tally = st.verdict_tally || {};
+  const scanned = (tally.OK || 0) + (tally.DODGE || 0) + (tally.SHORT || 0) + (tally.FAIL || 0) + (tally.EMPTY || 0);
+  const outputQualityRatePct = scanned > 0 ? Math.round(((tally.OK || 0) / scanned) * 1000) / 10 : null;
+  
+  return {
+    present: true,
+    at: st.at,
+    verdict_tally: tally,
+    verdict_tally_total: scanned,
+    requeued: st.requeued || [],
+    quarantined: st.quarantined || [],
+    outputQualityRatePct,
+    verifiedWork: null,
+    verifiedWorkDenominator: null,
+    verificationCoverage: null,
+    verificationBasis: 'no independent verifier and no artifact ledger: verdict ' +
+      'tallies measure output quality, not whether work was real',
+  };
+}
+
 // ==================== FLOORS ====================
 
 /**
- * Produce floors payload
+ * Produce floors payload (runs Python probe)
  * @returns {Object}
  */
 function produceFloorsDots() {
   const world = getWorld();
-  runFloorSystems(world);
+  runSystems(world, [
+    { system: floorProbeSystem, context: { hivePath: HIVE } }
+  ]);
   
+  // We need to import buildFloorsPayload here since it's not in the require at top
+  const { buildFloorsPayload } = require('./systems');
   const payload = buildFloorsPayload(world);
   world.nextTick();
   return payload;
@@ -248,6 +385,15 @@ module.exports = {
   produceTerminalsDots,
   produceTerminalsSpawnedDots,
   
-// Floors
+  // Projects
+  produceProjectsDots,
+  
+  // Sessions
+  produceSessionsDots,
+  
+  // Verify
+  produceVerifyDots,
+  
+  // Floors
   produceFloorsDots
 };

@@ -134,15 +134,9 @@ function query(world, query) {
  * @returns {Object}
  */
 function buildAgentsPayload(world) {
-  const agents = world.getAllAgents();
-  const now = Date.now();
-  
-  return {
-    hive: process.env.OFFICE_HUD_HIVE || '',
-    label: process.env.OFFICE_HUD_LABEL || 'Fleet hive',
-    present: true,
-    godId: 'god',
-    agents: agents.map(a => ({
+  const agents = [];
+  world.forEachAgent((idx, a) => {
+    agents.push({
       id: a.id.replace('agent:', ''),
       name: a.name,
       role: a.role,
@@ -173,7 +167,15 @@ function buildAgentsPayload(world) {
       currentTaskId: a.currentTaskId,
       currentTaskTitle: a.currentTaskTitle,
       evidence: a.evidence
-    }))
+    });
+  });
+  
+  return {
+    hive: process.env.OFFICE_HUD_HIVE || '',
+    label: process.env.OFFICE_HUD_LABEL || 'Fleet hive',
+    present: true,
+    godId: 'god',
+    agents
   };
 }
 

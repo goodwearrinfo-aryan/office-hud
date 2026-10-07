@@ -92,7 +92,6 @@ export default function CandleStrategies() {
 
   const symbols = Object.entries(feed.symbols ?? {});
   const totalConfirmed = symbols.reduce((sum, [, data]) => sum + data.summary.confirmed_long + data.summary.confirmed_short, 0);
-  const totalNoTrade = symbols.reduce((sum, [, data]) => sum + data.summary.no_trade, 0);
 
   return (
     <div className="h-full overflow-auto p-4">

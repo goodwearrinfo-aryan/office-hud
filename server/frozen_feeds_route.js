@@ -32,10 +32,10 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 
-const REGISTRY_PATH =
-  '/Users/a/trading/openalice-fleet/research/feed-lifecycle/registry.json';
-const FEED_DIR = '/Users/a/trading/openalice/ui/public';
+const REGISTRY_PATH = process.env.FEED_LIFECYCLE_REGISTRY || path.join(os.homedir(), 'trading', 'openalice-fleet', 'research', 'feed-lifecycle', 'registry.json');
+const FEED_DIR = process.env.OPEN_UI_PUBLIC_DIR || path.join(os.homedir(), 'trading', 'openalice', 'ui', 'public');
 
 // A feed older than this is presented as a day count rather than hours, because
 // "29h" reads as recent and these are frozen by design. The number is still

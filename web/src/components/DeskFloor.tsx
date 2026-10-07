@@ -4,58 +4,24 @@ import CommandCompose from './CommandCompose';
 import { claimLabel, dispatchSummary, headroomLine, historyLabel, mayDrawCapacity, verifyTally } from '../deskTruth';
 import type { PreviewLike, RateLimitLike } from '../deskTruth';
 import { previewJarvisCommand } from '../jarvisPreview';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { EMPTY_MODEL, emptyStateText, parseFrame, reduce, type FollowModel } from '../terminalFollow';
+import { useEffect, useState } from 'react';
+import TerminalRenderer from './TerminalRenderer';
+import { useTerminal } from '../hooks/useTerminal';
+import { TerminalErrorBoundary } from './TerminalErrorBoundary';
 
 /**
- * F18 -- The Desk: what this office has been told, what it is doing, what became of
+ * F17 -- The Desk: what this office has been told, what it is doing, what became of
  * it, and whether this machine is even allowed to say.
- *
- * WHY THIS FLOOR IS A FLOOR AND NOT A PANEL
- * -----------------------------------------
- * Everything here already had a home. /api/jarvis/tasks is drawn in the Jarvis
- * console, /api/verify in the God panel, /api/task-board on F16. What did not exist
- * anywhere is the office's own account of ITSELF: what it was told, and whether
- * that record can be believed.
- *
- * The self-account is the part that lies. Measured off the live audit while
- * building this: `status: "ok"`, `count: 0`, `scanned: 375`, and a window that had
- * read 524288 bytes of a 15755023-byte log with `truncated: true`. So "no commands"
- * was true inside the window and said nothing about the file -- and `ok: true` is
- * exactly the kind of green an operator stops reading. This floor therefore states
- * the window every time it reports an absence, and never reports one without a
- * completed read behind it. See web/src/deskTruth.ts.
- *
- * Truth rules
- * -----------
- * - An empty queue is "nothing queued", not "healthy" and not "nothing happened".
- * - The history line is the server's own read outcome, quoted, not summarised.
- * - Verdict counts always carry their denominator. 631 of 631 is a different claim
- *   from 631 OK, and only one of them is true.
- * - Dispatch state is reported with its reason. A bare "READ ONLY" does not tell an
- *   operator whether the block is topology, a missing queue, or their own typing.
- * - The dispatch banner names the path it went through, because an SSH port-forward
- *   is loopback and therefore local. Measured, not assumed: the gate cannot tell a
- *   local browser from a forwarded request.
- *
- * What it does not do: claim a terminal is running, invent an owner, or write
- * anything except through the one shared compose.
  */
 export default function DeskFloor() {
   const { data: jarvisTasks } = useLive<JarvisTasksResponse>('/api/jarvis/tasks');
   const { data: audit } = useLive<JarvisAuditResponse>('/api/jarvis/audit?limit=25');
   const { data: autonomy } = useLive<AutonomyState>('/api/autonomy');
-  // Typed as TaskRecord, the shape /api/task-board's rows actually have. The
-  // board is pre-grouped server-side to keep this payload at 28KB instead of the
-  // 3.8MB tasks.json it replaced, so the rows carry TaskRecord and not a wider type.
   const { data: board } = useLive<{ rows?: TaskRecord[] }>('/api/task-board');
   const { data: verify } = useLive<VerifyState>('/api/verify');
   const { data: queue } = useLive<QueueSummary>('/api/queue');
   const { data: headroom } = useLive<RateLimitLike>('/api/llm/rate-limits');
 
-  // One judgement, reused for the banner. It asks about a throwaway prompt because
-  // the endpoint judges fields and dispatch together; the prompt is never sent, and
-  // the preview route is proven by test to write nothing.
   const [capability, setCapability] = useState<PreviewLike | null>(null);
   useEffect(() => {
     let alive = true;
@@ -65,45 +31,31 @@ export default function DeskFloor() {
     return () => { alive = false; };
   }, []);
 
-// The follow pane. It reads the terminal's output over SSE. Typing is a
-    // separate, explicit act: the reader never POSTs on its own, and the input
-    // form only appears for a running tmux terminal, so watching stays passive.
-    const { data: spawned } = useLive<{ terminals?: { id: string; status?: string; type?: string }[] }>('/api/terminals/spawned');
-    const terminals = spawned?.terminals ?? [];
-    const [attached, setAttached] = useState<string | null>(null);
-    const [model, setModel] = useState<FollowModel>(EMPTY_MODEL);
-    const [draft, setDraft] = useState('');
-    const [sending, setSending] = useState(false);
-    const [sendNote, setSendNote] = useState<string | null>(null);
-    const stream = useRef<EventSource | null>(null);
+  const { data: spawned } = useLive<{ terminals?: { id: string; status?: string; type?: string; command?: string; pane_title?: string; session_name?: string; uptime_sec?: number }[] }>('/api/terminals/spawned');
+  const terminals = spawned?.terminals ?? [];
 
-    // A background terminal is a one-shot command with no stdin handle, so the
-    // server refuses input for it. Mirror that here rather than offering a box
-    // that would only ever return an error.
-    const attachedTerminal = terminals.find(t => t.id === attached);
-    const writable = Boolean(
-      attachedTerminal
-      && attachedTerminal.type === 'tmux'
-      && (attachedTerminal.status === 'running' || attachedTerminal.status === 'starting'),
-    );
+  const [attached, setAttached] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendNote, setSendNote] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!attached) { setModel(EMPTY_MODEL); return undefined; }
-    setModel({ ...EMPTY_MODEL, state: 'connecting' });
-    const source = new EventSource(`/api/terminals/${encodeURIComponent(attached)}/follow`);
-    stream.current = source;
-    const onMessage = (event: MessageEvent) => {
-      setModel(previous => reduce(previous, parseFrame(String(event.data ? `data: ${event.data}` : ''))));
-    };
-    source.addEventListener('hello', onMessage);
-    source.addEventListener('log', onMessage);
-    source.addEventListener('output', onMessage);
-    source.onmessage = onMessage;
-    source.onerror = () => setModel(previous => ({ ...previous, state: 'reconnecting' }));
-    return () => { source.close(); stream.current = null; };
-  }, [attached]);
+  const attachedTerminal = terminals.find(t => t.id === attached);
+  const writable = Boolean(
+    attachedTerminal
+    && attachedTerminal.type === 'tmux'
+    && (attachedTerminal.status === 'running' || attachedTerminal.status === 'starting'),
+  );
 
-  const empty = useMemo(() => emptyStateText(model, terminals.length), [model, terminals.length]);
+  const {
+    connected,
+    connecting,
+    sendInput,
+    resize,
+  } = useTerminal({
+    terminalId: attached,
+    onData: undefined,
+    onConnectionChange: undefined,
+  });
 
   const dispatch = dispatchSummary(capability);
   const tally = verifyTally(verify);
@@ -193,64 +145,96 @@ export default function DeskFloor() {
               <p className="panel-note">No task reports a claim, and this HUD has started no terminals -- so there is no output to attach to.</p>
             ) : (
               <>
-                <div className="flex gap-2 items-center">
-                  <select className="input" value={attached ?? ''} onChange={e => setAttached(e.target.value || null)}>
+                <div className="flex gap-2 items-center mb-2">
+                  <select
+                    className="input"
+                    value={attached ?? ''}
+                    onChange={e => setAttached(e.target.value || null)}
+                  >
                     <option value="">Choose a terminal to read…</option>
-                    {terminals.map(t => <option key={t.id} value={t.id}>{t.id}{t.status ? ` -- ${t.status}` : ''}</option>)}
+                    {terminals.map(t => (
+                      <option key={t.id} value={t.id}>
+                        {t.id}
+                        {t.session_name && ` (${t.session_name})`}
+                        {t.pane_title && ` — ${t.pane_title}`}
+                        {t.status ? ` — ${t.status}` : ''}
+                        {t.uptime_sec && ` — ${Math.floor(t.uptime_sec / 60)}m`}
+                      </option>
+                    ))}
                   </select>
-{attached && <span className="badge badge-neutral">{writable ? 'writable' : 'read-only'}</span>}
-                  </div>
-                  {attached && writable && (
-                    <form
-                      className="flex gap-2 items-center"
-                      onSubmit={async (event) => {
-                        event.preventDefault();
-                        const text = draft.trim();
-                        if (!text || !attached) return;
-                        setSending(true);
-                        setSendNote(null);
-                        try {
-                          const response = await fetch(`/api/terminals/${encodeURIComponent(attached)}/input`, {
-                            method: 'POST',
-                            headers: { 'content-type': 'application/json' },
-                            body: JSON.stringify({ text }),
-                          });
-                          const payload = await response.json().catch(() => ({}));
-                          if (!response.ok || payload?.ok === false) {
-                            setSendNote(payload?.error?.message || `input failed (HTTP ${response.status})`);
-                          } else {
-                            setDraft('');
-                          }
-                        } catch (error: any) {
-                          setSendNote(String(error?.message || error));
-                        } finally {
-                          setSending(false);
-                        }
-                      }}
-                    >
-                      <input
-                        className="input"
-                        value={draft}
-                        onChange={e => setDraft(e.target.value)}
-                        placeholder="Type a command and press Enter…"
-                        aria-label="Send input to the attached terminal"
-                        disabled={sending}
-                      />
-                      <button className="btn" type="submit" disabled={sending || !draft.trim()}>{sending ? 'Sending…' : 'Send'}</button>
-                    </form>
+                  {attached && (
+                    <span className={`badge ${connected ? 'badge-success' : 'badge-warning'}`}>
+                      {connecting ? 'connecting…' : connected ? 'connected' : 'disconnected'}
+                    </span>
                   )}
-                  {attached && !writable && (
-                    <p className="panel-note">
-                      This terminal is read-only: only a running tmux terminal accepts typed input. Spawn one to drive it.
-                    </p>
-                  )}
-                  {sendNote && <p className="panel-note text-alert">{sendNote}</p>}
-                {model.dropped > 0 && <p className="panel-note">{model.dropped} earlier lines dropped to keep the buffer bounded.</p>}
-                {model.note && <p className="panel-note text-alert">{model.note}</p>}
-                {empty && <p className="panel-note">{empty}</p>}
-                {model.lines.length > 0 && (
-                  <pre className="desk-follow-log">{model.lines.map(line => `${line.text}\n`)}</pre>
+                </div>
+
+                {attached && writable && (
+                  <form
+                    className="flex gap-2 items-center mb-2"
+                    onSubmit={async (event) => {
+                      event.preventDefault();
+                      const text = draft.trim();
+                      if (!text || !attached) return;
+                      setSending(true);
+                      setSendNote(null);
+                      try {
+                        const ok = await sendInput(text);
+                        if (ok) setDraft('');
+                        else setSendNote('Failed to send input');
+                      } catch (error: any) {
+                        setSendNote(String(error?.message || error));
+                      } finally {
+                        setSending(false);
+                      }
+                    }}
+                  >
+                    <input
+                      className="input flex-1"
+                      value={draft}
+                      onChange={e => setDraft(e.target.value)}
+                      placeholder="Type a command and press Enter…"
+                      aria-label="Send input to the attached terminal"
+                      disabled={sending || !connected}
+                    />
+                    <button className="btn" type="submit" disabled={sending || !draft.trim() || !connected}>
+                      {sending ? 'Sending…' : 'Send'}
+                    </button>
+                  </form>
                 )}
+
+                {attached && !writable && (
+                  <p className="panel-note mb-2">
+                    This terminal is read-only: only a running tmux terminal accepts typed input. Spawn one to drive it.
+                  </p>
+                )}
+
+                {sendNote && <p className="panel-note text-alert mb-2">{sendNote}</p>}
+
+                <div className="flex items-center gap-2 mb-2">
+                  {connected && (
+                    <span className="badge badge-success text-xs">● LIVE</span>
+                  )}
+                  {!connected && connecting && (
+                    <span className="badge badge-warning text-xs">⟳ RECONNECTING…</span>
+                  )}
+                  {!connected && !connecting && attached && (
+                    <span className="badge badge-error text-xs">✕ DISCONNECTED</span>
+                  )}
+                </div>
+
+                <TerminalErrorBoundary
+                  fallback={
+                    <div className="panel p-4 text-center text-hud-red">
+                      Terminal renderer crashed. Check console for details.
+                    </div>
+                  }
+                >
+                  <TerminalRenderer
+                    onData={undefined}
+                    onResize={(cols, rows) => resize(cols, rows)}
+                  />
+                </TerminalErrorBoundary>
               </>
             )}
           </div>
@@ -286,8 +270,6 @@ export default function DeskFloor() {
             ? <span className="badge badge-success">{headroom?.headroom} available</span>
             : <span className="badge badge-neutral">not measured</span>}
         </div>
-        {/* No bar, deliberately. The limiter reports a full bucket for any key it has
-            never seen, so a bar here would be drawn from a default. See deskTruth. */}
         <p className="panel-note">{headroomLine(headroom)}</p>
       </section>
 

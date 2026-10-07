@@ -24,17 +24,25 @@ module.exports = {
   
   // Terminal systems
   terminalSystem: terminalSystem.terminalSystem,
+  buildTerminalHosts: terminalSystem.buildTerminalHosts,
   buildTerminalsPayload: terminalSystem.buildTerminalsPayload,
   buildTerminalsSpawnedPayload: terminalSystem.buildTerminalsSpawnedPayload,
   
   // Floor systems
   floorLivenessSystem: floorSystem.floorLivenessSystem,
   floorDistinctnessSystem: floorSystem.floorDistinctnessSystem,
+  floorProbeSystem: floorSystem.floorProbeSystem,
   buildFloorsPayload: floorSystem.buildFloorsPayload,
   buildSummaryPayload: floorSystem.buildSummaryPayload,
   getRosterAge: floorSystem.getRosterAge,
   
   // Floor/Task helpers (legacy)
   buildFloorRollup: agentSystem.buildFloorRollup,
-  getRosterAge: floorSystem.getRosterAge
+  getRosterAge: floorSystem.getRosterAge,
+  
+  // Terminal helpers
+  redactEntry: terminalSystem.redactEntry,
+  redactCommand: terminalSystem.redactCommand,
+  redactAll: terminalSystem.redactAll,
+  getSpawnPolicyAudit: terminalSystem.getSpawnPolicyAudit
 };

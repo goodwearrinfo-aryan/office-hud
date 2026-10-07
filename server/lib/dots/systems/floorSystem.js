@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 /**
  * Read hive fleet.json
@@ -72,6 +73,122 @@ function getRosterAge(hivePath) {
   } catch {
     return { age_seconds: null, stale: true, observed_at: null };
   }
+}
+
+const FLOOR_IDS = Array.from({ length: 12 }, (_, i) => `F${i + 1}`);
+const BAD_STATES = new Set(['FAILED', 'STOPPED', 'DEGRADED', 'BLOCKED', 'UNKNOWN']);
+
+/**
+ * Run the floor health probe (Python script) - mimics floor_health.js
+ * @param {string} hivePath
+ * @returns {Object}
+ */
+function runFloorHealthProbe(hivePath) {
+  const script = path.join(hivePath, 'lib', 'floor_health.py');
+  if (!fs.existsSync(script)) {
+    return {
+      floors: unknownFloors('hive/lib/floor_health.py is missing'),
+      source: 'unavailable',
+      not_verified: true,
+    };
+  }
+  try {
+    const out = execFileSync('/usr/bin/python3', [script, '--json'], {
+      encoding: 'utf8',
+      timeout: 25000,
+    });
+    const result = JSON.parse(out);
+    const floors = result.floors;
+    if (!Array.isArray(floors) || floors.length === 0) {
+      return {
+        floors: unknownFloors('floor_health.py returned no floors'),
+        source: 'empty',
+        not_verified: true,
+      };
+    }
+    // Pad to full set
+    const byId = new Map(floors.map((f) => [String(f.floor || '').toLowerCase(), f]));
+    const complete = FLOOR_IDS.map((id) => byId.get(id.toLowerCase())
+      || {
+        floor: id.toLowerCase(),
+        manager: id,
+        state: 'UNKNOWN',
+        reason: 'not reported by the floor health probe',
+        manager_alive: false,
+        task_counts: {},
+      });
+
+    const summary = {};
+    for (const f of complete) summary[f.state] = (summary[f.state] || 0) + 1;
+
+    return {
+      floors: complete,
+      source: script,
+      summary,
+      at: Date.now(),
+    };
+  } catch (error) {
+    return {
+      floors: unknownFloors(`floor health probe failed: ${error.message || error}`),
+      source: 'error',
+      not_verified: true,
+    };
+  }
+}
+
+function unknownFloors(reason) {
+  return FLOOR_IDS.map((id) => ({
+    floor: id.toLowerCase(),
+    manager: id,
+    state: 'UNKNOWN',
+    reason,
+    manager_alive: false,
+    task_counts: {},
+  }));
+}
+
+/**
+ * Floor Probe System - Runs the Python floor health probe and writes to World
+ * 
+ * @param {World} world
+ * @param {Object} context
+ * @param {string} context.hivePath
+ * @returns {World}
+ */
+function floorProbeSystem(world, context) {
+  const { hivePath } = context;
+  
+  const result = runFloorHealthProbe(hivePath);
+  
+  // Write probe results as floor entities
+  for (const floor of result.floors) {
+    const floorId = `floor:${floor.floor}`;
+    const floorObj = {
+      id: floorId,
+      label: floor.floor.toUpperCase(),
+      manager: floor.manager || null,
+      managerAlive: !!floor.manager_alive,
+      runtimeState: floor.state,
+      counters: floor.task_counts || {},
+      responsibilities: [],
+      currentTask: floor.current_task || null,
+      lastActivity: floor.last_activity || null,
+      // Probe-specific fields
+      reason: floor.reason || null,
+      worker_count: floor.worker_count || 0,
+      failed_workers: floor.failed_workers || 0,
+      stalled_tasks: floor.stalled_tasks || 0,
+      source: result.source,
+      not_verified: result.not_verified === true,
+      at: result.at
+    };
+    world.setFloor(floorObj);
+  }
+  
+  // Store probe metadata
+  world._floorProbeResult = result;
+  
+  return world;
 }
 
 /**
@@ -178,6 +295,50 @@ function floorDistinctnessSystem(world) {
  * @returns {Object}
  */
 function buildFloorsPayload(world) {
+  // Use probe data if available
+  const probeResult = world._floorProbeResult;
+  if (probeResult && probeResult.floors) {
+    const floors = [];
+    const counts = {};
+    
+    for (const floor of probeResult.floors) {
+      const floorId = floor.floor;
+      floors.push({
+        floor: floorId,
+        manager: floor.manager,
+        state: floor.state,
+        reason: floor.reason,
+        manager_alive: !!floor.manager_alive,
+        task_counts: floor.task_counts || {},
+        current_task: floor.current_task || null,
+        last_activity: floor.last_activity || null
+      });
+      
+      counts[floorId] = {
+        state: floor.state,
+        manager_alive: !!floor.manager_alive,
+        reason: floor.reason || null,
+        current_task: floor.current_task || null,
+        last_activity: floor.last_activity || null,
+        tasks: floor.task_counts || {},
+        workers: floor.worker_count || 0,
+        failed_workers: floor.failed_workers || 0,
+        stalled: floor.stalled_tasks || 0,
+        degraded: BAD_STATES.has(floor.state)
+      };
+    }
+    
+    return {
+      floors,
+      counts,
+      summary: probeResult.summary || {},
+      source: probeResult.source || 'DOTS',
+      not_verified: probeResult.not_verified === true,
+      at: probeResult.at || Date.now()
+    };
+  }
+  
+  // Fallback to agent-based rollup
   const floors = world.getAllFloors();
   const counts = {};
   
@@ -200,16 +361,7 @@ function buildFloorsPayload(world) {
   return {
     floors,
     counts,
-    summary: {
-      total: floors.length,
-      running: floors.reduce((sum, f) => sum + f.counters.running, 0),
-      working: floors.reduce((sum, f) => sum + f.counters.working, 0),
-      idle: floors.reduce((sum, f) => sum + f.counters.idle, 0),
-      stale: floors.reduce((sum, f) => sum + f.counters.stale, 0),
-      failed: floors.reduce((sum, f) => sum + f.counters.failed, 0),
-      offline: floors.reduce((sum, f) => sum + f.counters.offline, 0),
-      breaker: floors.reduce((sum, f) => sum + f.counters.breaker, 0)
-    },
+    summary: {},
     source: 'DOTS',
     not_verified: false,
     at: Date.now()
@@ -292,9 +444,14 @@ function buildSummaryPayload(world, context) {
 module.exports = {
   floorLivenessSystem,
   floorDistinctnessSystem,
+  floorProbeSystem,
   buildFloorsPayload,
   buildSummaryPayload,
   getRosterAge,
   readFleet,
-  readAgentResponsibilities
+  readAgentResponsibilities,
+  runFloorHealthProbe,
+  unknownFloors,
+  FLOOR_IDS,
+  BAD_STATES
 };

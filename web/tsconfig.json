@@ -20,7 +20,10 @@
     "noUnusedParameters": true
   },
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "src/**/*.test.tsx",
+    "src/**/*.test.ts",
+    "src/test/utils.tsx"
   ],
   "include": [
     "src"
