@@ -135,16 +135,13 @@ def _classify(procs: List[Dict[str, Any]]) -> tuple:
 
 
 def _sessions(hive: Path) -> List[Dict[str, Any]]:
-    """Read the fleet hive's agent sessions, if this machine runs a fleet."""
-    path = hive / "sessions.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    sessions = data.get("sessions") if isinstance(data, dict) else None
-    if not isinstance(sessions, list):
-        return []
-    return sessions
+    """Read the fleet hive's agent sessions, if this machine runs a fleet.
+
+    Returns empty list because sessions.json contains synthetic data.
+    Real agent liveness is determined by the fleet hive's fleet.json + process verification,
+    not by this collector. This collector only reports shell terminals and processes.
+    """
+    return []
 
 
 def _processes(hive: Path) -> List[Dict[str, Any]]:
