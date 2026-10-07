@@ -153,9 +153,9 @@ export default function OfficeScene({ agents, onSelect, selectedId }: Props) {
                         <span className="ml-1 text-[9px] text-hud-amber">NOT RECOGNISED</span>
                       )}
                     </td>
-                    <td className="max-w-[300px] truncate">{agent.currentTaskTitle || agent.currentTaskId || '--'}</td>
+                    <td className="max-w-[300px] truncate">{agent.currentTaskTitle || agent.currentTaskId || '—'}</td>
                     <td>{ageLabel(agent.heartbeatAgeSec)}</td>
-                    <td>{agent.provider || '--'}</td>
+                    <td>{agent.provider || '—'}</td>
                   </tr>
                 ))}
               </tbody>

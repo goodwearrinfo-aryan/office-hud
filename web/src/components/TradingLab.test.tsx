@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import '@testing-library/jest-dom';
 import { renderWithProviders, mockUseLive, createMockBacktestData, clearMockUseLive } from '../test/utils';
 import TradingLab from '../components/TradingLab';
 
@@ -27,52 +29,51 @@ describe('TradingLab', () => {
   });
 
   it('renders without crashing', () => {
-    const { container } = renderWithProviders(<TradingLab onNavigate={() => {}} />);
-    expect(container).toBeInTheDocument();
+    renderWithProviders(<TradingLab onNavigate={() => {}} />);
+    expect(screen.container).toBeInTheDocument();
   });
 
   it('shows floor title', () => {
-    const { getByText } = renderWithProviders(<TradingLab onNavigate={() => {}} />);
-    expect(getByText('F6 · TRADING LAB')).toBeInTheDocument();
+    renderWithProviders(<TradingLab onNavigate={() => {}} />);
+    expect(screen.getByText('F6 · TRADING LAB')).toBeInTheDocument();
   });
 
   it('shows READ ONLY badge', () => {
-    const { getByText } = renderWithProviders(<TradingLab onNavigate={() => {}} />);
-    expect(getByText('READ ONLY · PAPER / TESTNET')).toBeInTheDocument();
+    renderWithProviders(<TradingLab onNavigate={() => {}} />);
+    expect(screen.getByText('READ ONLY · PAPER / TESTNET')).toBeInTheDocument();
   });
 
   it('renders metric cards', () => {
-    const { getAllByText } = renderWithProviders(<TradingLab onNavigate={() => {}} />);
-    expect(getAllByText('DATABASE')).toHaveLength(1);
-    expect(getAllByText('TRADING LOG')).toHaveLength(1);
-    expect(getAllByText('STRATEGY FILES')).toHaveLength(2); // metric label + table header
+    renderWithProviders(<TradingLab onNavigate={() => {}} />);
+    expect(screen.getAllByText('DATABASE')).toHaveLength(1);
+    expect(screen.getAllByText('TRADING LOG')).toHaveLength(1);
+    expect(screen.getAllByText('STRATEGY FILES')).toHaveLength(2);
   });
 
   it('renders backtest table with data', () => {
-    const { getByText, getAllByText } = renderWithProviders(<TradingLab onNavigate={() => {}} />);
-    expect(getByText('BACKTEST RESULTS')).toBeInTheDocument();
-    const emaCrossover = getAllByText('EMA_Crossover');
+    renderWithProviders(<TradingLab onNavigate={() => {}} />);
+    expect(screen.getByText('BACKTEST RESULTS')).toBeInTheDocument();
+    const emaCrossover = screen.getAllByText('EMA_Crossover');
     expect(emaCrossover.length).toBeGreaterThanOrEqual(1);
-    const rsi = getAllByText('RSI_MeanReversion');
+    const rsi = screen.getAllByText('RSI_MeanReversion');
     expect(rsi.length).toBeGreaterThanOrEqual(1);
-    expect(getByText('1.85')).toBeInTheDocument(); // Sharpe
-    expect(getByText('23.4%')).toBeInTheDocument(); // Return
+    expect(screen.getByText('1.85')).toBeInTheDocument();
+    expect(screen.getByText('23.4%')).toBeInTheDocument();
   });
 
   it('renders walk-forward table with data', () => {
-    const { getByText, getAllByText } = renderWithProviders(<TradingLab onNavigate={() => {}} />);
-    expect(getByText('WALK-FORWARD RESULTS')).toBeInTheDocument();
-    // The "5" in "5 / 7" is part of a text node, use a partial match
-    const positiveCells = getAllByText((content) => content.includes('5') && content.includes('/'));
+    renderWithProviders(<TradingLab onNavigate={() => {}} />);
+    expect(screen.getByText('WALK-FORWARD RESULTS')).toBeInTheDocument();
+    const positiveCells = screen.getAllByText((content) => content.includes('5') && content.includes('/'));
     expect(positiveCells.length).toBeGreaterThanOrEqual(1);
   });
 
   it('renders strategy files table', () => {
-    const { getAllByText, getByText } = renderWithProviders(<TradingLab onNavigate={() => {}} />);
-    const strategyFilesHeaders = getAllByText('STRATEGY FILES');
-    expect(strategyFilesHeaders.length).toBe(2); // metric label + table header
-    expect(getByText('ema_crossover.py')).toBeInTheDocument();
-    expect(getByText('rsi_meanrev.py')).toBeInTheDocument();
+    renderWithProviders(<TradingLab onNavigate={() => {}} />);
+    const strategyFilesHeaders = screen.getAllByText('STRATEGY FILES');
+    expect(strategyFilesHeaders.length).toBe(2);
+    expect(screen.getByText('ema_crossover.py')).toBeInTheDocument();
+    expect(screen.getByText('rsi_meanrev.py')).toBeInTheDocument();
   });
 
   it('shows loading state when data is not ready', () => {
@@ -80,8 +81,8 @@ describe('TradingLab', () => {
     mockUseLive('/api/trading/backtests', null, null, true);
     mockUseLive('/api/trading/strategies', mockStrategies, null, false);
     mockUseLive('/api/trading/live', mockLive, null, false);
-    const { getByText } = renderWithProviders(<TradingLab onNavigate={() => {}} />);
-    expect(getByText('Loading backtest data…')).toBeInTheDocument();
+    renderWithProviders(<TradingLab onNavigate={() => {}} />);
+    expect(screen.getByText('Loading backtest data…')).toBeInTheDocument();
   });
 
   it('shows error state when backtest data fails', () => {
@@ -89,8 +90,8 @@ describe('TradingLab', () => {
     mockUseLive('/api/trading/backtests', null, 'Failed to fetch', false);
     mockUseLive('/api/trading/strategies', mockStrategies, null, false);
     mockUseLive('/api/trading/live', mockLive, null, false);
-    const { getByText } = renderWithProviders(<TradingLab onNavigate={() => {}} />);
-    expect(getByText('Backtest data unavailable: Failed to fetch')).toBeInTheDocument();
+    renderWithProviders(<TradingLab onNavigate={() => {}} />);
+    expect(screen.getByText('Backtest data unavailable: Failed to fetch')).toBeInTheDocument();
   });
 
   it('shows empty state when no backtest data', () => {
@@ -98,7 +99,7 @@ describe('TradingLab', () => {
     mockUseLive('/api/trading/backtests', { backtest: {}, walkforward: {} }, null, false);
     mockUseLive('/api/trading/strategies', mockStrategies, null, false);
     mockUseLive('/api/trading/live', mockLive, null, false);
-    const { getByText } = renderWithProviders(<TradingLab onNavigate={() => {}} />);
-    expect(getByText('No backtest data')).toBeInTheDocument();
+    renderWithProviders(<TradingLab onNavigate={() => {}} />);
+    expect(screen.getByText('No backtest data')).toBeInTheDocument();
   });
 });

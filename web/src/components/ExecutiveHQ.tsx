@@ -100,7 +100,7 @@ export default function ExecutiveHQ() {
         <div className="panel p-4">
           <div className="text-xs text-hud-dim">FREE HARNESS</div>
           <div className={`text-2xl font-mono font-bold ${harness?.ok ? 'text-hud-green' : 'text-hud-red'}`}>{harness?.status ?? 'CHECKING'}</div>
-          <div className="text-xs text-hud-dim truncate">{harness?.provider ?? '--'} · {harness?.model ?? '--'}</div>
+          <div className="text-xs text-hud-dim truncate">{harness?.provider ?? '—'} · {harness?.model ?? '—'}</div>
         </div>
         <div className="panel p-4">
           <div className="text-xs text-hud-dim">SPENDING CAP</div>

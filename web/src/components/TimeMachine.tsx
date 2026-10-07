@@ -185,7 +185,7 @@ export default function TimeMachine() {
             <h3>COMPLETIONS PER HOUR</h3>
             <div className="time-machine__bars">
               {snapshot.throughput.map((point) => (
-                <div key={point.hour} className="time-machine__bar" title={`${stampFmt.format(new Date(point.hour))} -- ${point.count}`}>
+                <div key={point.hour} className="time-machine__bar" title={`${stampFmt.format(new Date(point.hour))} — ${point.count}`}>
                   <span style={{ height: `${(point.count / maxThroughput) * 100}%` }} />
                   <em>{stampFmt.format(new Date(point.hour)).split(' ')[0]}</em>
                 </div>
@@ -221,7 +221,7 @@ export default function TimeMachine() {
                   <li key={`${transition.at}-${index}`}>
                     <time>{timeFmt.format(new Date(transition.at))}</time>
                     <span className={`tag tag--${transition.type}`}>{transition.type.replace('task_', '')}</span>
-                    <span className="truncate">{transition.agent ?? '--'}</span>
+                    <span className="truncate">{transition.agent ?? '—'}</span>
                     {transition.reason && <span className="text-hud-dim truncate">{transition.reason}</span>}
                   </li>
                 ))}

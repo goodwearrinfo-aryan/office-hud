@@ -32,7 +32,7 @@
  * is the same drift the resource probe cache was added for.
  */
 const path = require('path');
-const { produceFloorsDots } = require('./lib/dots/bridge');
+const { getFloorHealth, floorCounts, FLOOR_IDS, BAD_STATES } = require('./floor_health');
 
 const FLOOR_CACHE_MS = 5000;
 const ROUTE_PATH = '/api/floors';
@@ -40,11 +40,9 @@ const ROUTE_PATH = '/api/floors';
 const cache = new Map();
 
 function unreadableFloors(reason) {
-  return [
-    'f1','f2','f3','f4','f5','f6','f7','f8','f9','f10','f11','f12'
-  ].map((id) => ({
-    floor: id,
-    manager: id.toUpperCase(),
+  return FLOOR_IDS.map((id) => ({
+    floor: id.toLowerCase(),
+    manager: id,
     state: 'UNKNOWN',
     reason,
     manager_alive: false,
@@ -53,9 +51,33 @@ function unreadableFloors(reason) {
 }
 
 function readFloors(hive) {
-  // Use DOTS producer
-  const { produceFloorsDots } = require('./lib/dots/bridge');
-  return produceFloorsDots(hive);
+  const health = getFloorHealth(hive);
+  // `counts` is derived from the same read, not a second probe. Recomputing it
+  // separately would let a second spawn disagree with the first about the same
+  // floor -- which is exactly the badge/state split this route exists to remove.
+  const counts = {};
+  for (const f of health.floors) {
+    counts[f.floor] = {
+      state: f.state,
+      manager_alive: !!f.manager_alive,
+      reason: f.reason ?? null,
+      current_task: f.current_task ?? null,
+      last_activity: f.last_activity ?? null,
+      tasks: f.task_counts || {},
+      workers: f.worker_count || 0,
+      failed_workers: f.failed_workers || 0,
+      stalled: f.stalled_tasks || 0,
+      degraded: BAD_STATES.has(f.state),
+    };
+  }
+  return {
+    floors: health.floors,
+    counts,
+    summary: health.summary ?? {},
+    source: health.source,
+    not_verified: health.not_verified === true,
+    at: health.at ?? Date.now(),
+  };
 }
 
 /**
@@ -74,6 +96,9 @@ function getFloorRoutePayload(options = {}) {
   try {
     value = readFloors(hive ?? undefined);
   } catch (error) {
+    // getFloorHealth absorbs probe failures itself, so reaching here means the
+    // reader was broken rather than the probe. Report it the same honest way
+    // instead of letting a throw become a 500 that reads as "HUD is down".
     value = {
       floors: unreadableFloors(`floor route failed: ${error.message || error}`),
       counts: {},
@@ -122,4 +147,6 @@ module.exports = {
   resetFloorCache,
   ROUTE_PATH,
   FLOOR_CACHE_MS,
+  // Re-exported so a caller can render every floor without a second probe.
+  floorCounts,
 };

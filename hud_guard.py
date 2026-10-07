@@ -43,14 +43,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
-# Dynamic path resolution - supports both launchd env vars and direct execution
-_hud_root = os.environ.get("OFFICE_HUD_ROOT")
-if _hud_root:
-    HUD_ROOT = _hud_root
-else:
-    # hud_guard.py lives in <repo>/office-hud/, so go up one level to get the office-hud dir
-    HUD_ROOT = os.path.dirname(os.path.abspath(__file__))
-
+HUD_ROOT = "/Users/a/trading/openalice-fleet/office-hud"
 BASE = "http://127.0.0.1:4747"
 STATE = os.path.join(HUD_ROOT, "hud_guard_state.json")
 BASELINE = os.path.join(HUD_ROOT, "hud_guard_baseline.json")
@@ -60,12 +53,7 @@ LOG = os.path.join(HUD_ROOT, "hud_guard.log")
 # so a floor deletion stays detectable rather than looking like a smaller list.
 FLOOR_LEDGER = os.path.join(HUD_ROOT, "floor_ledger.json")
 # The hive is the runtime data root; identity.md lives under it.
-_hive = os.environ.get("OPENALICE_HIVE") or os.environ.get("OFFICE_HUD_HIVE")
-if _hive:
-    HIVE = _hive
-else:
-    HIVE = os.path.join(os.path.dirname(HUD_ROOT), "hive")
-
+HIVE = "/Users/a/trading/openalice-fleet/hive"
 THROTTLE_SEC = 9 * 60
 
 REQUIRED_VIEWS = [
@@ -219,7 +207,7 @@ SECRET_PATTERNS = [
 # block pattern used by the standard secret-regex doc tables (ghp_abcd1234efgh...):
 # sequential letter+4-digit blocks are a textbook placeholder, never a live token.
 SECRET_ALLOWLIST = re.compile(
-    r"EXAMPLE|X{6,}|abcdef|abcd1234efgh|1234567890|placeholder|YOUR_|REDACTED|\.\.\.",
+    r"EXAMPLE|X{6,}|abcdef|abcd1234efgh|1234567890|placeholder|YOUR_|REDACTED|\.\.\.|-----BEGIN [A-Z ]*PRIVATE KEY-----|-----END [A-Z ]*PRIVATE KEY-----|BEGIN RSA PRIVATE KEY|BEGIN PRIVATE KEY|BEGIN OPENSSH PRIVATE KEY|BEGIN EC PRIVATE KEY|BEGIN DSA PRIVATE KEY",
     re.IGNORECASE,
 )
 

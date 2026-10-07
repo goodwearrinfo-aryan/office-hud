@@ -110,15 +110,15 @@ export default function SessionsPanel({ onSelect }: { onSelect: (id: string) => 
                 }}
               >
                 <td className="text-[10px] font-mono text-hud-dim">
-                  {session.host || '--'}
+                  {session.host || '—'}
                   {session.host_stale && <span className="ml-1 text-hud-amber" title="host stopped reporting">⚠</span>}
                 </td>
                 <td className="text-hud-text">{session.agent_id}</td>
-                <td>{session.process_id ?? '--'}</td>
+                <td>{session.process_id ?? '—'}</td>
                 <td>
                   <span className={session.fresh ? 'text-hud-green' : freshnessTone(session)}>{session.status}</span>
                 </td>
-                <td className="max-w-[260px] truncate">{session.current_task_id || '--'}</td>
+                <td className="max-w-[260px] truncate">{session.current_task_id || '—'}</td>
                 <td>
                   <div className={freshnessTone(session)}>{ageLabel(session.heartbeat_age_sec)}</div>
                   <div className="text-[10px] text-hud-dim">{session.last_heartbeat || 'never'}</div>

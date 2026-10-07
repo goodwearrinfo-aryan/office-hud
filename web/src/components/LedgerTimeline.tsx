@@ -22,7 +22,7 @@ function eventTone(type: string) {
 }
 
 function eventTime(timestamp?: string) {
-  if (!timestamp) return '--';
+  if (!timestamp) return '—';
   const date = new Date(timestamp);
   return Number.isNaN(date.getTime()) ? timestamp : date.toLocaleString();
 }

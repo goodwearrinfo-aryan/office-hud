@@ -16,7 +16,7 @@ function ago(ms: number | null): string {
 /**
  * Makes the push layer observable. When a panel looks stale this says whether
  * the socket is up, whether anything else is watching, and when each resource
- * last changed -- which is the difference between "the hive is quiet" and "the
+ * last changed — which is the difference between "the hive is quiet" and "the
  * stream is broken".
  */
 export default function StreamStatus() {
@@ -33,7 +33,7 @@ export default function StreamStatus() {
         <span className={`stream-status__dot is-${state}`} aria-hidden="true" />
         <span className="stream-status__label">
           STREAM {state.toUpperCase()}
-          {status.detail ? ` -- ${status.detail}` : ''}
+          {status.detail ? ` — ${status.detail}` : ''}
         </span>
         <span className="stream-status__meta">
           {state === 'live' ? `connected ${ago(status.since)}` : `since ${timeFmt.format(new Date(status.since))}`}
@@ -45,13 +45,13 @@ export default function StreamStatus() {
           pushed {data?.stats?.pushes ?? 0} · publishes {data?.stats?.publishes ?? 0}
         </span>
         <span title="seq is the server's push counter; it must advance while the hive moves">
-          seq {data?.sequence ?? '--'}
+          seq {data?.sequence ?? '—'}
         </span>
         <span title="Other tabs connected to the same server">
           viewers {viewers.length}
         </span>
         <span title="Resources this tab is subscribed to">
-          keys {viewers.find((v) => v.label === liveStore.getStatus().detail)?.keys.length ?? '--'}
+          keys {viewers.find((v) => v.label === liveStore.getStatus().detail)?.keys.length ?? '—'}
         </span>
       </div>
 

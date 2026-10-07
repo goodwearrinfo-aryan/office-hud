@@ -374,7 +374,7 @@ export default function App() {
                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">1-0</kbd> Floors F1–F10</div>
                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">- / =</kbd> Floor F11 (Risk)</div>
                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">Backspace</kbd> Floor F12 (Graph)</div>
-                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">[</kbd> then <kbd className="bg-hud-edge px-2 py-0.5 rounded">3</kbd>–<kbd className="bg-hud-edge px-2 py-0.5 rounded">0</kbd> Floors F13–F20</div>
+                <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">[</kbd> then <kbd className="bg-hud-edge px-2 py-0.5 rounded">3</kbd>–<kbd className="bg-hud-edge px-2 py-0.5 rounded">6</kbd> Floors F13–F16</div>
                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">?</kbd> This help</div>
                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">Esc</kbd> Close modal/drawer</div>
                 <div><kbd className="bg-hud-edge px-2 py-0.5 rounded">⌘T</kbd> Toggle theme</div>

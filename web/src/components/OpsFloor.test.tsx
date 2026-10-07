@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import '@testing-library/jest-dom';
 import { renderWithProviders, mockUseLive, clearMockUseLive } from '../test/utils';
 import OpsFloor from '../components/OpsFloor';
 
@@ -70,7 +72,7 @@ const mockPolymarketMarkets = {
   updated_at: new Date().toISOString(),
   summary: { trades: 42, open_trades: 5, closed_trades: 37, signals: 100, orders: 50, fills: 45, open_positions: 3, closed_positions: 10, markets: 10 },
   markets: [
-    { market_id: '0x123', trades: 10, open_trades: 2, closed_trades: 8, signals: 25, orders: 12, fills: 10, open_positions: 1, closed_positions: 2, order_book: true, last_price: 0.55, last_update: new Date().toISOString(), categories: ['politics'], excluded: false, exclusion: null },
+    { market_id: '0x123', trades: 10, open_trades: 2, closed_trades: 8, signals: 25, orders: 12, fills: 10, open_positions: 1, closed_positions: 1, order_book: true, last_price: 0.55, last_update: new Date().toISOString(), categories: ['politics'], excluded: false, exclusion: null },
     { market_id: '0x456', trades: 5, open_trades: 1, closed_trades: 4, signals: 15, orders: 8, fills: 7, open_positions: 1, closed_positions: 1, order_book: false, last_price: 0.42, last_update: new Date().toISOString(), categories: ['sports'], excluded: true, exclusion: { market_id: '0x456', reason: 'low liquidity', excluded_at: new Date().toISOString() } },
   ],
   exclusions: { path: '/path/to/exclusions', present: true, valid: true, count: 1, items: [{ market_id: '0x456', reason: 'low liquidity', excluded_at: new Date().toISOString() }], error: null },
@@ -97,104 +99,104 @@ describe('OpsFloor', () => {
   });
 
   it('renders without crashing', () => {
-    const { container } = renderWithProviders(<OpsFloor />);
-    expect(container).toBeInTheDocument();
+    renderWithProviders(<OpsFloor />);
+    expect(screen.container).toBeInTheDocument();
   });
 
   it('shows floor title', () => {
-    const { getByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('F9 · 24x7 OPS')).toBeInTheDocument();
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('F9 · 24x7 OPS')).toBeInTheDocument();
   });
 
   it('shows badges', () => {
-    const { getByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('FLEET READ ONLY')).toBeInTheDocument();
-    expect(getByText('PAPER TRADING CONTROLS')).toBeInTheDocument();
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('FLEET READ ONLY')).toBeInTheDocument();
+    expect(screen.getByText('PAPER TRADING CONTROLS')).toBeInTheDocument();
   });
 
   it('renders service ports metric cards', () => {
-    const { getByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('SERVICE PORTS')).toBeInTheDocument();
-    expect(getByText('HARNESS')).toBeInTheDocument();
-    expect(getByText('PROVIDERS')).toBeInTheDocument();
-    expect(getByText('ADHERENCE')).toBeInTheDocument();
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('SERVICE PORTS')).toBeInTheDocument();
+    expect(screen.getByText('HARNESS')).toBeInTheDocument();
+    expect(screen.getByText('PROVIDERS')).toBeInTheDocument();
+    expect(screen.getByText('ADHERENCE')).toBeInTheDocument();
   });
 
   it('shows online/offline service status', () => {
-    const { getByText, getAllByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('Free harness')).toBeInTheDocument();
-    expect(getByText('WebSocket')).toBeInTheDocument();
-    expect(getByText('Bridge')).toBeInTheDocument();
-    const listening = getAllByText('LISTENING');
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('Free harness')).toBeInTheDocument();
+    expect(screen.getByText('WebSocket')).toBeInTheDocument();
+    expect(screen.getByText('Bridge')).toBeInTheDocument();
+    const listening = screen.getAllByText('LISTENING');
     expect(listening.length).toBeGreaterThanOrEqual(1);
-    expect(getByText('OFFLINE')).toBeInTheDocument();
+    expect(screen.getByText('OFFLINE')).toBeInTheDocument();
   });
 
   it('renders provider health', () => {
-    const { getByText, getAllByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('PROVIDER HEALTH')).toBeInTheDocument();
-    expect(getByText('groq')).toBeInTheDocument();
-    expect(getByText('cerebras')).toBeInTheDocument();
-    expect(getByText('nvidia')).toBeInTheDocument();
-    const healthy = getAllByText('HEALTHY');
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('PROVIDER HEALTH')).toBeInTheDocument();
+    expect(screen.getByText('groq')).toBeInTheDocument();
+    expect(screen.getByText('cerebras')).toBeInTheDocument();
+    expect(screen.getByText('nvidia')).toBeInTheDocument();
+    const healthy = screen.getAllByText('HEALTHY');
     expect(healthy.length).toBeGreaterThanOrEqual(1);
-    expect(getByText('UNHEALTHY')).toBeInTheDocument();
+    expect(screen.getByText('UNHEALTHY')).toBeInTheDocument();
   });
 
   it('renders Polymarket operations section', () => {
-    const { getByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('POLYMARKET OPERATIONS')).toBeInTheDocument();
-    expect(getByText('ENGINE PAPER')).toBeInTheDocument();
-    expect(getByText('PAPER TRADES')).toBeInTheDocument();
-    expect(getByText('42')).toBeInTheDocument();
-    expect(getByText('NET P&L')).toBeInTheDocument();
-    expect(getByText('$150.25')).toBeInTheDocument();
-    expect(getByText('REALIZED EDGE')).toBeInTheDocument();
-    expect(getByText('12.0%')).toBeInTheDocument();
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('POLYMARKET OPERATIONS')).toBeInTheDocument();
+    expect(screen.getByText('ENGINE PAPER')).toBeInTheDocument();
+    expect(screen.getByText('PAPER TRADES')).toBeInTheDocument();
+    expect(screen.getByText('42')).toBeInTheDocument();
+    expect(screen.getByText('NET P&L')).toBeInTheDocument();
+    expect(screen.getByText('$150.25')).toBeInTheDocument();
+    expect(screen.getByText('REALIZED EDGE')).toBeInTheDocument();
+    expect(screen.getByText('12.0%')).toBeInTheDocument();
   });
 
   it('renders Polymarket markets table', () => {
-    const { getByText, getAllByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('0x123')).toBeInTheDocument(); // short market ID
-    const market456 = getAllByText('0x456');
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('0x123')).toBeInTheDocument();
+    const market456 = screen.getAllByText('0x456');
     expect(market456.length).toBeGreaterThanOrEqual(1);
-    expect(getByText('EXCLUDED')).toBeInTheDocument();
-    expect(getByText('ACTIVE')).toBeInTheDocument();
+    expect(screen.getByText('EXCLUDED')).toBeInTheDocument();
+    expect(screen.getByText('ACTIVE')).toBeInTheDocument();
   });
 
   it('shows REFRESH and CLEAR PAPER TRADES buttons', () => {
-    const { getByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('REFRESH')).toBeInTheDocument();
-    expect(getByText('CLEAR PAPER TRADES')).toBeInTheDocument();
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('REFRESH')).toBeInTheDocument();
+    expect(screen.getByText('CLEAR PAPER TRADES')).toBeInTheDocument();
   });
 
   it('renders market exclusions list', () => {
-    const { getAllByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('MARKET EXCLUSIONS')).toBeInTheDocument();
-    const market456 = getAllByText('0x456');
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('MARKET EXCLUSIONS')).toBeInTheDocument();
+    const market456 = screen.getAllByText('0x456');
     expect(market456.length).toBeGreaterThanOrEqual(1);
-    expect(getByText('low liquidity')).toBeInTheDocument();
+    expect(screen.getByText('low liquidity')).toBeInTheDocument();
   });
 
   it('renders Polymarket JEV history', () => {
-    const { getByText, getAllByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('POLYMARKET JEV HISTORY')).toBeInTheDocument();
-    const task1 = getAllByText('jarvis-1');
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('POLYMARKET JEV HISTORY')).toBeInTheDocument();
+    const task1 = screen.getAllByText('jarvis-1');
     expect(task1.length).toBeGreaterThanOrEqual(1);
   });
 
   it('renders adherence/runtime section', () => {
-    const { getByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('ADHERENCE / RUNTIME')).toBeInTheDocument();
-    expect(getByText('Launchd definitions')).toBeInTheDocument();
-    expect(getByText('Adherence log')).toBeInTheDocument();
-    expect(getByText('PRESENT')).toBeInTheDocument();
-    expect(getByText('Roster agents')).toBeInTheDocument();
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('ADHERENCE / RUNTIME')).toBeInTheDocument();
+    expect(screen.getByText('Launchd definitions')).toBeInTheDocument();
+    expect(screen.getByText('Adherence log')).toBeInTheDocument();
+    expect(screen.getByText('PRESENT')).toBeInTheDocument();
+    expect(screen.getByText('Roster agents')).toBeInTheDocument();
   });
 
   it('renders security boundary note', () => {
-    const { getByText } = renderWithProviders(<OpsFloor />);
-    expect(getByText('SECURITY BOUNDARY')).toBeInTheDocument();
-    expect(getByText((content) => content.includes('Credential values and key suffixes'))).toBeInTheDocument();
+    renderWithProviders(<OpsFloor />);
+    expect(screen.getByText('SECURITY BOUNDARY')).toBeInTheDocument();
+    expect(screen.getByText((content) => content.includes('Credential values and key suffixes'))).toBeInTheDocument();
   });
 });

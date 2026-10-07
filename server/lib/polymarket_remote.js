@@ -1,11 +1,6 @@
 // This patch adds remote polymarket status fetching for when HUD runs on laptop
 // but polymarket engine runs on mini.
 
-const path = require('path');
-const os = require('os');
-const fs = require('fs');
-const crypto = require('crypto');
-
 const MINI_HOST = 'macmini'; // SSH config alias
 const MINI_POLYMARKET_ROOT = '/Users/a/polymarket';
 const MINI_POLYMARKET_RESEARCH = '/Users/a/polymarket/research';

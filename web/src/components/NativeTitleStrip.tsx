@@ -8,7 +8,7 @@ import { isNative } from '../native';
  * it carries the one piece of context the page has nowhere else to put it: which
  * hive is being read, and whether that feed is actually live. That matters most
  * when the HUD is being served locally because the forward to the deployment
- * host is down -- "live" and "CONNECTING" look identical in the body, but they
+ * host is down — "live" and "CONNECTING" look identical in the body, but they
  * are very different situations.
  */
 

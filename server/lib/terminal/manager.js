@@ -40,12 +40,6 @@ const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGHUP'];
 const MAX_INPUT_BYTES = 8 * 1024;
 const DEFAULTS = {
   maxConcurrent: 100,
-  maxConcurrentByType: {
-    orchestrate: 5,
-    tmux: 20,
-    background: 50,
-    remote: 10,
-  },
   reapAfterHours: 24,
   reconcileMs: 60000,
   // Deliberately generous: this is a ceiling that exists so a hung command cannot
@@ -82,7 +76,6 @@ class TerminalManager {
     this.fileLock = options.fileLock !== undefined ? options.fileLock : resolveFileLock(this.hive);
     this.logOptions = { dir: options.logDir || logstore.DEFAULTS.dir };
     this.maxConcurrent = Number(options.maxConcurrent) || DEFAULTS.maxConcurrent;
-    this.maxConcurrentByType = options.maxConcurrentByType || DEFAULTS.maxConcurrentByType;
     this.reapAfterHours = Number(options.reapAfterHours) || DEFAULTS.reapAfterHours;
     this.reconcileMs = Number(options.reconcileMs) || DEFAULTS.reconcileMs;
     this.commandTimeoutMs = options.commandTimeoutMs === undefined
@@ -176,21 +169,8 @@ class TerminalManager {
     return this.registry.get(id) || null;
   }
 
-  activeCount(type = null) {
-    const records = [...this.registry.values()].filter((r) => r.status === 'running' || r.status === 'starting');
-    if (type) return records.filter((r) => r.type === type).length;
-    return records.length;
-  }
-
-  activeCountByType() {
-    const counts = {};
-    for (const t of TYPES) counts[t] = 0;
-    for (const r of this.registry.values()) {
-      if (r.status === 'running' || r.status === 'starting') {
-        counts[r.type] = (counts[r.type] || 0) + 1;
-      }
-    }
-    return counts;
+  activeCount() {
+    return [...this.registry.values()].filter((r) => r.status === 'running' || r.status === 'starting').length;
   }
 
   /**
@@ -199,39 +179,11 @@ class TerminalManager {
    */
   collectedTerminals(collectedDoc = null) {
     const doc = collectedDoc && typeof collectedDoc === 'object' ? collectedDoc : {};
-    const now = Date.now();
-    const spawned = this.list().map(r => {
-      const started = Date.parse(r.startedAt);
-      const uptimeSec = Number.isFinite(started) ? Math.floor((now - started) / 1000) : null;
-      return {
-        id: r.id,
-        type: r.type,
-        status: r.status,
-        cmd: r.cmd,
-        argv: r.argv,
-        cwd: r.cwd,
-        host: r.host,
-        name: r.name,
-        pid: r.pid,
-        tmuxSession: r.tmuxSession,
-        tmuxPane: r.tmuxPane,
-        status: r.status,
-        startedAt: r.startedAt,
-        exitedAt: r.exitedAt,
-        exitCode: r.exitCode,
-        signal: r.signal,
-        session_name: r.tmuxSession,
-        pane_title: r.tmuxPane,
-        command: r.cmd || (r.argv && r.argv[0]),
-        uptime_sec: uptimeSec,
-      };
-    });
-    const doc2 = collectedDoc && typeof collectedDoc === 'object' ? collectedDoc : {};
-    const collected = Array.isArray(doc2.shell_terminals) ? doc2.shell_terminals : [];
+    const collected = Array.isArray(doc.shell_terminals) ? doc.shell_terminals : [];
     return {
-      collected_at: doc2.collected_at || null,
+      collected_at: doc.collected_at || null,
       collected,
-      spawned,
+      spawned: this.list(),
     };
   }
 
@@ -274,12 +226,8 @@ class TerminalManager {
       throw Object.assign(new Error('use the orchestrate bulk mode for agent spawning'), { statusCode: 400 });
     }
     if (type === 'remote') return this.spawnRemote(spec);
-    const typeLimit = this.maxConcurrentByType[type] || this.maxConcurrent;
-    if (this.activeCount(type) >= typeLimit) {
-      throw Object.assign(new Error(`refusing to exceed ${typeLimit} concurrent ${type} terminals`), { statusCode: 429 });
-    }
     if (this.activeCount() >= this.maxConcurrent) {
-      throw Object.assign(new Error(`refusing to exceed ${this.maxConcurrent} total concurrent terminals`), { statusCode: 429 });
+      throw Object.assign(new Error(`refusing to exceed ${this.maxConcurrent} concurrent terminals`), { statusCode: 429 });
     }
 
     const command = String(spec.cmd || spec.command || '').trim();
@@ -494,13 +442,8 @@ class TerminalManager {
    */
   async spawnRemote(spec = {}) {
     const peer = remoteSpawner.getPeer(this.hive, spec.peer, {});
-    const type = 'remote';
-    const typeLimit = this.maxConcurrentByType[type] || this.maxConcurrent;
-    if (this.activeCount(type) >= typeLimit) {
-      throw Object.assign(new Error(`refusing to exceed ${typeLimit} concurrent ${type} terminals`), { statusCode: 429 });
-    }
     if (this.activeCount() >= this.maxConcurrent) {
-      throw Object.assign(new Error(`refusing to exceed ${this.maxConcurrent} total concurrent terminals`), { statusCode: 429 });
+      throw Object.assign(new Error(`refusing to exceed ${this.maxConcurrent} concurrent terminals`), { statusCode: 429 });
     }
     const command = String(spec.cmd || spec.command || '').trim();
     const cwd = spec.cwd ? path.resolve(String(spec.cwd)) : null;
@@ -685,16 +628,6 @@ class TerminalManager {
       }
       if (enter) await tmuxSpawner.sendLine(record.tmuxSession, value);
       else await tmuxSpawner.sendText(record.tmuxSession, value);
-      return record;
-    }
-
-    async resize(id, cols, rows) {
-      const record = this.registry.get(id);
-      if (!record) throw Object.assign(new Error(`unknown terminal ${id}`), { statusCode: 404 });
-      if (record.type !== 'tmux') {
-        throw Object.assign(new Error(`resize is only supported for tmux terminals`), { statusCode: 400 });
-      }
-      await tmuxSpawner.resize(record.tmuxSession, cols, rows);
       return record;
     }
 

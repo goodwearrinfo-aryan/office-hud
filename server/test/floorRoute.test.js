@@ -13,7 +13,6 @@ const path = require('path');
 
 const floorRoute = require('../floor_route');
 const { FLOOR_IDS } = require('../floor_health');
-const { resetWorld } = require('../lib/dots');
 
 function fakeApp() {
   const handlers = new Map();
@@ -58,7 +57,6 @@ test('register refuses anything that is not an app', () => {
 });
 
 test('a hive with no probe reports every floor UNKNOWN and never claims health', async () => {
-  resetWorld();
   floorRoute.resetFloorCache();
   const payload = await floorRoute.getFloorRoutePayload({ hive: hiveWithoutProbe() });
   assert.equal(payload.not_verified, true, 'a missing probe must be flagged unverified');
@@ -91,13 +89,12 @@ function hiveWithPartialProbe(rows) {
   // failure, passing this test for entirely the wrong reason.
   fs.writeFileSync(
     path.join(hive, 'lib', 'floor_health.py'),
-    `import json\nprint(json.dumps({ "floors": json.loads(${JSON.stringify(JSON.stringify(rows))}) }))\n`,
+    `import json\nprint(json.dumps(json.loads(${JSON.stringify(JSON.stringify(rows))})))\n`,
   );
   return hive;
 }
 
-test('a probe reporting one floor is padded to all twenty-two, and the gaps say why', async () => {
-  resetWorld();
+test('a probe reporting one floor is padded to all twelve, and the gaps say why', async () => {
   floorRoute.resetFloorCache();
   const hive = hiveWithPartialProbe([
     { floor: 'f1', state: 'BUSY', manager_alive: true, task_counts: { COMP: 3 } },
@@ -114,7 +111,7 @@ test('a probe reporting one floor is padded to all twenty-two, and the gaps say 
     assert.equal(f.state, 'UNKNOWN', `${f.floor} must not inherit a healthy state`);
     assert.match(f.reason, /not reported/, `${f.floor} says it was not reported`);
   }
-  assert.deepEqual(payload.summary, { BUSY: 1, UNKNOWN: 21 });
+  assert.deepEqual(payload.summary, { BUSY: 1, UNKNOWN: 11 });
 });
 
 test('a probe that fails loudly is reported as unverified, not swallowed', async () => {
@@ -132,7 +129,6 @@ test('a probe that fails loudly is reported as unverified, not swallowed', async
 });
 
 test('counts come from the same read as floors, so they cannot disagree', () => {
-  resetWorld();
   floorRoute.resetFloorCache();
   const payload = floorRoute.readFloors(hiveWithoutProbe());
   assert.deepEqual(Object.keys(payload.counts).sort(), payload.floors.map((f) => f.floor).sort());
@@ -145,7 +141,6 @@ test('counts come from the same read as floors, so they cannot disagree', () => 
 });
 
 test('a read is memoised so repeated calls cannot disagree or re-spawn', async () => {
-  resetWorld();
   floorRoute.resetFloorCache();
   const hive = hiveWithoutProbe();
   const a = await floorRoute.getFloorRoutePayload({ hive });

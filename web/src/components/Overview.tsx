@@ -13,11 +13,11 @@ type BacktestRow = {
 };
 
 function num(value: number | null | undefined, digits = 2) {
-  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '--';
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
 }
 
 function pct(value: number | null | undefined, digits = 1) {
-  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : '--';
+  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : '—';
 }
 
 function tone(value: number | null | undefined) {
@@ -43,7 +43,7 @@ export default function Overview({ onNavigate }: { onNavigate: (floor: 'f6' | 'f
   const { data: live } = useLive<LiveMetrics>('/api/trading/live');
 
   const launchd = ops?.launchdState;
-  // `failed` is a KeepAlive job that is down -- always a real problem.
+  // `failed` is a KeepAlive job that is down — always a real problem.
   // `stopped` exited non-zero but is not being restarted; that is usually a
   // job reporting a condition on purpose, so it is shown separately and must
   // not be summed into the failure count.
@@ -139,9 +139,9 @@ export default function Overview({ onNavigate }: { onNavigate: (floor: 'f6' | 'f
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <Tile label="HIVE" value={summaryError ? 'FEED ERROR' : summary?.present ? 'LIVE' : 'OFFLINE'} toneClass={summaryError ? 'text-hud-red' : summary?.present ? 'text-hud-green' : 'text-hud-red'} sub={summary?.hive?.replace(/^\/Users\/[^/]+\//, '~/')} />
         <Tile label="AGENTS" value={`${active} / ${agents.length}`} sub="active / total" />
-        <Tile label="QUEUE" value={queue ? `${queue.inProgress} in prog · ${queue.queued} queued` : '--'} />
-        <Tile label="SESSION COST" value={summary ? `$${cost.toFixed(2)}` : '--'} />
-        <Tile label="TRADING LOG" value={live?.logExists ? `${(live.logSize / 1024 / 1024).toFixed(1)} MB` : live ? 'MISSING' : '--'} toneClass={live?.logExists ? 'text-hud-text' : 'text-hud-red'} />
+        <Tile label="QUEUE" value={queue ? `${queue.inProgress} in prog · ${queue.queued} queued` : '—'} />
+        <Tile label="SESSION COST" value={summary ? `$${cost.toFixed(2)}` : '—'} />
+        <Tile label="TRADING LOG" value={live?.logExists ? `${(live.logSize / 1024 / 1024).toFixed(1)} MB` : live ? 'MISSING' : '—'} toneClass={live?.logExists ? 'text-hud-text' : 'text-hud-red'} />
       </div>
 
       <div className="panel p-4">

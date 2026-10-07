@@ -2,7 +2,7 @@ import { useLive, type TerminalsPayload, type TradingOpsPayload, type FleetLaunc
 import { ageLabel, hostStatus, hostSummary, isIdentified, isVerified, undeclaredJobs } from '../fleetTruth';
 
 /**
- * F17 -- the fleet floor: what every machine in the hive is doing, not just this one.
+ * F17 — the fleet floor: what every machine in the hive is doing, not just this one.
  *
  * Why this exists
  * ---------------
@@ -12,7 +12,7 @@ import { ageLabel, hostStatus, hostSummary, isIdentified, isVerified, undeclared
  * So a laptop that stopped reporting was invisible until something else broke.
  *
  * It is not visible now. Measured off this payload while building it: the mini
- * had been collected 34 seconds ago, the laptop 56244 -- fifteen and a half hours.
+ * had been collected 34 seconds ago, the laptop 56244 — fifteen and a half hours.
  * Every one of the laptop's 33 process rows carried `process_id`, `project_id` and
  * `health` all null, because the collector that supplies them has not reported.
  *
@@ -43,9 +43,9 @@ function JobRow({ job }: { job: FleetLaunchdEntry }) {
     <tr>
       <td className="font-mono text-xs">{job.label}</td>
       <td className={loaded ? 'text-hud-green' : 'text-hud-dim'}>{loaded ? 'loaded' : 'not loaded'}</td>
-      <td>{job.pid ?? '--'}</td>
-      <td>{job.lastExit ?? '--'}</td>
-      <td className="text-hud-dim">{job.intent ?? '--'}</td>
+      <td>{job.pid ?? '—'}</td>
+      <td>{job.lastExit ?? '—'}</td>
+      <td className="text-hud-dim">{job.intent ?? '—'}</td>
     </tr>
   );
 }
@@ -94,14 +94,14 @@ function HostCard({ host }: { host: TerminalsPayload['hosts'][number] }) {
                   <td className="font-mono text-xs">
                     {p.process_id ?? <span className="text-hud-amber">NOT REPORTED</span>}
                   </td>
-                  <td className="text-xs">{p.project_id ?? <span className="text-hud-amber">--</span>}</td>
-                  <td className="text-xs">{p.status ?? '--'}</td>
+                  <td className="text-xs">{p.project_id ?? <span className="text-hud-amber">—</span>}</td>
+                  <td className="text-xs">{p.status ?? '—'}</td>
                   <td className="text-xs">
                     {isVerified(p)
                       ? <span className={p.health === 'HEALTHY' ? 'text-hud-green' : 'text-hud-red'}>{p.health}</span>
                       : <span className="text-hud-dim">NOT VERIFIED</span>}
                   </td>
-                  <td className="text-xs">{p.pid ?? '--'}</td>
+                  <td className="text-xs">{p.pid ?? '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -209,7 +209,7 @@ export default function FleetFloor() {
         </div>
         {fleetError && (
           <div className="text-hud-red text-xs mt-3">
-            NOT VERIFIED -- /api/terminals did not answer, so no machine can be described.
+            NOT VERIFIED — /api/terminals did not answer, so no machine can be described.
           </div>
         )}
       </div>
@@ -217,7 +217,7 @@ export default function FleetFloor() {
       {hosts.length === 0 && !fleetError && (
         <div className="panel p-4">
           <div className="text-hud-dim text-xs">
-            No machines reported. The HUD is running, so at least this one exists -- which means the
+            No machines reported. The HUD is running, so at least this one exists — which means the
             collector has not written, not that the fleet is empty.
           </div>
         </div>
@@ -278,7 +278,7 @@ export default function FleetFloor() {
                   key={j}
                   className="text-[10px] font-mono text-hud-amber border border-hud-edge px-2 py-1"
                 >
-                  {j} · UNKNOWN -- retire or resurrect
+                  {j} · UNKNOWN — retire or resurrect
                 </span>
               ))}
             </div>

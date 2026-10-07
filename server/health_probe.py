@@ -37,8 +37,8 @@ import subprocess
 import sys
 import time
 
-HIVE = os.environ.get("OPENALICE_HIVE") or os.environ.get("OFFICE_HUD_HIVE") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..", "hive"
+HIVE = os.environ.get("OPENALICE_HIVE") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", ".."
 )
 
 
@@ -193,8 +193,7 @@ def probe():
             out = subprocess.run(
                 [sys.executable, fh, "--json"], capture_output=True, text=True, timeout=20
             )
-            result = json.loads(out.stdout)
-            floors = result.get("floors", [])
+            floors = json.loads(out.stdout)
             bad = [f for f in floors if f.get("state") in ("FAILED", "STOPPED")]
             counts = {}
             for f in floors:

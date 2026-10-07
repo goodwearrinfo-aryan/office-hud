@@ -50,7 +50,7 @@ type AgentFields = {
 /**
  * God is the executive control layer, so it gets a dedicated panel rather than
  * a row in a list. Every field here is rendered from real runtime data, and a
- * field with no evidence is printed as NOT AVAILABLE -- never as a plausible
+ * field with no evidence is printed as NOT AVAILABLE — never as a plausible
  * default. Process state is rendered from the server's own liveness check, so
  * "alive", "dead" and "no pid" stay distinct instead of collapsing into one
  * "not verified" that reads as a problem when nothing is wrong.
@@ -95,7 +95,7 @@ export default function GodPanel() {
     return (
       <div className="panel p-4">
         <h3 className="font-mono text-hud-amber text-sm mb-2">GOD</h3>
-        <div className="text-hud-dim text-xs">{NA} -- no God agent is registered in this hive</div>
+        <div className="text-hud-dim text-xs">{NA} — no God agent is registered in this hive</div>
       </div>
     );
   }
@@ -140,7 +140,7 @@ export default function GodPanel() {
           />
           <Row label="PROVIDER" value={orNa(g.provider)} />
           <Row label="MODEL" value={orNa(g.model)} />
-          <Row label="CURRENT TASK" value={g.currentTaskId ? `${g.currentTaskId}${g.currentTaskTitle ? ` -- ${g.currentTaskTitle}` : ''}` : 'none claimed'} />
+          <Row label="CURRENT TASK" value={g.currentTaskId ? `${g.currentTaskId}${g.currentTaskTitle ? ` — ${g.currentTaskTitle}` : ''}` : 'none claimed'} />
         </div>
       </div>
 

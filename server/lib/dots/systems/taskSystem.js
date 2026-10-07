@@ -7,57 +7,94 @@
 const fs = require('fs');
 const path = require('path');
 
-/**
- * Read hive tasks.json
- * @param {string} hivePath
- * @returns {Object}
- */
-function readTasks(hivePath) {
-  const tasksPath = path.join(hivePath, 'tasks.json');
-  try {
-    const data = fs.readFileSync(tasksPath, 'utf8');
-    return JSON.parse(data);
-  } catch {
-    return { tasks: [] };
-  }
-}
+const STALE_MS = 5 * 60 * 1000;
 
-/**
- * Read hive projects.json
- * @param {string} hivePath
- * @returns {Object}
- */
-function readProjects(hivePath) {
-  const projectsPath = path.join(hivePath, 'projects.json');
-  try {
-    const data = fs.readFileSync(projectsPath, 'utf8');
-    return JSON.parse(data);
-  } catch {
-    return { projects: [] };
-  }
-}
-
-/**
- * Get current timestamp in ms
- */
 function nowMs() {
   return Date.now();
 }
 
+function timestampMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value > 1e12 ? value : value * 1000;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function computeCompletionTruth(verified) {
+  if (!verified || !verified.engagement) {
+    return { truth: 'UNVERIFIED', score: null, reason: 'no verification record' };
+  }
+  const verdict = verified.engagement?.verdict;
+  const score = verified.score ?? 0;
+  
+  if (verdict === 'OK' && score >= 0.9) {
+    return { truth: 'EVIDENCED', score, reason: 'score >= 0.9 and verdict OK' };
+  }
+  if (verdict === 'OK' && score >= 0.5) {
+    return { truth: 'WEAK', score, reason: 'score >= 0.5 and verdict OK' };
+  }
+  if (verdict === 'OFF_TOPIC') {
+    return { truth: 'OFF_TOPIC', score, reason: 'verdict OFF_TOPIC' };
+  }
+  return { truth: 'UNVERIFIED', score, reason: 'insufficient evidence' };
+}
+
+function computeDisplay(agent, session) {
+  const archived = !!agent.archived;
+  const breaker = agent.breaker || (archived ? 'offline' : 'healthy');
+  const hasWork = session?.hasTask === true;
+  const sessionFresh = session?.fresh === true;
+  
+  const status = agent.status || agent.display;
+  if (status === 'busy') return 'busy';
+  
+  if (archived) return 'offline';
+  if (breaker !== 'healthy') return 'breaker';
+  if (hasWork) return 'busy';
+  if (sessionFresh) return 'idle';
+  if (session) return 'stale';
+  return 'offline';
+}
+
+function computeEvidence(agent, session, processId, heartbeatAgeSec, currentTaskId, currentTaskTitle) {
+  const hasSession = !!session;
+  const sessionFresh = session?.fresh === true;
+  const hasTask = !!currentTaskId;
+  const taskStatus = session?.taskStatus || null;
+  const processLiveness = processId ? (isPidAlive(processId) ? 'alive' : 'dead') : 'no-pid';
+  const processVerified = processId ? isPidAlive(processId) : false;
+
+  return {
+    hasSession,
+    sessionFresh,
+    hasTask,
+    taskStatus,
+    heartbeatAgeSec,
+    processId,
+    processLiveness,
+    processVerified
+  };
+}
+
 /**
- * Parse timestamp to ms
- * @param {string|number|null} ts
- * @returns {number|null}
+ * Compute agent runtime state for floor rollup
+ * @param {Object} agent
+ * @param {Object} session
+ * @returns {string}
  */
-function timestampMs(ts) {
-  if (ts == null) return null;
-  const n = typeof ts === 'number' ? ts : Date.parse(ts);
-  return Number.isFinite(n) ? n : null;
+function computeRuntimeState(agent, session) {
+  if (agent.breaker === 'open') return 'breaker';
+  if (!session) return 'offline';
+  if (!session.fresh) return 'stale';
+  if (session.hasTask) return 'working';
+  return 'idle';
 }
 
 /**
  * Task Routing System
- * Reads hive tasks + projects, computes task state, writes to World
+ * Routes tasks to agents based on floor, role, and capacity
  * 
  * @param {World} world
  * @param {Object} context
@@ -67,73 +104,98 @@ function timestampMs(ts) {
 function taskRoutingSystem(world, context) {
   const { hivePath } = context;
   
-  // Read hive data
-  const tasksData = readTasks(hivePath);
-  const projectsData = readProjects(hivePath);
+  const fleetData = readFleet(hivePath);
+  const tasks = readTasks(hivePath);
+  const events = readRecentEvents(hivePath, 2000);
   
-  // Process tasks
-  for (const task of tasksData.tasks || []) {
-    if (!task.task_id) continue;
+  const floorMap = new Map();
+  for (let i = 1; i <= 12; i++) {
+    const floorId = 'floor:f' + i;
+    floorMap.set(floorId, {
+      id: floorId,
+      label: 'F' + i,
+      manager: null,
+      managerAlive: false,
+      runtimeState: 'UNKNOWN',
+      counters: { running: 0, working: 0, idle: 0, stale: 0, failed: 0, offline: 0, breaker: 0 },
+      responsibilities: [],
+      currentTask: null,
+      lastActivity: null,
+    });
+  }
+  
+  const agents = world.getAllAgents();
+  
+  for (const agent of agents) {
+    const floorNum = agent.floor?.match(/^f(\d+)$/);
+    if (!floorNum) continue;
     
-    const entityId = `task:${task.task_id}`;
+    const floorId = 'floor:f' + floorNum[1];
+    const floor = floorMap.get(floorId);
+    if (!floor) continue;
     
-    // Determine floor from assigned_agent or claimed_by
-    let floorId = 'floor:f1';
-    if (task.assigned_agent) {
-      const floorMatch = String(task.assigned_agent).match(/^f(\d+)$/);
-      if (floorMatch) floorId = `floor:f${floorMatch[1]}`;
-    } else if (task.claimed_by) {
-      const floorMatch = String(task.claimed_by).match(/^f(\d+)$/);
-      if (floorMatch) floorId = `floor:f${floorMatch[1]}`;
+    floor.counters[agent.display] = (floor.counters[agent.display] || 0) + 1;
+    if (agent.display === 'busy') floor.counters.working++;
+    
+    if (!floor.manager && /floor\s*(lead|manager)/i.test(agent.role)) {
+      floor.manager = agent.name;
+      floor.managerAlive = agent.evidence?.processVerified === true;
     }
     
-    const taskObj = {
-      id: entityId,
-      title: task.title || task.task_id,
-      objective: task.objective || '',
-      status: String(task.status || 'QUEUED').toUpperCase(),
-      risk: task.risk === 'destructive' ? 'destructive' : 'low',
-      assignedAgent: task.assigned_agent ? `agent:${task.assigned_agent}` : null,
-      claimedBy: task.claimed_by ? `agent:${task.claimed_by}` : null,
-      claimedAt: timestampMs(task.claimed_at),
-      floorId: floorId,
-      result: task.result || null
-    };
-    
-    world.setTask(taskObj);
+    const stateOrder = { breaker: 5, offline: 4, stale: 3, working: 2, busy: 2, idle: 1, UNKNOWN: 0 };
+    const currentSeverity = stateOrder[floor.runtimeState] || 0;
+    const agentSeverity = stateOrder[agent.display] || 0;
+    if (agentSeverity > currentSeverity) {
+      floor.runtimeState = agent.display;
+    }
   }
   
-  // Process projects
-  for (const project of projectsData.projects || []) {
-    if (!project.project_id) continue;
-    
-    const entityId = `project:${project.project_id}`;
-    // Projects are stored as tasks with special marker for now
-    // Could add separate project component later
+  for (const [floorId, floor] of floorMap) {
+    if (floor.manager) {
+      for (const agent of fleetData.agents || []) {
+        if (agent.name === floor.manager) {
+          floor.responsibilities = readAgentResponsibilities(hivePath, agent.id);
+          break;
+        }
+      }
+    }
+  }
+  
+  for (const floor of floorMap.values()) {
+    world.setFloor(floor);
   }
   
   return world;
 }
 
-/**
- * Task Verdict System
- * Computes verified/unverified completion counts
- * 
- * @param {World} world
- * @returns {World}
- */
 function taskVerdictSystem(world) {
-  // This would compute verdicts from task evidence
-  // For now, the data comes from hive verify pipeline
+  const tasks = world.getAllTasks();
+  
+  for (const task of tasks) {
+    if (task.status !== 'COMPLETE' && task.status !== 'DONE') continue;
+    
+    const verified = task.verified;
+    let completionTruth = 'UNVERIFIED';
+    
+    if (task.verified && task.verified.engagement) {
+      const verdict = task.verified.engagement.verdict;
+      const score = task.verified.score ?? 0;
+      
+      if (verdict === 'OK' && task.verified.score >= 0.9) {
+        completionTruth = 'EVIDENCED';
+      } else if (verdict === 'OK' && task.verified.score >= 0.5) {
+        completionTruth = 'WEAK';
+      } else if (verdict === 'OFF_TOPIC') {
+        completionTruth = 'OFF_TOPIC';
+      } else {
+        completionTruth = 'UNVERIFIED';
+      }
+    }
+  }
+  
   return world;
 }
 
-/**
- * Build queue summary from World tasks (for /api/queue)
- * 
- * @param {World} world
- * @returns {Object}
- */
 function buildQueueSummary(world) {
   const tasks = world.getAllTasks();
   const now = nowMs();
@@ -179,20 +241,32 @@ function buildQueueSummary(world) {
     staleInProgress,
     byStatus,
     inProgressTasks,
-    completionsLastHour: 0, // Would need events.log
+    completionsLastHour: 0,
     failedLastHour: 0,
     completionsByHour: [],
     recentCompletions: []
   };
 }
 
-/**
- * Build task board from World (for /api/task-board)
- * 
- * @param {World} world
- * @param {number} limit
- * @returns {Object}
- */
+function computeCompletionTruth(verified) {
+  if (!verified || !verified.engagement) {
+    return { truth: 'UNVERIFIED', score: null, reason: 'no verification record' };
+  }
+  const verdict = verified.engagement?.verdict;
+  const score = verified.score ?? 0;
+  
+  if (verdict === 'OK' && score >= 0.9) {
+    return { truth: 'EVIDENCED', score, reason: 'score >= 0.9 and verdict OK' };
+  }
+  if (verdict === 'OK' && score >= 0.5) {
+    return { truth: 'WEAK', score, reason: 'score >= 0.5 and verdict OK' };
+  }
+  if (verdict === 'OFF_TOPIC') {
+    return { truth: 'OFF_TOPIC', score, reason: 'verdict OFF_TOPIC' };
+  }
+  return { truth: 'UNVERIFIED', score, reason: 'insufficient evidence' };
+}
+
 function buildTaskBoard(world, limit = 25) {
   const tasks = world.getAllTasks();
   const BOARD_COLUMNS = [
@@ -208,23 +282,26 @@ function buildTaskBoard(world, limit = 25) {
   for (const col of BOARD_COLUMNS) {
     const columnTasks = tasks.filter(t => col.statuses.includes(t.status));
     counts[col.id] = columnTasks.length;
-    groups[col.id] = columnTasks.slice(0, limit).map(t => ({
-      task_id: t.id.replace('task:', ''),
-      title: t.title,
-      status: t.status,
-      project_id: null,
-      assigned_agent: t.assignedAgent?.replace('agent:', ''),
-      claimed_by: t.claimedBy?.replace('agent:', ''),
-      created_at: null,
-      started_at: null,
-      completed_at: null,
-      updated_at: null,
-      heartbeat: null,
-      priority: t.risk === 'destructive' ? 'high' : 'normal',
-      completion_truth: t.status === 'COMPLETE' ? 'verified' : null,
-      evidence_score: t.status === 'COMPLETE' ? 1.0 : null,
-      evidence_reason: t.status === 'COMPLETE' ? 'completed' : null
-    }));
+    groups[col.id] = columnTasks.slice(0, limit).map(t => {
+      const ct = computeCompletionTruth(t.verified);
+      return {
+        task_id: t.id.replace('task:', ''),
+        title: t.title,
+        status: t.status,
+        project_id: null,
+        assigned_agent: t.assignedAgent?.replace('agent:', ''),
+        claimed_by: t.claimedBy?.replace('agent:', ''),
+        created_at: null,
+        started_at: null,
+        completed_at: null,
+        updated_at: null,
+        heartbeat: null,
+        priority: t.risk === 'destructive' ? 'high' : 'normal',
+        completion_truth: t.status === 'COMPLETE' ? ct.truth : null,
+        evidence_score: t.status === 'COMPLETE' ? ct.score : null,
+        evidence_reason: t.status === 'COMPLETE' ? ct.reason : null
+      });
+    });
   }
   
   return {
@@ -235,12 +312,6 @@ function buildTaskBoard(world, limit = 25) {
   };
 }
 
-/**
- * Build floor task counts (for /api/tasks?counts=1)
- * 
- * @param {World} world
- * @returns {Object}
- */
 function buildFloorTaskCounts(world) {
   const tasks = world.getAllTasks();
   const counts = {};

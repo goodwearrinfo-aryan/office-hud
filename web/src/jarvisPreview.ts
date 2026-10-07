@@ -14,8 +14,8 @@ import type { JarvisPreview, JarvisTask } from './api';
 /**
  * The one request body sent to /api/jarvis/command.
  *
- * Two surfaces POST to that route -- the shared CommandCompose and the Jarvis
- * console's modal -- and when they each built their own body they drifted. The
+ * Two surfaces POST to that route — the shared CommandCompose and the Jarvis
+ * console's modal — and when they each built their own body they drifted. The
  * console's copy was the one that could not work: it omitted `confirmed`, so every
  * press answered 428. So the body is assembled here, once, and
  * server/test/commandCompose.test.ts fails if a second copy appears in web/src.

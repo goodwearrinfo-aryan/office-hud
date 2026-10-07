@@ -29,7 +29,7 @@ const HIVE = process.env.OFFICE_HUD_HIVE
 // override is honoured; this is never the path actually executed.
 const FLOOR_HEALTH_SCRIPT = path.join(HIVE, 'lib', 'floor_health.py');
 
-const FLOOR_IDS = Array.from({ length: 22 }, (_, i) => `F${i + 1}`);
+const FLOOR_IDS = Array.from({ length: 12 }, (_, i) => `F${i + 1}`);
 
 // States that mean "the floor is not doing what it claims". Used to derive a
 // single roll-up so the nav can colour a floor without re-deriving policy.
@@ -66,8 +66,7 @@ function getFloorHealth(hiveOverride) {
       encoding: 'utf8',
       timeout: 25000,
     });
-    const result = JSON.parse(out);
-    const floors = result.floors;
+    const floors = JSON.parse(out);
     if (!Array.isArray(floors) || floors.length === 0) {
       return {
         floors: unknownFloors('floor_health.py returned no floors'),

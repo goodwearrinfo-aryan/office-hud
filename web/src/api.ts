@@ -201,57 +201,6 @@ export interface TerminalsPayload {
   spawn_policy?: SpawnPolicyAudit;
 }
 
-export interface ReplayWindow {
-  earliest: number;
-  latest: number;
-  now: number;
-  eventsAvailable: number;
-  defaultHours: number;
-  maxHours: number;
-  stepMs: number;
-}
-
-export interface ReplaySnapshot {
-  at: number;
-  generatedAt: number;
-  isLive: boolean;
-  window: {
-    from: number;
-    to: number;
-    hours: number;
-    earliestEventAt: number | null;
-    eventsConsidered: number;
-  };
-  queue: {
-    total: number;
-    byStatus: Record<string, number>;
-    perAgent: Array<{
-      agent: string;
-      queued?: number;
-      inProgress?: number;
-      complete?: number;
-      quarantined?: number;
-    }>;
-  };
-  throughput: Array<{ hour: number; count: number }>;
-  agents: {
-    tracked: number;
-    aliveCount: number;
-    alive: Array<{
-      agent: string;
-      lastSeen: number;
-      ageMs: number;
-    }>;
-  };
-  transitions: Array<{
-    at: number;
-    type: string;
-    agent: string | null;
-    taskId: string | null;
-    reason: string | null;
-  }>;
-}
-
 /**
  * GET /api/trading/ops -- the jobs this machine runs under launchd.
  *
@@ -304,8 +253,6 @@ export interface Summary {
     health: string;
   }>;
   /** A second copy of the agent list with the time it was collected. */
-  /** Ordered floor names for UI rendering (floor tabs, navigation). */
-  ui_floors?: string[];
   fleet?: { ts?: number; agents?: Agent[] };
 }
 
@@ -314,7 +261,7 @@ export interface Summary {
  *
  * This shape previously declared `pid`, `name`, `kind` and `observed_at`, none
  * of which the server ever sent. It type-checked cleanly, so a consumer reading
- * `process.pid` would render `undefined` with no error anywhere -- a declared
+ * `process.pid` would render `undefined` with no error anywhere — a declared
  * field that does not exist is worse than an absent one, because it reads as a
  * guarantee.
  *
@@ -436,7 +383,7 @@ export interface QueueSummary {
    * A task parked on an unmet dependency.
    *
    * `blocked_since` is what the server actually sends. This shape previously
-   * declared `waiting_on` and `blocked_at`, which the server has never emitted --
+   * declared `waiting_on` and `blocked_at`, which the server has never emitted —
    * so both resolved to undefined at runtime while type-checking cleanly, which
    * is worse than not having declared them. `reason` is derived server-side and
    * is honest about its own limits: when the record carries no cause it says
@@ -484,95 +431,6 @@ export interface AlphaInsiderPosition {
   mark: string;
   pnl: string;
   pnlPercent: string;
-}
-
-export interface AlphaInsiderMultistratStatus {
-  state: string;
-  openPositions: number;
-  closedTrades: number;
-  realizedPnl: number;
-  dailyRealized: number;
-  lastRun: string | null;
-  lastError: string | null;
-  strategies: string[];
-  feed: any;
-  updatedAt: string | null;
-}
-
-export interface StrategyMonitorStatus {
-  running: boolean;
-  lastCheck: string | null;
-  signalsGenerated: number;
-  tradesExecuted: number;
-  winRate: number;
-  profitFactor: number;
-  lastSignal: any | null;
-  lastTrade: any | null;
-  updatedAt: string | null;
-}
-
-export interface RiskMonitorStatus {
-  running: boolean;
-  currentEquity: number;
-  peakEquity: number;
-  dailyPnl: number;
-  dailyStartEquity: number;
-  totalDrawdown: number;
-  consecutiveLosses: number;
-  openPositions: number;
-  haltActive: boolean;
-  blockNewPositions: boolean;
-  limits: any;
-  health: any;
-  lastError: string | null;
-  updatedAt: string | null;
-}
-
-export interface MarketDataMonitorStatus {
-  running: boolean;
-  lastCheck: string | null;
-  symbols: any;
-  wsHealth: any;
-  anomalies: any[];
-  lastAnomaly: any | null;
-  updatedAt: string | null;
-}
-
-export interface AlertMonitorStatus {
-  running: boolean;
-  totalAlerts: number;
-  counts: {
-    critical: number;
-    warning: number;
-    info: number;
-  };
-  unacknowledged: number;
-  recentAlerts: any[];
-  deduplication: any;
-  updatedAt: string | null;
-}
-
-export interface PaperTradingOpsStatus {
-  running: boolean;
-  lastReconciliation: string | null;
-  reconciliation: any;
-  tradesExecuted: number;
-  fillsRecorded: number;
-  winRate: number;
-  totalRealizedPnl: number;
-  totalUnrealizedPnl: number;
-  totalEquity: number;
-  peakEquity: number;
-  maxDrawdown: number;
-  maxDrawdownPct: number;
-  openPosition: any | null;
-  updatedAt: string | null;
-}
-
-export interface PerformanceReporterData {
-  reportsAvailable: number;
-  latestReport: any | null;
-  allReports: any[];
 }
 
 export interface AlphaInsiderSnapshot {
@@ -723,7 +581,7 @@ export interface ApiErrorBody {
  *
  * This payload had no TypeScript type at all, so it was fetched as an untyped
  * blob. Every field below is required because the server builds them from a
- * single object literal with no conditional spread -- all thirteen are present on
+ * single object literal with no conditional spread — all thirteen are present on
  * every response, whether or not the engine is installed. Optionality would be a
  * lie here in the other direction: it would let a consumer treat "the engine is
  * not installed" as "the server did not tell me".
@@ -985,7 +843,7 @@ export interface HarnessHealth {
    *
    * This was absent from the canonical type while Overview read it. That worked
    * only because Overview declares a private copy of HarnessHealth with the field
-   * included -- the second component-local duplicate of a type that api.ts already
+   * included — the second component-local duplicate of a type that api.ts already
    * exports, and the same pattern that hid Agent.evidence from the canonical
    * Agent.
    */
@@ -1146,7 +1004,7 @@ export interface LaunchdStatus {
 }
 
 // Live launchd state, read from `launchctl list`. `idle` is a one-shot job that
-// finished cleanly. `stopped` exited non-zero but nothing is restarting it --
+// finished cleanly. `stopped` exited non-zero but nothing is restarting it —
 // usually a job deliberately reporting a condition (a quota guard, a failed
 // self-check) rather than a crash. `failed` is a KeepAlive job that is down,
 // which is never normal because launchd would keep trying.
@@ -1296,105 +1154,6 @@ export type {
   AutonomyState, AutonomyPolicy, AutonomyProposal, AutonomyAuditEntry, CapacityAssessment,
 };
 
-// From deskTruth.ts
-export type { PreviewLike, RateLimitLike } from './deskTruth';
-
-// Task Board
-export interface TaskBoardPayload {
-  rows: TaskRecord[];
-}
-
-// Terminals Spawned
-export interface TerminalsSpawnedPayload {
-  terminals: Array<{ id: string; status?: string; type?: string }>;
-}
-
-// TradingMonitor - 7 interfaces from server endpoints
-export interface AlphaInsiderMultistratStatus {
-  state: string;
-  openPositions: number;
-  closedTrades: number;
-  realizedPnl: number;
-  dailyRealized: number;
-  lastRun: string | null;
-  lastError: string | null;
-  strategies: string[];
-  feed: any;
-  updatedAt: string | null;
-}
-
-export interface StrategyMonitorStatus {
-  running: boolean;
-  lastCheck: string | null;
-  signalsGenerated: number;
-  tradesExecuted: number;
-  winRate: number;
-  profitFactor: number;
-  lastSignal: any | null;
-  lastTrade: any | null;
-  updatedAt: string | null;
-}
-
-export interface RiskMonitorStatus {
-  running: boolean;
-  currentEquity: number;
-  peakEquity: number;
-  dailyPnl: number;
-  dailyStartEquity: number;
-  totalDrawdown: number;
-  consecutiveLosses: number;
-  openPositions: number;
-  haltActive: boolean;
-  blockNewPositions: boolean;
-  limits: any;
-  health: any;
-  lastError: string | null;
-  updatedAt: string | null;
-}
-
-export interface MarketDataMonitorStatus {
-  running: boolean;
-  lastCheck: string | null;
-  symbols: any;
-  wsHealth: any;
-  anomalies: any[];
-  lastAnomaly: any | null;
-  updatedAt: string | null;
-}
-
-export interface AlertMonitorStatus {
-  running: boolean;
-  totalAlerts: number;
-  counts: { critical: number; warning: number; info: number };
-  unacknowledged: number;
-  recentAlerts: any[];
-  deduplication: any;
-  updatedAt: string | null;
-}
-
-export interface PaperTradingOpsStatus {
-  running: boolean;
-  lastReconciliation: string | null;
-  reconciliation: any;
-  tradesExecuted: number;
-  fillsRecorded: number;
-  winRate: number;
-  totalRealizedPnl: number;
-  totalUnrealizedPnl: number;
-  totalEquity: number;
-  peakEquity: number;
-  maxDrawdown: number;
-  maxDrawdownPct: number;
-  openPosition: any | null;
-  updatedAt: string | null;
-}
-
-export interface PerformanceReporterData {
-  reportsAvailable: number;
-  latestReport: any | null;
-  allReports: any[];
-}
-
 /** Panel path -> resource name, for the endpoints the server pushes. */
 const RESOURCE_BY_PATH: Record<string, string> = {
   '/api/summary': 'summary',
@@ -1429,13 +1188,6 @@ const RESOURCE_BY_PATH: Record<string, string> = {
   '/api/polymarket': 'polymarket',
   '/api/polymarket/status': 'polymarketStatus',
   '/api/polymarket/markets': 'polymarketMarkets',
-  '/api/trading/alphainsider': 'alphainsiderMultistrat',
-  '/api/trading/strategy-monitor': 'strategyMonitor',
-  '/api/trading/risk-monitor': 'riskMonitor',
-  '/api/trading/market-data': 'marketDataMonitor',
-  '/api/trading/alerts': 'alertMonitor',
-  '/api/trading/paper-ops': 'paperTradingOps',
-  '/api/trading/performance': 'performanceReporter',
 };
 
 const POLL_ONLY_MS = 20000;
@@ -1510,7 +1262,7 @@ export function useLive<T>(path: string) {
 }
 
 export function relTime(ts?: number | null): string {
-  if (!ts) return '--';
+  if (!ts) return '—';
   const diff = Date.now() - (ts > 1e12 ? ts : ts * 1000);
   if (diff < 0) return 'now';
   const s = Math.floor(diff / 1000);
@@ -1523,7 +1275,7 @@ export function relTime(ts?: number | null): string {
 }
 
 export function shortTime(ts?: number | null): string {
-  if (!ts) return '--';
+  if (!ts) return '—';
   const d = new Date(ts > 1e12 ? ts : ts * 1000);
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
@@ -1542,10 +1294,6 @@ export const FLOOR_DEFAULTS: Record<string, { model: string; provider: string }>
   F10: { model: 'qwen/qwen2.5-32b-instruct', provider: 'freeHarness' },
   F11: { model: 'nvidia/nemotron-3-ultra-550b-a55b', provider: 'nvidia' },
   F12: { model: 'qwen/qwen2.5-32b-instruct', provider: 'freeHarness' },
-  F13: { model: 'qwen/qwen2.5-32b-instruct', provider: 'freeHarness' },
-  F14: { model: 'qwen/qwen2.5-32b-instruct', provider: 'freeHarness' },
-  F15: { model: 'nvidia/nemotron-3-ultra-550b-a55b', provider: 'nvidia' },
-  F16: { model: 'nvidia/nemotron-3-ultra-550b-a55b', provider: 'nvidia' },
   god: { model: 'nvidia/nemotron-3-ultra-550b-a55b', provider: 'nvidia' },
   'office-manager': { model: 'qwen/qwen2.5-32b-instruct', provider: 'freeHarness' },
   mainbot: { model: 'qwen/qwen2.5-32b-instruct', provider: 'freeHarness' },

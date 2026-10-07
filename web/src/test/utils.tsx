@@ -1,7 +1,9 @@
 import React, { ReactElement } from 'react';
 import { render, RenderOptions, RenderResult } from '@testing-library/react';
 import { vi } from 'vitest';
+import { LiveStoreProvider } from './utils';
 
+// Mock the live store for tests
 vi.mock('../live/store', () => {
   const mockLiveStore = {
     subscribe: vi.fn(() => () => {}),
@@ -19,18 +21,15 @@ vi.mock('../live/store', () => {
   const MockLiveStoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => children;
 
   return {
-    liveStore: mockLiveStore,
+    liveStore: { subscribe: vi.fn(), subscribeStatus: vi.fn(), subscribeViewers: vi.fn() },
     useResource: vi.fn(() => ({ data: null, error: null, loading: false, updatedAt: null, stale: false, refresh: vi.fn() })),
     useConnectionStatus: vi.fn(() => ({ state: 'live', since: Date.now() })),
     useViewers: vi.fn(() => []),
     acknowledgeAlert: vi.fn(),
     acknowledgeAllAlerts: vi.fn(),
-    LiveStoreProvider: MockLiveStoreProvider,
+    LiveStoreProvider: vi.fn(({ children }) => children),
   };
 });
-
-import { LiveStoreProvider } from '../live/store';
-import { useResource } from '../live/store';
 
 export function renderWithProviders(
   ui: ReactElement,

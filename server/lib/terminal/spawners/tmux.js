@@ -141,15 +141,6 @@ async function kill(session, options = {}) {
   return true;
 }
 
-/** Resize the tmux session's pane. */
-async function resize(session, cols, rows) {
-  if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || rows < 5) {
-    throw new Error('cols/rows must be integers >= 10/5');
-  }
-  await tmux(['resize-pane', '-t', session, '-x', String(cols), '-y', String(rows)]);
-  return true;
-}
-
 /** Send keys to the session's pane (used to answer a prompt in a live session). */
 // NOTE on target syntax. Session targets here are plain names, never the
 // `=name` exact-match form. Verified against tmux 3.7c: `send-keys -t =sess`
@@ -200,4 +191,4 @@ async function cwd(session) {
 
 const hostLabel = () => os.hostname().split('.')[0];
 
-module.exports = { tmux, available, isAlive, spawn, kill, resize, sendKeys, sendText, sendLine, capture, cwd, activePane, hostLabel, resolveBinary };
+module.exports = { tmux, available, isAlive, spawn, kill, sendKeys, sendText, sendLine, capture, cwd, activePane, hostLabel, resolveBinary };

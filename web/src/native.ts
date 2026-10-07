@@ -3,7 +3,7 @@
  *
  * The HUD is one build that runs in a browser and inside the Electron shell.
  * Everything here is a no-op in a browser, so nothing in the app may depend on
- * it for correctness -- it only enables the shell's chrome and forwards the
+ * it for correctness — it only enables the shell's chrome and forwards the
  * shell's menu commands to the same state the keyboard already drives.
  */
 

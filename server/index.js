@@ -8,12 +8,13 @@ const os = require('os');
 const net = require('net');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
-const rateLimit = require('express-rate-limit');
 const { LiveHub } = require('./lib/live_hub');
 const { AlertEngine } = require('./lib/alerts');
 const { AutonomyController } = require('./lib/autonomy');
 const replay = require('./lib/replay');
 const { rateLimitReport } = require('./rateLimitStatus');
+const { mountActivityRoute } = require('./lib/activity');
+const { registerOpenAliceRoute } = require('./lib/openalice');
 const { fleetCostVerdict, costLabel, mayShowZero } = require('./costTruth');
 const { fleetCapVerdict } = require('./capTruth');
 const {
@@ -46,9 +47,9 @@ const FLEET_ROOT = path.dirname(HIVE);
 // no in-flight rewrite touches is deliberate: that inline check was reverted five
 // times in one session, and once reached production wide open.
 const { isLocalRequest } = require('./lib/local_only');
+const { isLaptop, getPolymarketRuntimeRemote, getPolymarketStateRemote, getPolymarketMarketsRemote } = require('./lib/polymarket_remote');
 const { TerminalManager } = require('./lib/terminal/manager');
 const { redactCommand, redactEntry, redactAll } = require('./lib/redact');
-const { isLaptop, getPolymarketRuntimeRemote, getPolymarketStateRemote, getPolymarketMarketsRemote } = require('./lib/polymarket_remote');
 const alphaInsiderStats = require('./alphainsider_stats_route');
 // Route modules kept in their own files so a rewrite of this one cannot silently
 // drop them -- the failure mode that lost the AlphaInsider stats routes twice.
@@ -67,13 +68,13 @@ const terminalManager = new TerminalManager({
   hive: HIVE,
   ...(process.env.OFFICE_MAX_TERMINALS ? { maxConcurrent: Number(process.env.OFFICE_MAX_TERMINALS) } : {}),
 });
-const POLYMARKET_ROOT = path.join(os.homedir(), 'polymarket');
+const POLYMARKET_ROOT = '/Users/a/polymarket';
 const POLYMARKET_RESEARCH = path.join(POLYMARKET_ROOT, 'research');
 const POLYMARKET_STATE_PATH = path.join(POLYMARKET_RESEARCH, 'engine_state.json');
 const POLYMARKET_EXCLUSIONS_PATH = path.join(POLYMARKET_RESEARCH, 'market_exclusions.json');
 const POLYMARKET_BACKUP_DIR = path.join(POLYMARKET_ROOT, 'backups');
 const POLYMARKET_LAUNCHD_LABEL = 'com.aryan.pm-engine';
-const POLYMARKET_LAUNCHD_INSTALLED_PLIST = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.aryan.pm-engine.plist');
+const POLYMARKET_LAUNCHD_INSTALLED_PLIST = '/Users/a/Library/LaunchAgents/com.aryan.pm-engine.plist';
 const POLYMARKET_LAUNCHD_TARGET = `gui/${typeof process.getuid === 'function' ? process.getuid() : 501}/${POLYMARKET_LAUNCHD_LABEL}`;
 const TRADING_BOT = process.env.TRADING_BOT_PATH || path.join(os.homedir(), 'trading-bot');
 const PAPER_BENCHMARK = process.env.PAPER_BENCHMARK_PATH || path.join(os.homedir(), 'trading', 'paper-benchmark');
@@ -108,16 +109,18 @@ const jarvisCommandTimestamps = [];
 const SAFE_POST = new Set([
   '/api/llm/costs/reset/daily',
   '/api/llm/costs/reset/monthly',
+  '/api/llm/circuit-breakers/reset',
   '/api/llm/test',
   '/api/polymarket/start',
   '/api/polymarket/stop',
   '/api/polymarket/markets/exclude',
   '/api/polymarket/markets/include',
+  '/api/polymarket/trades/clear',
   '/api/recovery/manual',
   '/api/recovery/start',
   '/api/recovery/stop',
   '/api/recovery/manual/:agentId',
-  '/api/jarvis/command',
+'/api/jarvis/command',
     // Judgement, not action. This route writes nothing: it runs a command through
     // the same pure validator the write path uses and returns the verdict, so the
     // console can show the risk tier and the owner without the browser holding its
@@ -125,10 +128,7 @@ const SAFE_POST = new Set([
     // middleware because it is a POST only for its body, and the alternative —
     // smuggling a prompt through a GET — would put command text in access logs.
     '/api/jarvis/preview',
-  '/api/query',
-    // Declarative query API - runs pure DOTS systems and returns picked fields.
-    // Writes nothing, just computes derived state from hive data.
-]);
+  ]);
 // Alert acknowledgement and autonomy decisions are operator state on the HUD
 // itself, not hive writes. Each handler still requires a local caller.
 const SAFE_POST_PREFIXES = [
@@ -190,97 +190,6 @@ function hostIsAllowed(hostHeader) {
 app.use((req, res, next) => {
   if (hostIsAllowed(req.headers.host)) return next();
   return sendError(res, 421, 'bad_host', `Host ${req.headers.host} is not allowed`);
-});
-
-// Rate limiting for mutating endpoints (local-only, but defense in depth)
-// Use ipKeyGenerator to handle IPv6 properly
-const { ipKeyGenerator } = require('express-rate-limit');
-
-const mutatingLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 30, // 30 requests per minute for mutating endpoints
-  message: { error: 'Too many requests', code: 'RATE_LIMITED' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: ipKeyGenerator,
-  skip: (req) => req.method === 'GET' || req.method === 'HEAD',
-});
-
-const terminalLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10, // 10 terminal spawns per minute
-  message: { error: 'Too many terminal spawn requests', code: 'RATE_LIMITED' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: ipKeyGenerator,
-  skip: (req) => req.method !== 'POST' || !req.path.startsWith('/api/terminals/spawn'),
-});
-
-const polymarketLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 20, // 20 polymarket mutations per minute
-  message: { error: 'Too many polymarket requests', code: 'RATE_LIMITED' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: ipKeyGenerator,
-  skip: (req) => req.method !== 'POST' || !req.path.startsWith('/api/polymarket/'),
-});
-
-const jarvisLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30, // 30 jarvis commands per minute
-  message: { error: 'Too many jarvis commands', code: 'RATE_LIMITED' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: ipKeyGenerator,
-  skip: (req) => req.method !== 'POST' || req.path !== '/api/jarvis/command',
-});
-
-const recoveryLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10, // 10 recovery actions per minute
-  message: { error: 'Too many recovery requests', code: 'RATE_LIMITED' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: ipKeyGenerator,
-  skip: (req) => req.method !== 'POST' || !req.path.startsWith('/api/recovery/'),
-});
-
-const autonomyLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 20, // 20 autonomy actions per minute
-  message: { error: 'Too many autonomy requests', code: 'RATE_LIMITED' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: ipKeyGenerator,
-  skip: (req) => req.method !== 'POST' || !req.path.startsWith('/api/autonomy/'),
-});
-
-const autopilotLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 20, // 20 autopilot actions per minute
-  message: { error: 'Too many autopilot requests', code: 'RATE_LIMITED' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: ipKeyGenerator,
-  skip: (req) => req.method !== 'POST' || !req.path.startsWith('/api/autopilot/'),
-});
-
-// Apply rate limiters to mutating endpoints
-app.use('/api/terminals/spawn', terminalLimiter);
-app.use('/api/terminals/bulk', terminalLimiter);
-app.use('/api/polymarket/', polymarketLimiter);
-app.use('/api/jarvis/command', jarvisLimiter);
-app.use('/api/recovery/', recoveryLimiter);
-app.use('/api/autonomy/', autonomyLimiter);
-app.use('/api/autopilot/', autopilotLimiter);
-
-// General mutating endpoint limiter (catch-all for other POSTs)
-app.use('/api', (req, res, next) => {
-  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE' || req.method === 'PATCH') {
-    return mutatingLimiter(req, res, next);
-  }
-  next();
 });
 
 app.use(express.json());
@@ -1048,7 +957,7 @@ function clearLocalPolymarketTrades(body) {
 }
 
 function getSessions() {
-  return readJsonCached(path.join(HIVE, 'sessions.json'), { sessions: [] });
+  return readJson(path.join(HIVE, 'sessions.json'), { sessions: [] });
 }
 
 // A host publishes hive/terminals.json; other machines publish the same file
@@ -1388,19 +1297,49 @@ function mergedAgents() {
 // members. `lead` is the agent whose role says it leads that floor; when no
 // agent claims the floor there is no lead, and that is reported as null rather
 // than filled in from the UI's own floor list.
+//
+// Floor identity resolution, and why the id is consulted
+// ------------------------------------------------------
+// `registry.json` no longer carries a `floor` attribute on any agent: the 66
+// roster entries have id/name/provider/cwd/role/capabilities/status and stop
+// there, and the per-agent status files that do mention a floor all carry the
+// literal string "unknown". Grouping on `floor` alone therefore yields zero
+// floors while every floor lead is present and accountable, which is why the
+// summary rollup went empty without any error being raised.
+//
+// The one per-agent fact the hive still holds is that a floor lead's agent id IS
+// the floor: `F1`..`F12`. So when the explicit attribute is absent or is the
+// unusable placeholder "unknown", the id is consulted under the same rule that
+// already guards this function -- a floor id is f<digits>, anything else is an
+// agent group (PM-AUDIT, specialist-22, office-manager) and must not be
+// promoted into a floor.
+//
+// This restores the leads and nothing more. Specialists carry no floor
+// reference anywhere in the current hive state, so they stay unattributed and
+// out of every count here. That understates membership rather than inventing it;
+// inventing it would put agents on floors the hive never assigned them to. The
+// per-floor truth (manager liveness, stalled work) is deliberately not answered
+// here at all -- that is `/api/floors`, which probes the hive.
+const FLOOR_LEAD_ROLE = /floor\s*lead|floor manager|manager/i;
+
+function resolveFloorId(agent) {
+  const declared = agent.floor != null ? String(agent.floor) : '';
+  // "unknown" is a placeholder the status writer emits, not a floor id.
+  if (declared && declared.toLowerCase() !== 'unknown' && /^f\d+$/i.test(declared)) {
+    return declared.toLowerCase();
+  }
+  const id = String(agent.id ?? '');
+  // Lowercased so an id-derived floor (F3) and an attribute-derived one (f3)
+  // cannot become two rows for the same floor. Floor ids are compared against
+  // the lowercase ids the ledger and /api/floors use.
+  return /^f\d+$/i.test(id) ? id.toLowerCase() : null;
+}
+
 function rollupFloors(agents) {
   const byFloor = new Map();
   for (const agent of agents) {
-const floor = agent.floor || null;
+const floor = resolveFloorId(agent);
       if (!floor) continue;
-      // An agent's `floor` attribute is not reserved for floors. It is also used
-      // for organisational groups (command, office, operations, polymarket,
-      // specialists, workers), so grouping by it emitted those groups as if they
-      // were floors: 18 rows for 12 floors, six of them with no manager, no state
-      // and no liveness. A floor id is f<digits>; anything else is an agent group
-      // and belongs in the agent view. The groups are not removed from the roster,
-      // they simply stop being reported as floors.
-      if (!/^f\d+$/i.test(String(floor))) continue;
       if (!byFloor.has(floor)) {
       byFloor.set(floor, {
         floor,
@@ -1419,7 +1358,7 @@ const floor = agent.floor || null;
     // A member counts as running when its session is fresh. A process id alone
     // is not proof — the process table is not polled here.
     if (agent.evidence?.sessionFresh) row.running += 1;
-    if (!row.lead && /floor\s*lead|floor manager|manager/i.test(String(agent.role || ''))) {
+    if (!row.lead && FLOOR_LEAD_ROLE.test(String(agent.role || ''))) {
       row.lead = agent.id;
       row.leadIsLive = !!agent.evidence?.sessionFresh;
     }
@@ -1574,173 +1513,6 @@ function getLiveMetrics() {
     logExists: fs.existsSync(logPath),
     logSize: logSizeOf(logPath),
   });
-}
-
-// Alpha Insider Multistrat status
-function getAlphaInsiderMultistratStatus() {
-  const statePath = path.join(FLEET_ROOT, 'state', 'alphainsider_multistrat.json');
-  const feedPath = path.join(os.homedir(), 'trading', 'openalice', 'ui', 'public', 'alphainsider_multistrat.json');
-  const state = readJson(statePath, {});
-  const feed = readJson(feedPath, {});
-  return {
-    state: state.status || 'unknown',
-    openPositions: (state.positions || []).length,
-    closedTrades: (state.closed_trades || []).length,
-    realizedPnl: state.realized_pnl || 0,
-    dailyRealized: state.daily_realized || 0,
-    lastRun: state.last_run,
-    lastError: state.last_error,
-    strategies: Object.keys((state.positions || []).reduce((acc, p) => {
-      acc[p.strategy] = (acc[p.strategy] || 0) + 1;
-      return acc;
-    }, {})),
-    feed: feed,
-    updatedAt: feed.ts || state.last_run,
-  };
-}
-
-// Strategy Monitor status
-function getStrategyMonitorStatus() {
-  const logPath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'strategy_monitor.log');
-  const statePath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'strategy_monitor_state.json');
-  const state = readJson(statePath, {});
-  const signals = state.signals || [];
-  const trades = state.trades || [];
-  const winRate = trades.length > 0 ? trades.filter(t => t.pnl_pct > 0).length / trades.length * 100 : 0;
-  const pf = trades.length > 0 ? Math.abs(trades.filter(t => t.pnl_pct > 0).reduce((sum, t) => sum + t.pnl_pct, 0) / trades.filter(t => t.pnl_pct <= 0).reduce((sum, t) => sum + t.pnl_pct, 0)) : 0;
-  return {
-    running: fs.existsSync(logPath),
-    lastCheck: state.last_check,
-    signalsGenerated: signals.length,
-    tradesExecuted: trades.length,
-    winRate: Math.round(winRate * 100) / 100,
-    profitFactor: Math.round(pf * 100) / 100,
-    lastSignal: signals[signals.length - 1] || null,
-    lastTrade: trades[trades.length - 1] || null,
-    updatedAt: state.updated_at,
-  };
-}
-
-// Risk Monitor status
-function getRiskMonitorStatus() {
-  const statePath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'risk_monitor_state.json');
-  const haltPath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'risk_halt.json');
-  const blockPath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'block_new_positions.json');
-  const state = readJson(statePath, {});
-  const halt = readJson(haltPath, null);
-  const block = readJson(blockPath, null);
-  return {
-    running: state.status === 'running' || state.status === 'ok',
-    currentEquity: state.current_equity || 10000,
-    peakEquity: state.peak_equity || 10000,
-    dailyPnl: state.daily_pnl || 0,
-    dailyStartEquity: state.daily_start_equity || 10000,
-    totalDrawdown: state.total_drawdown || 0,
-    consecutiveLosses: state.consecutive_losses || 0,
-    openPositions: state.open_positions || 0,
-    haltActive: halt !== null,
-    blockNewPositions: block !== null,
-    limits: state.limits || {},
-    health: state.health || {},
-    lastError: state.last_error,
-    updatedAt: state.updated_at,
-  };
-}
-
-// Market Data Monitor status
-function getMarketDataMonitorStatus() {
-  const logPath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'market_data_monitor.log');
-  const statePath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'market_data_monitor_state.json');
-  const state = readJson(statePath, {});
-  return {
-    running: fs.existsSync(logPath),
-    lastCheck: state.last_check,
-    symbols: state.symbols || {},
-    wsHealth: state.ws_health || {},
-    anomalies: state.anomalies || [],
-    lastAnomaly: state.last_anomaly || null,
-    updatedAt: state.updated_at,
-  };
-}
-
-// Alert Monitor status
-function getAlertMonitorStatus() {
-  const statePath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'alert_monitor_state.json');
-  const alertsLog = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'alerts_monitor.log');
-  const state = readJson(statePath, {});
-  const alerts = state.alerts || [];
-  const counts = {
-    critical: alerts.filter(a => a.severity === 'CRITICAL').length,
-    warning: alerts.filter(a => a.severity === 'WARNING').length,
-    info: alerts.filter(a => a.severity === 'INFO').length,
-  };
-  return {
-    running: fs.existsSync(alertsLog),
-    totalAlerts: alerts.length,
-    counts,
-    unacknowledged: alerts.filter(a => !a.acknowledged).length,
-    recentAlerts: alerts.slice(-10).reverse(),
-    deduplication: state.deduplication || {},
-    updatedAt: state.updated_at,
-  };
-}
-
-// Paper Trading Ops status
-function getPaperTradingOpsStatus() {
-  const statePath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'paper_trading_state.json');
-  const journalPath = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'state', 'live_journal.json');
-  const state = readJson(statePath, {});
-  const journal = readJson(journalPath, {});
-  const trades = state.trades || [];
-  const fills = state.fills || [];
-  const winRate = trades.length > 0 ? trades.filter(t => t.pnl_usd > 0).length / trades.length * 100 : 0;
-  return {
-    running: true,
-    lastReconciliation: state.last_reconciliation,
-    reconciliation: state.reconciliation || {},
-    tradesExecuted: trades.length,
-    fillsRecorded: fills.length,
-    winRate: Math.round(winRate * 100) / 100,
-    totalRealizedPnl: journal.total_realized_pnl || 0,
-    totalUnrealizedPnl: journal.total_unrealized_pnl || 0,
-    totalEquity: journal.total_equity || 10000,
-    peakEquity: journal.peak_equity || 10000,
-    maxDrawdown: journal.max_drawdown || 0,
-    maxDrawdownPct: journal.max_drawdown_pct || 0,
-    openPosition: state.open_position || null,
-    updatedAt: state.updated_at,
-  };
-}
-
-// Performance Reporter data
-function getPerformanceReporterData() {
-  const reportsDir = path.join(FLEET_ROOT, 'trading', 'trading-bot', 'reports');
-  let reports = [];
-  if (fs.existsSync(reportsDir)) {
-    try {
-      reports = fs.readdirSync(reportsDir)
-        .filter(f => f.endsWith('.json'))
-        .map(f => {
-          const content = readJson(path.join(reportsDir, f), {});
-          return {
-            file: f,
-            totalStrategies: content.overview?.total_strategies || 0,
-            totalTrades: content.overview?.total_trades || 0,
-            avgReturn: content.overview?.avg_total_return_pct || 0,
-            avgSharpe: content.overview?.avg_sharpe || 0,
-            bestStrategy: content.best_strategy?.name || 'N/A',
-            worstStrategy: content.worst_strategy?.name || 'N/A',
-            created: f.match(/performance_(\d{8}_\d{6})/)?.[1] || 'unknown',
-          };
-        })
-        .sort((a, b) => b.created.localeCompare(a.created));
-    } catch {}
-  }
-  return {
-    reportsAvailable: reports.length,
-    latestReport: reports[0] || null,
-    allReports: reports.slice(0, 20),
-  };
 }
 
 // `launchctl list` prints:  <pid|->  <last-exit-code>  <label>
@@ -2416,14 +2188,13 @@ function getPolymarketRuntime() {
 // ---------- routes ----------
 
 app.get('/api/health', (_req, res) => {
-  let probeResult = { ok: false, checks: [] };
   try {
     const output = execFileSync('/usr/bin/python3', [path.join(__dirname, 'health_probe.py')]);
-    probeResult = JSON.parse(output.toString());
+    const probeResult = JSON.parse(output.toString());
+    res.json({ ...probeResult, ...hiveStatus(), ts: Date.now() });
   } catch (_) {
-    probeResult = { ok: false, checks: [] };
+    res.json({ ok: false, ...hiveStatus(), ts: Date.now() });
   }
-  res.json({ ...probeResult, ...hiveStatus(), ts: Date.now() });
 });
 
 app.get('/api/alphainsider/status', (_req, res) => proxyFreeHarnessJson('/alphainsider/status', res));
@@ -2527,7 +2298,6 @@ const BOARD_COLUMNS = [
 const BOARD_TASK_FIELDS = [
   'task_id', 'title', 'status', 'project_id', 'assigned_agent', 'claimed_by',
   'created_at', 'started_at', 'completed_at', 'updated_at', 'heartbeat', 'priority',
-  'verified', 'result',
 ];
 
 function taskSortTime(task) {
@@ -2581,12 +2351,10 @@ function getTaskBoard(perColumn = 25) {
       return status === 'COMPLETE' || status === 'DONE';
     });
 
-    const completion = summarizeTasks(claimedComplete);
     return {
       groups,
       counts,
-      completion,
-      evidenced: completion,
+      completion: summarizeTasks(claimedComplete),
       total: all.length,
       perColumn,
     // Tasks in a status the board does not draw, so the UI can say so.
@@ -2616,15 +2384,12 @@ app.get('/api/task-board', (_req, res) => {
 
 app.get('/api/tasks', (req, res) => {
   if (req.query.summary === '1' || req.query.summary === 'true') {
-    const { produceQueueSummaryDots } = require('./lib/dots/bridge');
-    return res.json(produceQueueSummaryDots());
+    return res.json(getQueueSummary());
   }
   if (req.query.counts === '1' || req.query.counts === 'true') {
-    const { produceFloorTaskCountsDots } = require('./lib/dots/bridge');
-    return res.json(produceFloorTaskCountsDots());
+    return res.json({ counts: getFloorTaskCounts() });
   }
-  const { produceTasksDots } = require('./lib/dots/bridge');
-  res.json(produceTasksDots());
+  res.json(getTasks());
 });
 
 app.get('/api/jarvis/tasks', (_req, res) => {
@@ -2795,8 +2560,7 @@ function getVerifyState() {
 }
 
 app.get('/api/verify', (_req, res) => {
-  const { produceVerifyDots } = require('./lib/dots/bridge');
-  res.json(produceVerifyDots());
+  res.json(buildSnapshot('verify'));
 });
 
 app.get('/api/office-manager', (_req, res) => {
@@ -2812,8 +2576,7 @@ app.get('/api/services/health', async (_req, res) => {
 });
 
 app.get('/api/sessions', (_req, res) => {
-  const { produceSessionsDots } = require('./lib/dots/bridge');
-  res.json(produceSessionsDots());
+  res.json(buildSnapshot('sessions'));
 });
 
 // Terminals across every host that publishes into this hive. A host that has
@@ -2823,6 +2586,9 @@ app.get('/api/terminals', (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json(terminalSnapshot());
 });
+
+mountActivityRoute(app, { snapshotFn: terminalSnapshot });
+registerOpenAliceRoute(app);
 
 // ---------- spawned terminals ----------
 //
@@ -3028,22 +2794,6 @@ app.get('/api/fleet/performance', (_req, res) => {
   }
 });
 
-// Fleet overview - agents, floors, registry
-app.get('/api/fleet', (_req, res) => {
-  res.set('Cache-Control', 'no-store');
-  try {
-    const fleet = getFleet();
-    const reg = getRegistry();
-    res.json({
-      fleet,
-      floors: Object.keys(reg.agents || {}).filter(id => id.startsWith('F') && !id.includes('-')).sort(),
-      godId: reg.godId || null
-    });
-  } catch (error) {
-    sendError(res, 500, 'fleet_failed', error.message);
-  }
-});
-
 // The ticker. Off by default (policy.enabled is false), so a fresh install
 // never runs a suite on a timer by surprise. unref() so it never holds the
 // process open on shutdown.
@@ -3155,20 +2905,6 @@ app.post('/api/terminals/:id/input', async (req, res) => {
     }
   });
 
-  app.post('/api/terminals/:id/resize', async (req, res) => {
-    if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'resize is local only');
-    const { cols, rows } = req.body || {};
-    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 10 || rows < 5) {
-      return sendError(res, 400, 'bad_request', 'cols/rows must be integers >= 10/5');
-    }
-    try {
-      await terminalManager.resize(req.params.id, cols, rows);
-      res.json({ ok: true });
-    } catch (error) {
-      sendError(res, error.statusCode || 500, 'RESIZE_FAILED', error.message);
-    }
-  });
-
   function getProcesses() {
   const doc = readJson(path.join(HIVE, 'processes.json'), { processes: [] });
   // Same reasoning as terminalSnapshot: the hive keeps the real command line,
@@ -3193,37 +2929,13 @@ function getProjects() {
 }
 
 app.get('/api/projects', (_req, res) => {
-  const { produceProjectsDots } = require('./lib/dots/bridge');
-  res.json(produceProjectsDots());
+  res.json(buildSnapshot('projects'));
 });
 
 // ---------- trading bot routes ----------
 
 app.get('/api/trading/backtests', (_req, res) => {
   res.json(buildSnapshot('tradingBacktests'));
-});
-
-app.get('/api/trading/backtest/:name', (_req, res) => {
-  const name = decodeURIComponent(_req.params.name);
-  const backtestData = getBacktestResults();
-  const walkforwardData = getWalkForwardResults();
-  
-  const backtest = backtestData?.backtest?.[name];
-  const walkforward = walkforwardData?.walkforward?.[name];
-  
-  if (!backtest && !walkforward) {
-    return res.status(404).json({ error: 'Strategy not found' });
-  }
-  
-  res.json({
-    name,
-    backtest,
-    walkforward,
-    // Generate equity curve from trades if available
-    equity_curve: backtest?.trades ? backtest.trades.map((t) => t.pnl_usd || 0) : [],
-    trades: backtest?.trades || [],
-    param_ranges: backtest?.param_ranges,
-  });
 });
 
 app.get('/api/trading/strategies', (_req, res) => {
@@ -3234,149 +2946,8 @@ app.get('/api/trading/live', async (_req, res) => {
   res.json(await getLiveMetrics());
 });
 
-app.get('/api/trading/portfolio', async (_req, res) => {
-  try {
-    const { computePortfolioMetrics, historicalVaR, historicalCVaR, maxDrawdown, correlationMatrix, stressTests, computeReturns } = require('./lib/riskMetrics');
-    const sqlite3 = require('sqlite3').verbose();
-    const dbPath = path.join(TRADING_BOT, 'database.db');
-    
-    if (!fs.existsSync(dbPath)) {
-      return res.json({ 
-        ok: false, 
-        error: 'Trading bot database not found',
-        dbExists: false 
-      });
-    }
-    
-    const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY);
-    
-    // Get closed trades
-    const trades = await new Promise((resolve, reject) => {
-      db.all(`SELECT strategy, pnl_usd, entry_time, exit_time FROM trades WHERE exit_time IS NOT NULL ORDER BY exit_time`, [], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
-    
-    // Get open positions
-    const positions = await new Promise((resolve, reject) => {
-      db.all(`SELECT strategy, unrealized_pnl FROM positions WHERE status = 'open'`, [], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
-    
-    // Get equity curve from fills or trades
-    const equityRows = await new Promise((resolve, reject) => {
-      db.all(`SELECT timestamp, equity FROM equity_curve ORDER BY timestamp`, [], (err, rows) => {
-        if (err) {
-          // Table might not exist, try to compute from trades
-          resolve([]);
-        } else {
-          resolve(rows || []);
-        }
-      });
-    });
-    
-    db.close();
-    
-    const startingEquity = 10000; // Default, could be read from config
-    const portfolio = computePortfolioMetrics(trades, positions, startingEquity);
-    
-    // Compute equity curve for VaR/Drawdown
-    let equityCurve = [];
-    if (equityRows.length > 0) {
-      equityCurve = equityRows.map(r => r.equity);
-    } else if (trades.length > 0) {
-      // Build equity curve from trades
-      let equity = 10000;
-      equityCurve = [equity];
-      for (const t of trades) {
-        equity += t.pnl_usd || 0;
-        equityCurve.push(equity);
-      }
-    }
-    
-    // Daily returns for VaR
-    const returns = equityCurve.length > 1 ? equityCurve.slice(1).map((v, i) => {
-      const prev = equityCurve[i];
-      return prev > 0 ? (v - prev) / prev : 0;
-    }) : [];
-    
-    const var95 = historicalVaR(returns, 0.95);
-    const cvar95 = historicalCVaR(returns, 0.95);
-    const { maxDrawdown: maxDD, maxDrawdownPct } = maxDrawdown(equityCurve.length ? equityCurve : [startingEquity]);
-    
-    // Strategy returns for correlation (simplified)
-    const strategyReturns = {};
-    // TODO: Implement strategy-level returns aggregation
-    
-    res.json({
-      ok: true,
-      dbExists: true,
-      portfolio,
-      risk: {
-        var95: var95 !== null ? { value: var95, confidence: 0.95 } : null,
-        cvar95: cvar95 !== null ? { value: cvar95, confidence: 0.95 } : null,
-        maxDrawdown: { value: maxDD, pct: maxDrawdownPct },
-        correlation: strategyReturns && Object.keys(strategyReturns).length > 1 ? correlationMatrix(strategyReturns) : null,
-        stressTests: equityCurve.length ? stressTests(equityCurve, {}) : null,
-      },
-      equityCurve: equityCurve.slice(-100), // Last 100 points
-      returns: returns.slice(-100),
-      tradesCount: trades.length,
-      positionsCount: positions.length,
-    });
-  } catch (error) {
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
 app.get('/api/trading/ops', (_req, res) => {
   res.json(buildSnapshot('tradingOps'));
-});
-
-app.get('/api/trading/alphainsider', (_req, res) => {
-  res.json(buildSnapshot('alphainsiderMultistrat'));
-});
-
-app.get('/api/trading/strategy-monitor', (_req, res) => {
-  res.json(buildSnapshot('strategyMonitor'));
-});
-
-app.get('/api/trading/risk-monitor', (_req, res) => {
-  res.json(buildSnapshot('riskMonitor'));
-});
-
-app.get('/api/trading/market-data', (_req, res) => {
-  res.json(buildSnapshot('marketDataMonitor'));
-});
-
-app.get('/api/trading/alerts', (_req, res) => {
-  res.json(buildSnapshot('alertMonitor'));
-});
-
-app.get('/api/trading/paper-ops', (_req, res) => {
-  res.json(buildSnapshot('paperTradingOps'));
-});
-
-app.get('/api/trading/performance', (_req, res) => {
-  res.json(buildSnapshot('performanceReporter'));
-});
-
-app.get('/api/trading/candle-strategies', (_req, res) => {
-  // Try both possible feed locations
-  const primaryPath = path.join(FLEET_FEEDS_DIR, 'candle_strategies.json');
-  const fallbackPath = path.join(os.homedir(), 'openalice', 'ui', 'public', 'candle_strategies.json');
-  
-  let feed = readJsonCached(primaryPath, null);
-  if (!feed || typeof feed !== 'object') {
-    feed = readJsonCached(fallbackPath, null);
-  }
-  if (!feed || typeof feed !== 'object') {
-    return res.status(404).json({ error: 'candle strategies feed unavailable', primaryPath, fallbackPath });
-  }
-  res.json(feed);
 });
 
 app.get('/api/validationEvidence', (_req, res) => {
@@ -3405,130 +2976,6 @@ app.get('/api/knowledge/docs', (_req, res) => {
   } catch {
     res.json({ docs: [] });
   }
-});
-
-// Semantic search (text-based for now, embeddings can be added later)
-app.get('/api/knowledge/search', (_req, res) => {
-  const q = (_req.query.q || '').toString().trim().toLowerCase();
-  const limit = Math.min(parseInt(_req.query.limit || '20', 10), 100);
-  const docsDir = FLEET_ROOT;
-  try {
-    const mdFiles = fs.readdirSync(FLEET_ROOT)
-      .filter(f => f.endsWith('.md'))
-      .map(f => ({ file: f, path: path.join(FLEET_ROOT, f) }));
-    
-    let results = mdFiles;
-    if (q) {
-      results = mdFiles.filter(doc => 
-        doc.file.toLowerCase().includes(q) || 
-        doc.path.toLowerCase().includes(q)
-      );
-    }
-    
-    // Also search file contents for the query
-    const contentResults = [];
-    for (const doc of mdFiles) {
-      try {
-        const content = fs.readFileSync(doc.path, 'utf8');
-        if (content.toLowerCase().includes(q)) {
-          contentResults.push({
-            ...doc,
-            snippet: content.toLowerCase().split('\n')
-              .find(line => line.toLowerCase().includes(q))?.trim().slice(0, 200) || ''
-          });
-        }
-      } catch {}
-    }
-    
-    res.json({
-      query: q,
-      fileMatches: results.slice(0, limit),
-      contentMatches: contentResults.slice(0, limit),
-      total: results.length + contentResults.length
-    });
-  } catch {
-    res.json({ query: q, fileMatches: [], contentMatches: [], total: 0 });
-  }
-});
-
-// Graph data with server-side filtering
-app.get('/api/knowledge/graphify/data', (_req, res) => {
-  const community = _req.query.community ? String(_req.query.community) : null;
-  const fileType = _req.query.file_type ? String(_req.query.file_type) : null;
-  const minDegree = parseInt(_req.query.min_degree || '0', 10);
-  const limit = Math.min(parseInt(_req.query.limit || '400', 10), 2000);
-  
-  const graph = getGraphifyGraph();
-  let nodes = graph.nodes || [];
-  let links = graph.links || [];
-  
-  // Filter nodes by community
-  if (community) {
-    const targetCommunity = community.toLowerCase();
-    nodes = nodes.filter(node => {
-      const nodeCommunity = (node.community_name || (node.community != null ? `Community ${node.community}` : 'Unassigned')).toLowerCase();
-      return nodeCommunity === targetCommunity;
-    });
-    const kept = new Set(nodes.map(n => String(n.id)));
-    links = links.filter(l => kept.has(String(l.source)) && kept.has(String(l.target)));
-  }
-  
-  // Filter nodes by file_type
-  if (fileType) {
-    nodes = nodes.filter(node => (node.file_type || '').toLowerCase() === fileType.toLowerCase());
-    const kept = new Set(nodes.map(n => String(n.id)));
-    links = links.filter(l => kept.has(String(l.source)) && kept.has(String(l.target)));
-  }
-  
-  // Filter nodes by minimum degree
-  if (minDegree > 0) {
-    const degreeMap = new Map();
-    for (const link of links) {
-      degreeMap.set(String(link.source), (degreeMap.get(String(link.source)) || 0) + 1);
-      degreeMap.set(String(link.target), (degreeMap.get(String(link.target)) || 0) + 1);
-    }
-    nodes = nodes.filter(node => (degreeMap.get(String(node.id)) || 0) >= minDegree);
-    const kept = new Set(nodes.map(n => String(n.id)));
-    links = links.filter(l => kept.has(String(l.source)) && kept.has(String(l.target)));
-  }
-  
-  // Limit nodes
-  const limitedNodes = nodes.slice(0, limit);
-  const kept = new Set(limitedNodes.map(n => String(n.id)));
-  const limitedLinks = links.filter(l => kept.has(String(l.source)) && kept.has(String(l.target)));
-  
-  const graphData = getGraphifyGraph();
-  res.json({
-    nodes: limitedNodes,
-    links: limitedLinks,
-    totalNodes: graphData.nodes?.length || 0,
-    totalLinks: graphData.links?.length || 0,
-    builtAt: graphData.built_at_commit,
-    filters: { community, fileType, minDegree, limit }
-  });
-});
-
-// Graph rebuild trigger (local-only, confirmed)
-app.post('/api/knowledge/rebuild', (req, res) => {
-  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'graph rebuild is available only from this machine');
-  
-  const { confirmed } = req.body || {};
-  if (confirmed !== true) {
-    return sendError(res, 428, 'confirmation_required', 'Graph rebuild requires confirmed: true');
-  }
-  
-  // This would typically spawn a background job to run graphify
-  // For now, return a message indicating the action
-  res.json({ 
-    ok: true, 
-    message: 'Graph rebuild triggered. This would run the graphify CLI in the background.',
-    note: 'Implementation pending - requires graphify CLI to be available'
-  });
-});
-
-// Graphify stats endpoint for WebSocket
-app.get('/api/knowledge/graphify', (_req, res) => {
-  res.json(getGraphifyStats());
 });
 
 // ---------- Cloud API / LLM routes ----------
@@ -3866,38 +3313,36 @@ function build(name, produce, options = {}) {
  * disagree about shape.
  */
 const RESOURCES = {
-  // DOTS/ECS: Summary via World + Floor/Agent Systems
   summary: build('summary', () => {
-    const { produceSummaryDots } = require('./lib/dots/bridge');
-    return produceSummaryDots();
+    const agents = mergedAgents();
+    const roster = getFleet();
+    const rosterAge = rosterFreshness(roster);
+    // Each agent inherits breaker and the counters from this roster, so each row
+    // carries the age of the observation it inherited them from. Same measurement as
+    // fleet.stale, surfaced where it is used -- not a second contract. It
+    // deliberately does not touch status or display, which stay live-derived.
+    for (const a of agents) {
+      if (!a) continue;
+      a.rosterStale = rosterAge.stale;
+      a.rosterAgeSeconds = rosterAge.age_seconds;
+      a.rosterObservedAt = rosterAge.observed_at;
+    }
+    return { ...hiveStatus(), fleet: { ...roster, ...rosterAge }, godId: getRegistry().godId, agents, floors: rollupFloors(agents) };
   }),
-  // DOTS/ECS: Agent data via World + Systems
-  agents: build('agents', () => {
-    const { produceAgentsDots } = require('./lib/dots/bridge');
-    return produceAgentsDots();
-  }),
-  queue: build('queue', () => {
-    const { produceQueueSummaryDots } = require('./lib/dots/bridge');
-    return produceQueueSummaryDots();
-  }),
+  agents: build('agents', () => ({ agents: mergedAgents() })),
+  queue: build('queue', () => getQueueSummary()),
   projects: build('projects', () => getProjects()),
-  taskCounts: build('taskCounts', () => {
-    const { produceFloorTaskCountsDots } = require('./lib/dots/bridge');
-    return produceFloorTaskCountsDots();
-  }),
-  taskBoard: build('taskBoard', () => {
-    const { produceTaskBoardDots } = require('./lib/dots/bridge');
-    return produceTaskBoardDots();
-  }),
+  taskCounts: build('taskCounts', () => ({ counts: getFloorTaskCounts() })),
+  taskBoard: build('taskBoard', () => getTaskBoard(25)),
   sessions: build('sessions', () => ({ sessions: sessionRows() })),
   processes: build('processes', () => getProcesses()),
   // Terminals this host started. A cheap signature keeps the socket from
   // pushing an identical payload on every hive write, and the 5s floor keeps a
   // fast-moving terminal list from turning into a push storm.
-  terminalsSpawned: build('terminalsSpawned', () => {
-    const { produceTerminalsSpawnedDots } = require('./lib/dots/bridge');
-    return produceTerminalsSpawnedDots();
-  }, { signature: () => 'dots-terminals', minIntervalMs: 5000 }),
+  terminalsSpawned: build('terminalsSpawned', () => ({
+    spawned: terminalManager.list(),
+    health: terminalManager.health(),
+  }), { signature: () => `${terminalManager.list().length}:${terminalManager.activeCount()}:${terminalManager.health().log_bytes}`, minIntervalMs: 5000 }),
   verify: build('verify', () => getVerifyState()),
   officeManager: build('officeManager', () => getOfficeManagerStatus()),
   jevStats: build('jevStats', () => {
@@ -3961,96 +3406,9 @@ const RESOURCES = {
   tradingBacktests: build('tradingBacktests', () => ({ backtest: getBacktestResults(), walkforward: getWalkForwardResults() }), { minIntervalMs: 15000 }),
   tradingStrategies: build('tradingStrategies', () => ({ config: getTradingBotConfig(), strategies: getStrategies() }), { minIntervalMs: 15000 }),
   tradingOps: build('tradingOps', () => ({ launchd: getFleetPlists(), launchdState: getFleetLaunchdState(), adherence: getAdherenceLogs(), roster: getRoster() }), { minIntervalMs: 15000 }),
-  tradingPortfolio: build('tradingPortfolio', async () => {
-    const { computePortfolioMetrics, historicalVaR, historicalCVaR, maxDrawdown, correlationMatrix, stressTests, computeReturns } = require('./lib/riskMetrics');
-    const sqlite3 = require('sqlite3').verbose();
-    const dbPath = path.join(TRADING_BOT, 'database.db');
-    
-    if (!fs.existsSync(dbPath)) {
-      return { ok: false, error: 'Trading bot database not found', dbExists: false };
-    }
-    
-    const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY);
-    
-    const trades = await new Promise((resolve, reject) => {
-      db.all(`SELECT strategy, pnl_usd, entry_time, exit_time FROM trades WHERE exit_time IS NOT NULL ORDER BY exit_time`, [], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
-    
-    const positions = await new Promise((resolve, reject) => {
-      db.all(`SELECT strategy, unrealized_pnl FROM positions WHERE status = 'open'`, [], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
-    
-    const equityRows = await new Promise((resolve, reject) => {
-      db.all(`SELECT timestamp, equity FROM equity_curve ORDER BY timestamp`, [], (err, rows) => {
-        if (err) {
-          resolve([]);
-        } else {
-          resolve(rows || []);
-        }
-      });
-    });
-    
-    db.close();
-    
-    const startingEquity = 10000;
-    const portfolio = computePortfolioMetrics(trades, positions, startingEquity);
-    
-    let equityCurve = [];
-    if (equityRows.length > 0) {
-      equityCurve = equityRows.map(r => r.equity);
-    } else if (trades.length > 0) {
-      let equity = 10000;
-      equityCurve = [equity];
-      for (const t of trades) {
-        equity += t.pnl_usd || 0;
-        equityCurve.push(equity);
-      }
-    }
-    
-    const returns = equityCurve.length > 1 ? equityCurve.slice(1).map((v, i) => {
-      const prev = equityCurve[i];
-      return prev > 0 ? (v - prev) / prev : 0;
-    }) : [];
-    
-    const var95 = historicalVaR(returns, 0.95);
-    const cvar95 = historicalCVaR(returns, 0.95);
-    const { maxDrawdown: maxDD, maxDrawdownPct } = maxDrawdown(equityCurve.length ? equityCurve : [startingEquity]);
-    
-    const strategyReturns = {};
-    
-    return {
-      ok: true,
-      dbExists: true,
-      portfolio,
-      risk: {
-        var95: var95 !== null ? { value: var95, confidence: 0.95 } : null,
-        cvar95: cvar95 !== null ? { value: cvar95, confidence: 0.95 } : null,
-        maxDrawdown: { value: maxDD, pct: maxDrawdownPct },
-        correlation: Object.keys(strategyReturns).length > 1 ? correlationMatrix(strategyReturns) : null,
-        stressTests: equityCurve.length ? stressTests(equityCurve, {}) : null,
-      },
-      equityCurve: equityCurve.slice(-100),
-      returns: returns.slice(-100),
-      tradesCount: trades.length,
-      positionsCount: positions.length,
-    };
-  }, { minIntervalMs: 30000 }),
   validationEvidence: build('validationEvidence', () => getValidationEvidence(), { minIntervalMs: 30000 }),
   combined: build('combined', () => readJson(path.join(os.homedir(), 'trading', 'openalice', 'ui', 'public', 'combined_portfolio.json'), {}), { minIntervalMs: 15000 }),
   tradingLive: build('tradingLive', () => getLiveMetrics(), { minIntervalMs: 30000 }),
-  alphainsiderMultistrat: build('alphainsiderMultistrat', () => getAlphaInsiderMultistratStatus(), { minIntervalMs: 30000 }),
-  strategyMonitor: build('strategyMonitor', () => getStrategyMonitorStatus(), { minIntervalMs: 30000 }),
-  riskMonitor: build('riskMonitor', () => getRiskMonitorStatus(), { minIntervalMs: 30000 }),
-  marketDataMonitor: build('marketDataMonitor', () => getMarketDataMonitorStatus(), { minIntervalMs: 30000 }),
-  alertMonitor: build('alertMonitor', () => getAlertMonitorStatus(), { minIntervalMs: 30000 }),
-  paperTradingOps: build('paperTradingOps', () => getPaperTradingOpsStatus(), { minIntervalMs: 30000 }),
-  performanceReporter: build('performanceReporter', () => getPerformanceReporterData(), { minIntervalMs: 60000 }),
   polymarketStatus: build('polymarketStatus', () => getPolymarketRuntime(), { minIntervalMs: 30000 }),
   polymarketMarkets: build('polymarketMarkets', () => getPolymarketMarkets(), {
     onError: (error) => ({ error: error.message, markets: [], exclusions: { present: false, valid: false, count: null, items: [], error: error.message } }),
@@ -4762,55 +4120,6 @@ const { getFloorHealth } = require('./floor_health');
 
 const dist = path.join(__dirname, '..', 'web', 'dist');
 // Unknown /api paths must not fall through to the SPA and return HTML 200.
-// ---------- DOTS Query API ----------
-// Declarative data fetching: client specifies what components/fields it needs,
-// server runs only the required systems and returns picked fields.
-
-app.post('/api/query', (req, res) => {
-  if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'query is local-only');
-  const { systems = [], select = {} } = req.body || {};
-  if (!Array.isArray(systems) || typeof select !== 'object') {
-    return sendError(res, 400, 'bad_request', 'body must be { systems: string[], select: object }');
-  }
-
-  const { getWorld, runSystems, query } = require('./lib/dots');
-  const {
-    agentLivenessSystem,
-    agentWorkEvidenceSystem,
-    agentProcessVerificationSystem,
-    taskRoutingSystem,
-    terminalSystem,
-    floorLivenessSystem
-  } = require('./lib/dots/systems');
-
-  const world = getWorld();
-  const HIVE = process.env.OFFICE_HUD_HIVE || path.join(os.homedir(), 'openalice-fleet', 'hive');
-
-  // Map system names to system functions with context
-  const systemMap = {
-    agentLiveness: { system: agentLivenessSystem, context: { hivePath: HIVE } },
-    agentWorkEvidence: { system: agentWorkEvidenceSystem },
-    agentProcessVerification: { system: agentProcessVerificationSystem },
-    taskRouting: { system: taskRoutingSystem, context: { hivePath: HIVE } },
-    terminalSystem: { system: terminalSystem, context: { hivePath: HIVE } },
-    floorLiveness: { system: floorLivenessSystem, context: { hivePath: HIVE } }
-  };
-
-  // Run requested systems
-  const systemsToRun = systems
-    .map(name => systemMap[name])
-    .filter(Boolean);
-
-  try {
-    runSystems(world, systemsToRun);
-    const result = query(world, select);
-    world.nextTick();
-    res.json(result);
-  } catch (error) {
-    sendError(res, 500, 'query_failed', error.message);
-  }
-});
-
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown API route' }));
 if (fs.existsSync(dist)) {
   // Serve the SPA shell ourselves so the launcher can be injected. express.static
@@ -4858,10 +4167,10 @@ const createServer = () => http.createServer(app);
 // briefly, but cap the backoff so a restart is never stuck for minutes.
 const PORT_BACKOFF_CAP_MS = 4000;
 
-function startServer(port = PORT, retries = 8, delay = 500) {
+function startServer(port = PORT, retries = 12, delay = 500) {
   const server = createServer();
   return new Promise((resolve, reject) => {
-    server.listen(port, HOST, () => {
+    server.listen({ port, host: HOST, reuseAddress: true }, () => {
       announceReady(port);
       resolve(server);
     });
@@ -5071,7 +4380,7 @@ module.exports = {
     parseJsonLines, parseJsonLinesCounted, getJarvisAudit,
     getFloorTaskCounts, getTaskBoard, getGraphifyCommunities, withHiveFileLock,
     getAgentDetail, getLedger, resolveResource, PARAMETERIZED,
-    mergedAgents, sessionRows, rollupFloors, getWorkEvents, getQueueSummary,
+    mergedAgents, sessionRows, rollupFloors, resolveFloorId, getWorkEvents, getQueueSummary,
     classifyTaskTruth, summarizeTasks, processView, redactRecord,
     // Exported so harnessHealthShape.test.js can compare the success and catch
     // branches without a network round trip. The bug it pins is real: the catch

@@ -134,12 +134,11 @@ test('the follow pane keeps a working input path', () => {
   // The pane grew a send form when terminals became writable. Assert the form
   // and the endpoint it posts to, so removing either is caught here rather than
   // discovered as "the box is there but nothing happens".
-  const hookSource = read('useTerminal');
-  const componentSource = read('DeskFloor');
-  assert.ok(hookSource.includes('/input'), 'useTerminal hook must post to the terminal input endpoint');
-  assert.ok(componentSource.includes("'writable'") || componentSource.includes('>writable<'), 'the badge must reflect writability');
-  assert.ok(componentSource.includes('writable'), 'DeskFloor must compute whether the attached terminal accepts input');
+  const source = read('DeskFloor');
+  assert.ok(source.includes('/input'), 'DeskFloor must post to the terminal input endpoint');
+  assert.ok(source.includes("'writable'") || source.includes('>writable<'), 'the badge must reflect writability');
+  assert.ok(source.includes('writable'), 'DeskFloor must compute whether the attached terminal accepts input');
   // It must stay gated on the backend that can actually accept input, rather
   // than offering a box to a background terminal that will always 400.
-  assert.ok(/type === 'tmux'/.test(componentSource), 'the input form must be gated on a tmux terminal');
+  assert.ok(/type === 'tmux'/.test(source), 'the input form must be gated on a tmux terminal');
 });

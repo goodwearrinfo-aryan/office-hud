@@ -4,8 +4,8 @@
  * In a .ts module rather than inside DeskFloor.tsx so node's runner can load it
  * and so the rules can be asserted directly. See server/test/deskTruth.test.ts.
  *
- * The desk exists to answer three questions -- what has this office been told,
- * what is it doing, what became of it -- and the raw payloads make four comfortable
+ * The desk exists to answer three questions — what has this office been told,
+ * what is it doing, what became of it — and the raw payloads make four comfortable
  * lies available. Each function below closes one.
  *
  *  - "0 commands" when the log was only partly read. Measured while building
@@ -75,8 +75,8 @@ export function historyStatus(audit: AuditLike | null | undefined): HistoryStatu
   const count = typeof audit.count === 'number' ? audit.count : null;
   if (count !== null && count > 0) return 'has_events';
   // Everything below is a claim about an ABSENCE, and an absence needs positive
-  // evidence that the read finished. A payload carrying no window at all -- not a
-  // missing hive, not a version skew, just `{}` -- says nothing about what is in the
+  // evidence that the read finished. A payload carrying no window at all — not a
+  // missing hive, not a version skew, just `{}` — says nothing about what is in the
   // log, and reading it as empty is how a floor invents a clean history.
   const window = audit.window;
   if (!window || typeof window !== 'object') return 'no_answer';
@@ -191,7 +191,7 @@ export function verifyTally(verify: VerifyLike | null | undefined): {
     .sort((a, b) => b.count - a.count || a.verdict.localeCompare(b.verdict));
   const total = rows.reduce((sum, row) => sum + row.count, 0);
   if (total === 0) {
-    return { rows, total: 0, label: 'Verdict tally present but empty -- no verdict has been recorded.' };
+    return { rows, total: 0, label: 'Verdict tally present but empty — no verdict has been recorded.' };
   }
   const counts = rows.map(row => `${row.count} ${row.verdict}`).join(', ');
   return { rows, total, label: `${counts} of ${total} verdicts.` };
@@ -271,7 +271,7 @@ export function headroomLine(report: RateLimitLike | null | undefined): string {
  * Whether a floor may draw a capacity indicator at all.
  *
  * Only a proven reading. This is the restraint borrowed from pixel-agents (MIT), whose
- * lane indicators appear on real signals rather than on defaults -- and whose own
+ * lane indicators appear on real signals rather than on defaults — and whose own
  * roadmap still lists rate-limit health bars as unbuilt, so nothing was copied but the
  * discipline.
  */

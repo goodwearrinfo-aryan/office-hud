@@ -36,24 +36,13 @@ import time
 import urllib.error
 import urllib.request
 
-# Dynamic path resolution - supports both launchd env vars and direct execution
-_hud_root = os.environ.get("OFFICE_HUD_ROOT")
-if _hud_root:
-    HUD_ROOT = _hud_root
-else:
-    HUD_ROOT = os.path.dirname(os.path.abspath(__file__))
-
+HUD_ROOT = "/Users/a/trading/openalice-fleet/office-hud"
 SERVER_JS = os.path.join(HUD_ROOT, "server", "index.js")
 SNIPPET = os.path.join(HUD_ROOT, "floor_route_snippet.js")
 STATE = os.path.join(HUD_ROOT, "floor_route_guard_state.json")
 LOG = os.path.join(HUD_ROOT, "floor_route_guard.log")
 BASE = "http://127.0.0.1:4747"
-# NODE path - try env var, then common locations
-NODE = os.environ.get("NODE_PATH") or "/Users/aryanagarwal/.nvm/versions/node/v22.22.3/bin/node"
-if not os.path.exists(NODE):
-    # Fallback to system node
-    import shutil
-    NODE = shutil.which("node") or NODE
+NODE = "/Users/a/.nvm/versions/node/v22.22.3/bin/node"
 
 THROTTLE_SEC = 4 * 60       # do not act more than once per 4 minutes
 HOLD_RETRY_SEC = 60        # after holding, look again soon: the quiet window is short

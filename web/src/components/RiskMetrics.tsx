@@ -45,10 +45,10 @@ export default function RiskMetrics() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-6">
-        <Metric label="PORTFOLIO VAR (95%)" value="--" />
-        <Metric label="EXPECTED SHORTFALL" value="--" />
-        <Metric label="MAX DRAWDOWN" value="--" />
-        <Metric label="CORRELATION RISK" value="--" />
+        <Metric label="PORTFOLIO VAR (95%)" value="—" />
+        <Metric label="EXPECTED SHORTFALL" value="—" />
+        <Metric label="MAX DRAWDOWN" value="—" />
+        <Metric label="CORRELATION RISK" value="—" />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-6">

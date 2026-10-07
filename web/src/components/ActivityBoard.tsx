@@ -1,13 +1,13 @@
 import { useLive } from '../api';
 
 /**
- * F19 -- Workspaces. The human side of the terminal data, read off
+ * F19 — Workspaces. The human side of the terminal data, read off
  * /api/activity: every shell reported by collect-terminals.py grouped by the
  * directory the user is sitting in, across every host in the hive.
  *
  * Truth rules, same family as the Fleet floor:
  *  - A shell is a count of collected ttys. It is NOT a claim the machine is
- *    useful right now -- collection age is surfaced, not smoothed.
+ *    useful right now — collection age is surfaced, not smoothed.
  *  - A host that has gone quiet is flagged, not dropped.
  *  - A stale workspace keeps its last known numbers and is labelled as such.
  */

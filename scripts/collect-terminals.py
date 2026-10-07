@@ -1,5 +1,6 @@
+import time
 #!/usr/bin/env python3
-"""Enhanced collector with real agent session detection and deduplication."""
+"""Enhanced collector with real agent session detection and sessions.json update with mtime fix."""
 import json
 import os
 import socket
@@ -23,11 +24,15 @@ AGENT_SCRIPTS = {
     "market_data_monitor.py": "F3",
 }
 
+# Fallback agent info inferred from script name
+AGENT_INFO = {
+    "strategy_monitor.py": {"name": "Strategy Monitor", "role": "manager", "floor": "f1"},
+    "risk_monitor.py": {"name": "Risk Guard", "role": "manager", "floor": "f2"},
+    "market_data_monitor.py": {"name": "Market Data Manager", "role": "manager", "floor": "f3"},
+}
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-def _now_ts() -> int:
-    return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 def _ps() -> List[Dict[str, Any]]:
     try:
@@ -71,18 +76,144 @@ def _cwd(pid: int) -> str:
     return ""
 
 def _load_fleet_agents(hive: Path) -> Dict[str, Dict[str, Any]]:
-    path = hive / "fleet.json"
+    # Try multiple hive locations
+    fleet_paths = [
+        hive / "fleet.json",
+        Path("/Users/aryanagarwal/trading-bot/g/hive/fleet.json"),
+        Path("/Users/aryanagarwal/openalice-fleet/hive/fleet.json"),
+        Path("/Users/aryanagarwal/Backups/disk-cleanup-20261003/openalice-fleet/hive/fleet.json"),
+    ]
+    for path in fleet_paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            agents = data.get("agents")
+            if isinstance(agents, list) and agents:
+                return {a["id"]: a for a in agents if isinstance(a, dict) and "id" in a}
+        except (OSError, ValueError):
+            continue
+    return {}
+
+# Known agent scripts -> agent_id mapping
+AGENT_SCRIPTS = {
+    "strategy_monitor.py": "F1",
+    "risk_monitor.py": "F2",
+    "market_data_monitor.py": "F3",
+}
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+def _ps() -> List[Dict[str, Any]]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    agents = data.get("agents") if isinstance(data, dict) else None
-    if not isinstance(agents, list):
-        return {}
-    return {a["id"]: a for a in agents if isinstance(a, dict) and "id" in a}
+        raw = subprocess.run(
+            ["ps", "-Ao", "pid=,ppid=,tty=,etime=,comm=,args="],
+            capture_output=True, text=True, timeout=15, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    for line in raw.splitlines():
+        parts = line.split(None, 5)
+        if len(parts) < 5:
+            continue
+        pid, ppid, tty, etime, comm = parts[:5]
+        args = parts[5] if len(parts) > 5 else comm
+        if not pid.strip().isdigit():
+            continue
+        rows.append({
+            "pid": int(pid),
+            "ppid": int(ppid) if ppid.strip().isdigit() else 0,
+            "tty": "" if tty.strip() in ("??", "-", "") else tty.strip(),
+            "etime": etime.strip(),
+            "name": os.path.basename(comm.strip()),
+            "command": args.strip()[:400],
+        })
+    return rows
+
+def _cwd(pid: int) -> str:
+    try:
+        raw = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            capture_output=True, text=True, timeout=5, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for line in raw.splitlines():
+        if line.startswith("n") and len(line) > 1:
+            return line[1:]
+    return ""
+
+def _load_fleet_agents(hive: Path) -> Dict[str, Dict[str, Any]]:
+    # Try multiple hive locations
+    fleet_paths = [
+        hive / "fleet.json",
+        Path("/Users/aryanagarwal/trading-bot/g/hive/fleet.json"),
+        Path("/Users/aryanagarwal/openalice-fleet/hive/fleet.json"),
+        Path("/Users/aryanagarwal/Backups/disk-cleanup-20261003/openalice-fleet/hive/fleet.json"),
+    ]
+    for path in fleet_paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            agents = data.get("agents")
+            if isinstance(agents, list) and agents:
+                return {a["id"]: a for a in agents if isinstance(a, dict) and "id" in a}
+        except (OSError, ValueError):
+            continue
+    return {}
+
+# Known agent scripts -> agent_id mapping
+AGENT_SCRIPTS = {
+    "strategy_monitor.py": "F1",
+    "risk_monitor.py": "F2",
+    "market_data_monitor.py": "F3",
+}
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+def _ps() -> List[Dict[str, Any]]:
+    try:
+        raw = subprocess.run(
+            ["ps", "-Ao", "pid=,ppid=,tty=,etime=,comm=,args="],
+            capture_output=True, text=True, timeout=15, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    for line in raw.splitlines():
+        parts = line.split(None, 5)
+        if len(parts) < 5:
+            continue
+        pid, ppid, tty, etime, comm = parts[:5]
+        args = parts[5] if len(parts) > 5 else comm
+        if not pid.strip().isdigit():
+            continue
+        rows.append({
+            "pid": int(pid),
+            "ppid": int(ppid) if ppid.strip().isdigit() else 0,
+            "tty": "" if tty.strip() in ("??", "-", "") else tty.strip(),
+            "etime": etime.strip(),
+            "name": os.path.basename(comm.strip()),
+            "command": args.strip()[:400],
+        })
+    return rows
+
+def _cwd(pid: int) -> str:
+    try:
+        raw = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            capture_output=True, text=True, timeout=5, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for line in raw.splitlines():
+        if line.startswith("n") and len(line) > 1:
+            return line[1:]
+    return ""
 
 def _match_agent_sessions(procs: List[Dict[str, Any]], fleet_agents: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Match running processes to known agent scripts and create agent_sessions (deduplicated)."""
     sessions = []
     now_iso = _now()
     seen_agents = set()
@@ -95,12 +226,13 @@ def _match_agent_sessions(procs: List[Dict[str, Any]], fleet_agents: Dict[str, D
                 matched_agent_id = agent_id
                 break
         
-        if matched_agent_id and matched_agent_id in fleet_agents:
+        if matched_agent_id:
             if matched_agent_id in seen_agents:
                 continue  # Deduplicate: keep first match per agent
             seen_agents.add(matched_agent_id)
             
-            agent_info = fleet_agents[matched_agent_id]
+            # Get agent info from fleet or fallback
+            agent_info = fleet_agents.get(matched_agent_id) or AGENT_INFO.get(matched_agent_id, {})
             pid = proc["pid"]
             sessions.append({
                 "session_id": f"sess-{matched_agent_id}-{pid}",
@@ -119,6 +251,48 @@ def _match_agent_sessions(procs: List[Dict[str, Any]], fleet_agents: Dict[str, D
                 }
             })
     return sessions
+
+def _update_sessions_json(hive: Path, agent_sessions: List[Dict[str, Any]]) -> None:
+    path = hive / "sessions.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {"sessions": []}
+    
+    existing_sessions = data.get("sessions", [])
+    if not isinstance(existing_sessions, list):
+        existing_sessions = []
+    
+    non_agent_sessions = [
+        s for s in existing_sessions 
+        if s.get("agent_id") not in AGENT_SCRIPTS.values()
+    ]
+    
+    all_sessions = non_agent_sessions + agent_sessions
+    
+    data["sessions"] = all_sessions
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+    # Force mtime update by writing a significant amount of data
+    try:
+        with open(path, 'r+b') as f:
+            f.seek(0, 2)  # Seek to end
+            pos = f.tell()
+            # Write a significant amount of unique data to force mtime update
+            import uuid
+            unique_data = str(uuid.uuid4()).encode() + b'\n'
+            f.write(unique_data)
+            f.truncate(pos)
+        print("mtime updated via UUID append/truncate", flush=True)
+    except Exception as e:
+        print(f"mtime update failed: {e}", flush=True)
+        # Fallback to utime
+        try:
+            os.utime(path, None)
+            print("utime succeeded (fallback)", flush=True)
+        except Exception as e:
+            print(f"utime failed: {e}", flush=True)
 
 def _classify(procs: List[Dict[str, Any]]) -> tuple:
     by_pid = {p["pid"]: p for p in procs}
@@ -166,6 +340,9 @@ def collect(hive: Path) -> Dict[str, Any]:
     procs = _ps()
     fleet_agents = _load_fleet_agents(hive)
     agent_sessions = _match_agent_sessions(procs, fleet_agents)
+    
+    _update_sessions_json(hive, agent_sessions)
+    
     terminals, live_processes = _classify(procs)
     
     return {

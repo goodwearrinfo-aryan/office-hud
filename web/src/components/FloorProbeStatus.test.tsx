@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import '@testing-library/jest-dom';
 import { renderWithProviders, mockUseLive, clearMockUseLive } from '../test/utils';
 import FloorProbeStatus from '../components/FloorProbeStatus';
 
@@ -59,34 +61,34 @@ describe('FloorProbeStatus', () => {
 
   it('shows floor title', () => {
     mockUseLive('/api/floors', mockFloorsPayload, null, false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('FLOOR PROBE')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('FLOOR PROBE')).toBeInTheDocument();
   });
 
   it('shows managers alive count', () => {
     mockUseLive('/api/floors', mockFloorsPayload, null, false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('2/3 managers alive')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('2/3 managers alive')).toBeInTheDocument();
   });
 
   it('shows not verified banner when probe unavailable', () => {
     mockUseLive('/api/floors', mockFloorsPayloadNotVerified, null, false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('NOT VERIFIED')).toBeInTheDocument();
-    expect(getByText('hive/lib/floor_health.py is missing')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('NOT VERIFIED')).toBeInTheDocument();
+    expect(screen.getByText('hive/lib/floor_health.py is missing')).toBeInTheDocument();
   });
 
   it('shows not verified banner when probe errors', () => {
     mockUseLive('/api/floors', mockFloorsPayloadError, null, false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('NOT VERIFIED')).toBeInTheDocument();
-    expect(getByText('floor health probe failed: some error')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('NOT VERIFIED')).toBeInTheDocument();
+    expect(screen.getByText('floor health probe failed: some error')).toBeInTheDocument();
   });
 
   it('shows source when verified', () => {
     mockUseLive('/api/floors', mockFloorsPayload, null, false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('Source hive/lib/floor_health.py')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('Source hive/lib/floor_health.py')).toBeInTheDocument();
   });
 
   it('shows stalled count when > 0', () => {
@@ -98,57 +100,57 @@ describe('FloorProbeStatus', () => {
       },
     };
     mockUseLive('/api/floors', payloadWithStalled, null, false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('2 stalled task')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('2 stalled task')).toBeInTheDocument();
   });
 
   it('renders floor table with all floors', () => {
     mockUseLive('/api/floors', mockFloorsPayload, null, false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('F1')).toBeInTheDocument();
-    expect(getByText('F2')).toBeInTheDocument();
-    expect(getByText('F3')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('F1')).toBeInTheDocument();
+    expect(screen.getByText('F2')).toBeInTheDocument();
+    expect(screen.getByText('F3')).toBeInTheDocument();
   });
 
   it('shows manager alive status', () => {
     mockUseLive('/api/floors', mockFloorsPayload, null, false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('alive')).toBeInTheDocument();
-    expect(getByText('not running')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('alive')).toBeInTheDocument();
+    expect(screen.getByText('not running')).toBeInTheDocument();
   });
 
   it('shows floor state', () => {
     mockUseLive('/api/floors', mockFloorsPayload, null, false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('WORKING')).toBeInTheDocument();
-    expect(getByText('IDLE')).toBeInTheDocument();
-    expect(getByText('UNKNOWN')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('WORKING')).toBeInTheDocument();
+    expect(screen.getByText('IDLE')).toBeInTheDocument();
+    expect(screen.getByText('UNKNOWN')).toBeInTheDocument();
   });
 
   it('shows stalled count per floor', () => {
     mockUseLive('/api/floors', mockFloorsPayload, null, false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('0')).toBeInTheDocument(); // stalled counts
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('0')).toBeInTheDocument(); // stalled counts
   });
 
   it('shows reason per floor', () => {
     mockUseLive('/api/floors', mockFloorsPayload, null, false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('manager running, tasks active')).toBeInTheDocument();
-    expect(getByText('manager running, no active tasks')).toBeInTheDocument();
-    expect(getByText('manager not running')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('manager running, tasks active')).toBeInTheDocument();
+    expect(screen.getByText('manager running, no active tasks')).toBeInTheDocument();
+    expect(screen.getByText('manager not running')).toBeInTheDocument();
   });
 
   it('shows loading state when data is not ready', () => {
     mockUseLive('/api/floors', null, null, true);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('Reading floor probe…')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('Reading floor probe…')).toBeInTheDocument();
   });
 
   it('shows error state when fetch fails', () => {
     mockUseLive('/api/floors', null, 'Failed to fetch', false);
-    const { getByText } = renderWithProviders(<FloorProbeStatus />);
-    expect(getByText('NOT VERIFIED')).toBeInTheDocument();
-    expect(getByText('/api/floors did not answer')).toBeInTheDocument();
+    renderWithProviders(<FloorProbeStatus />);
+    expect(screen.getByText('NOT VERIFIED')).toBeInTheDocument();
+    expect(screen.getByText('/api/floors did not answer')).toBeInTheDocument();
   });
 });

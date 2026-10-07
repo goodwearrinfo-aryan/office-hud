@@ -1,6 +1,6 @@
 import React from 'react';
 
-// Minimal markdown: headings, lists, bold/italic/code -- enough for hive .md files.
+// Minimal markdown: headings, lists, bold/italic/code — enough for hive .md files.
 function inline(text: string, keyBase: string): React.ReactNode {
   const parts: React.ReactNode[] = [];
   let i = 0;

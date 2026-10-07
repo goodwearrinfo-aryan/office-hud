@@ -4,7 +4,7 @@ import { useResource, type AutonomyState, type AutonomyPolicy } from '../api';
 const numberFmt = new Intl.NumberFormat();
 
 function clockTime(ms: number | null | undefined): string {
-  if (!ms) return '--';
+  if (!ms) return '—';
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
@@ -109,7 +109,7 @@ export default function AutonomyPanel() {
             <dd>{assessment.timeToDrainHours === null ? '∞' : `${assessment.timeToDrainHours}h`}</dd>
           </div>
           <div><dt>busy / idle</dt><dd>{assessment.agentsBusy} / {assessment.agentsIdle}</dd></div>
-          <div><dt>would add</dt><dd>{assessment.agentsNeeded || '--'}</dd></div>
+          <div><dt>would add</dt><dd>{assessment.agentsNeeded || '—'}</dd></div>
         </dl>
       )}
       {assessment && <p className="autonomy__reason">{assessment.reason}</p>}

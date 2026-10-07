@@ -1,18 +1,20 @@
-import { useState } from 'react';
 import { useLive, type BacktestData, type LiveMetrics, type StrategyFile } from '../api';
-import BacktestDetailDrawer from './BacktestDetailDrawer';
 
 type StrategiesResponse = {
   strategies: StrategyFile[];
 };
 
-interface BacktestResult {
-  avg_test_sharpe: number;
-  avg_test_return: number;
-  consistency: number;
-  avg_win_rate: number;
-  avg_profit_factor: number;
-  avg_trades?: number;
+function formatNumber(value: number | null | undefined, digits = 2) {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '—';
+}
+
+function formatPercent(value: number | null | undefined, digits = 1) {
+  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : '—';
+}
+
+function valueTone(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) return 'text-hud-dim';
+  return value > 0 ? 'text-hud-green' : 'text-hud-red';
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: string }) {
@@ -28,9 +30,8 @@ export default function TradingLab() {
   const { data: backtestData, error: backtestError } = useLive<BacktestData>('/api/trading/backtests');
   const { data: strategyData } = useLive<StrategiesResponse>('/api/trading/strategies');
   const { data: live } = useLive<LiveMetrics>('/api/trading/live');
-  const [selectedStrategy, setSelectedStrategy] = useState<string | null>(null);
 
-  const backtests: [string, BacktestResult][] = Object.entries(backtestData?.backtest ?? {})
+  const backtests = Object.entries(backtestData?.backtest ?? {})
     .sort(([, a], [, b]) => (b.avg_test_sharpe ?? 0) - (a.avg_test_sharpe ?? 0));
   const walkforwards = Object.entries(backtestData?.walkforward ?? {})
     .sort(([, a], [, b]) => (b.avg_oos_return ?? 0) - (a.avg_oos_return ?? 0));
@@ -58,7 +59,7 @@ export default function TradingLab() {
               </thead>
               <tbody>
                 {backtests.map(([name, result]) => (
-                  <tr key={name} onClick={() => setSelectedStrategy(name)} className="cursor-pointer hover:bg-hud-edge/50">
+                  <tr key={name}>
                     <td className="max-w-[190px] truncate" title={name}>{name}</td>
                     <td className={valueTone(result.avg_test_sharpe)}>{formatNumber(result.avg_test_sharpe)}</td>
                     <td className={valueTone(result.avg_test_return)}>{formatPercent(result.avg_test_return)}</td>
@@ -120,26 +121,6 @@ export default function TradingLab() {
           </table>
         </div>
       </div>
-
-      {selectedStrategy && (
-        <BacktestDetailDrawer
-          strategyName={selectedStrategy}
-          onClose={() => setSelectedStrategy(null)}
-        />
-      )}
     </div>
   );
-}
-
-function formatNumber(value: number | null | undefined, digits = 2) {
-  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '--';
-}
-
-function formatPercent(value: number | null | undefined, digits = 1) {
-  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : '--';
-}
-
-function valueTone(value: number | null | undefined) {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) return 'text-hud-dim';
-  return value > 0 ? 'text-hud-green' : 'text-hud-red';
 }

@@ -21,7 +21,7 @@ export default function FloorProbeStatus() {
     return (
       <div className="panel p-4">
         <h3 className="font-mono text-hud-amber text-sm mb-3">FLOOR PROBE</h3>
-        <div className="text-hud-red text-xs">NOT VERIFIED -- /api/floors did not answer.</div>
+        <div className="text-hud-red text-xs">NOT VERIFIED — /api/floors did not answer.</div>
       </div>
     );
   }
@@ -49,7 +49,7 @@ export default function FloorProbeStatus() {
 
       {data.not_verified ? (
         <div className="text-hud-amber text-xs mb-3">
-          NOT VERIFIED -- the hive probe could not be consulted
+          NOT VERIFIED — the hive probe could not be consulted
           {data.source === 'unavailable' ? ' (lib/floor_health.py is not present on this hive)' : ''}.
           Every floor below reads UNKNOWN because nothing measured them, not because anything is wrong.
         </div>
@@ -78,7 +78,7 @@ export default function FloorProbeStatus() {
                   {f.state}
                 </td>
                 <td>{data.counts[f.floor]?.stalled ?? 0}</td>
-                <td className="text-hud-dim">{f.reason ?? '--'}</td>
+                <td className="text-hud-dim">{f.reason ?? '—'}</td>
               </tr>
             ))}
           </tbody>

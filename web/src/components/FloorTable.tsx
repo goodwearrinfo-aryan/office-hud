@@ -29,7 +29,7 @@ const HEALTH_TONE: Record<string, string> = {
 /**
  * Every row is a floor that actually exists in the runtime data, rolled up from
  * the same agent evidence the agent list uses. A floor with no members is not
- * shown, and a floor whose members are all stale reads `stale` -- it never
+ * shown, and a floor whose members are all stale reads `stale` — it never
  * looks healthy just because a lead process exists. The lead column says
  * NOT REPORTED when no agent claims the floor, rather than borrowing the HUD's
  * own floor list to fill the gap.
@@ -51,7 +51,7 @@ export default function FloorTable() {
     return (
       <div className="panel p-4">
         <h3 className="font-mono text-hud-amber text-sm mb-3">FLOORS</h3>
-        <div className="text-hud-dim text-xs">NOT AVAILABLE -- no agent in this hive declares a floor.</div>
+        <div className="text-hud-dim text-xs">NOT AVAILABLE — no agent in this hive declares a floor.</div>
       </div>
     );
   }
