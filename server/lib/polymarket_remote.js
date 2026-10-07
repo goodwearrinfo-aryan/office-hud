@@ -1,6 +1,11 @@
 // This patch adds remote polymarket status fetching for when HUD runs on laptop
 // but polymarket engine runs on mini.
 
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
+const crypto = require('crypto');
+
 const MINI_HOST = 'macmini'; // SSH config alias
 const MINI_POLYMARKET_ROOT = '/Users/a/polymarket';
 const MINI_POLYMARKET_RESEARCH = '/Users/a/polymarket/research';
@@ -8,6 +13,7 @@ const MINI_POLYMARKET_STATE_PATH = '/Users/a/polymarket/research/engine_state.js
 const MINI_POLYMARKET_GATE_PATH = '/Users/a/polymarket/research/profitability_gate.json';
 const MINI_POLYMARKET_AUDIT_PATH = '/Users/a/polymarket/research/signal_audit.jsonl';
 const MINI_POLYMARKET_EXCLUSIONS_PATH = '/Users/a/polymarket/research/market_exclusions.json';
+const MINI_POLYMARKET_CONFIG_PATH = '/Users/a/trading/openalice-fleet/hive/polymarket_config.json';
 const MINI_POLYMARKET_LAUNCHD_LABEL = 'com.aryan.pm-engine';
 const MINI_POLYMARKET_LAUNCHD_INSTALLED_PLIST = '/Users/a/Library/LaunchAgents/com.aryan.pm-engine.plist';
 const MINI_POLYMARKET_LAUNCHD_TARGET = 'gui/501/com.aryan.pm-engine'; // uid 501 on mini
@@ -103,8 +109,8 @@ function getPolymarketRuntimeRemote() {
     // Note: can't check fs.existsSync remotely easily, assume true if plist valid
     ;
 
-  // Check config
-  const configRead = runOnMini('cat', [path.join(MINI_POLYMARKET_ROOT, '.agent_llm.json')]);
+  // Check config from mini's hive
+  const configRead = runOnMini('cat', [MINI_POLYMARKET_CONFIG_PATH]);
   let configPaperOnly = true;
   let configError = null;
   if (configRead.ok) {
@@ -138,7 +144,7 @@ function getPolymarketRuntimeRemote() {
     },
     config: {
       present: !configError,
-      path: path.join(MINI_POLYMARKET_ROOT, '.agent_llm.json'),
+      path: MINI_POLYMARKET_CONFIG_PATH,
       error: configError,
     },
     plist: {
