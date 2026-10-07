@@ -304,6 +304,8 @@ export interface Summary {
     health: string;
   }>;
   /** A second copy of the agent list with the time it was collected. */
+  /** Ordered floor names for UI rendering (floor tabs, navigation). */
+  ui_floors?: string[];
   fleet?: { ts?: number; agents?: Agent[] };
 }
 

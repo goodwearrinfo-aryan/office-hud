@@ -1,9 +1,11 @@
-import { useState } from 'react';
-import { useLive, type StrategyFile } from '../api';
+import { useState, useCallback } from 'react';
+import { useLive, type BacktestData, type StrategyFile } from '../api';
+import { formatNumber, formatPercent, valueTone, Metric, Badge } from '../utils/tradingFormat';
 import CodeEditor from 'react-simple-code-editor';
 import { marked } from 'marked';
 import BacktestDetailDrawer from './BacktestDetailDrawer';
-import { formatNumber, formatPercent, valueTone, Metric, Badge } from '../utils/tradingFormat';
+
+const STRATEGY_TEMPLATES = [
 
 const STRATEGY_TEMPLATES = [
   {
@@ -222,6 +224,11 @@ interface WalkForwardResult {
   avg_oos_trades?: number;
 }
 
+interface BacktestData {
+  backtest?: Record<string, BacktestResult>;
+  walkforward?: Record<string, WalkForwardResult>;
+}
+
 interface ExperimentRun {
   id: string;
   timestamp: number;
@@ -242,6 +249,18 @@ interface WalkForwardConfig {
   test_window: number;
   step: number;
   anchor: string;
+}
+
+interface StrategyTemplate {
+  id: string;
+  name: string;
+  description: string;
+  code: string;
+}
+
+interface BacktestData {
+  backtest?: Record<string, BacktestResult>;
+  walkforward?: Record<string, WalkForwardResult>;
 }
 
 export default function StrategyLab() {
@@ -292,14 +311,6 @@ export default function StrategyLab() {
 3. Check regime performance (trend vs range)
 4. Promote if inference floor met`);
 
-  const { data: backtestData, error: backtestError } = useLive<BacktestData>('/api/trading/backtests');
-  const { data: strategyData } = useLive<{ strategies: StrategyFile[] }>('/api/trading/strategies');
-  const { data: terminalHealth } = useLive<any>('/api/terminals/health');
-  
-  const [selectedTemplate, setSelectedTemplate] = useState<typeof STRATEGY_TEMPLATES[0] | null>(STRATEGY_TEMPLATES[0]);
-  const [code, setCode] = useState(STRATEGY_TEMPLATES[0].code);
-  const [walkforward, setWalkforward] = useState<WalkForwardConfig>(WALKFORWARD_DEFAULTS);
-  const [notebookContent, setNotebookContent] = useState('');
   const [experiments, setExperiments] = useState<Array<{
     id: string;
     timestamp: number;
@@ -645,5 +656,40 @@ export default function StrategyLab() {
         />
       )}
     </div>
+  );
+}
+
+function formatNumber(value: number | null | undefined, digits = 2) {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : '--';
+}
+
+function formatPercent(value: number | null | undefined, digits = 1) {
+  return typeof value === 'number' && Number.isFinite(value) ? `${(value * 100).toFixed(digits)}%` : '--';
+}
+
+function valueTone(value: number | null | undefined) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) return 'text-hud-dim';
+  return value > 0 ? 'text-hud-green' : 'text-hud-red';
+}
+
+function Metric({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="panel-surface px-3 py-2">
+      <div className="text-[10px] font-mono text-hud-dim">{label}</div>
+      <div className={`mt-1 font-mono text-sm ${tone || 'text-hud-text'}`}>{value}</div>
+    </div>
+  );
+}
+
+function Badge({ label, variant }: { label: string; variant?: 'success' | 'warning' | 'danger' | 'info' | 'neutral' }) {
+  const variants = {
+    success: 'badge-success',
+    warning: 'badge-warning',
+    danger: 'badge-danger',
+    info: 'badge-info',
+    neutral: 'badge-neutral',
+  };
+  return (
+    <span className={`badge font-mono ${variants[variant]} text-[10px]`}>{label}</span>
   );
 }

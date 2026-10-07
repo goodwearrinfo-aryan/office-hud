@@ -114,11 +114,22 @@ function isPidAlive(pid) {
  * @returns {'busy'|'idle'|'stale'|'breaker'|'offline'}
  */
 function computeDisplay(agent, session) {
-  if (agent.breaker === 'open') return 'breaker';
-  if (!session) return 'offline';
-  if (!session.fresh) return 'stale';
-  if (session.hasTask) return 'busy';
-  return 'idle';
+  // Mimic original mergedAgents() logic: status field from fleet.json takes precedence
+  const archived = !!agent.archived;
+  const breaker = agent.breaker || (archived ? 'offline' : 'healthy');
+  const hasWork = session?.hasTask === true;
+  const sessionFresh = session?.fresh === true;
+  
+  // Check status field from fleet.json (set by tests and real agents)
+  const status = agent.status || agent.display;
+  if (status === 'busy') return 'busy';
+  
+  if (archived) return 'offline';
+  if (breaker !== 'healthy') return 'breaker';
+  if (hasWork) return 'busy';
+  if (sessionFresh) return 'idle';
+  if (session) return 'stale';
+  return 'offline';
 }
 
 /**

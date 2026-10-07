@@ -118,10 +118,7 @@ function resetFloorCache() {
 module.exports = {
   register,
   getFloorRoutePayload,
-  readFloors: () => {
-    const { produceFloorsDots } = require('./lib/dots/bridge');
-    return produceFloorsDots();
-  },
+  readFloors,
   resetFloorCache,
   ROUTE_PATH,
   FLOOR_CACHE_MS,
