@@ -55,7 +55,7 @@ function unreadableFloors(reason) {
 function readFloors(hive) {
   // Use DOTS producer
   const { produceFloorsDots } = require('./lib/dots/bridge');
-  return produceFloorsDots();
+  return produceFloorsDots(hive);
 }
 
 /**

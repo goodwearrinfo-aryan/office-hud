@@ -195,6 +195,7 @@ function agentLivenessSystem(world, context) {
         fresh: false,
         hasTask: false,
         taskStatus: null,
+        currentTaskId: null,
         lastHeartbeat: 0,
         heartbeatAgeSec: null
       });
@@ -208,12 +209,15 @@ function agentLivenessSystem(world, context) {
     } else if (event.type === 'task_started') {
       sess.hasTask = true;
       sess.taskStatus = 'IN_PROGRESS';
+      sess.currentTaskId = event.task_id || null;
     } else if (event.type === 'task_completed') {
       sess.hasTask = false;
       sess.taskStatus = 'COMPLETE';
+      sess.currentTaskId = null;
     } else if (event.type === 'task_failed') {
       sess.hasTask = false;
       sess.taskStatus = 'FAILED';
+      sess.currentTaskId = null;
     }
   }
   
@@ -243,11 +247,13 @@ function agentLivenessSystem(world, context) {
     // Get process ID from registry
     const processId = regAgent.processId || fleetAgent.processId || null;
     
-    // Get current task from session
-    const currentTaskId = session.hasTask ? (/* would need task tracking */ null) : null;
+    // Get current task from session (now tracked via events)
+    const currentTaskId = session.currentTaskId || null;
     const currentTaskTitle = null; // would need task lookup
     
     // Build agent object for World
+    // status field mimics original mergedAgents(): 'working' if has task, else session status or display
+    const status = currentTaskId ? 'working' : (session?.status?.toLowerCase() || computeDisplay(fleetAgent, session));
     const agent = {
       id: entityId,
       name: fleetAgent.name || agentId,
@@ -258,6 +264,7 @@ function agentLivenessSystem(world, context) {
       cwd: regAgent.cwd || '',
       cwdValid: regAgent.cwdValid !== false,
       display: computeDisplay(fleetAgent, session),
+      status: status,
       archived: !!fleetAgent.archived,
       breaker: fleetAgent.breaker || 'closed',
       tokens: fleetAgent.tokens || 0,

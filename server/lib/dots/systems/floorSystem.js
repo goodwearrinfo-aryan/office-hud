@@ -75,7 +75,7 @@ function getRosterAge(hivePath) {
   }
 }
 
-const FLOOR_IDS = Array.from({ length: 12 }, (_, i) => `F${i + 1}`);
+const FLOOR_IDS = Array.from({ length: 22 }, (_, i) => `F${i + 1}`);
 const BAD_STATES = new Set(['FAILED', 'STOPPED', 'DEGRADED', 'BLOCKED', 'UNKNOWN']);
 
 /**
@@ -208,7 +208,7 @@ function floorLivenessSystem(world, context) {
   
   // Build floor map F1-F12
   const floorMap = new Map();
-  for (let i = 1; i <= 12; i++) {
+  for (let i = 1; i <= 22; i++) {
     const floorId = `floor:f${i}`;
     floorMap.set(floorId, {
       id: floorId,
@@ -424,7 +424,8 @@ function buildSummaryPayload(world, context) {
     failed: f.counters.failed,
     offline: f.counters.offline,
     breaker: f.counters.breaker,
-    health: f.runtimeState
+    health: f.runtimeState,
+    state: f.runtimeState  // Add state field for hud_guard compatibility
   }));
   
   const rosterAge = getRosterAge(hivePath);

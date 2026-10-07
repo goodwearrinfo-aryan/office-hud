@@ -48,7 +48,8 @@ _hud_root = os.environ.get("OFFICE_HUD_ROOT")
 if _hud_root:
     HUD_ROOT = _hud_root
 else:
-    HUD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # hud_guard.py lives in <repo>/office-hud/, so go up one level to get the office-hud dir
+    HUD_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 BASE = "http://127.0.0.1:4747"
 STATE = os.path.join(HUD_ROOT, "hud_guard_state.json")

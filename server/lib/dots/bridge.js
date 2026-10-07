@@ -345,10 +345,11 @@ function produceVerifyDots() {
  * Produce floors payload (runs Python probe)
  * @returns {Object}
  */
-function produceFloorsDots() {
+function produceFloorsDots(hivePath) {
+  const effectiveHivePath = hivePath || HIVE;
   const world = getWorld();
   runSystems(world, [
-    { system: floorProbeSystem, context: { hivePath: HIVE } }
+    { system: floorProbeSystem, context: { hivePath: effectiveHivePath } }
   ]);
   
   // We need to import buildFloorsPayload here since it's not in the require at top

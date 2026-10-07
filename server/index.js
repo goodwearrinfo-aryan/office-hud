@@ -3028,6 +3028,22 @@ app.get('/api/fleet/performance', (_req, res) => {
   }
 });
 
+// Fleet overview - agents, floors, registry
+app.get('/api/fleet', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const fleet = getFleet();
+    const reg = getRegistry();
+    res.json({
+      fleet,
+      floors: Object.keys(reg.agents || {}).filter(id => id.startsWith('F') && !id.includes('-')).sort(),
+      godId: reg.godId || null
+    });
+  } catch (error) {
+    sendError(res, 500, 'fleet_failed', error.message);
+  }
+});
+
 // The ticker. Off by default (policy.enabled is false), so a fresh install
 // never runs a suite on a timer by surprise. unref() so it never holds the
 // process open on shutdown.

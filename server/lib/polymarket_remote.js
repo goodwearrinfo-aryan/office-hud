@@ -206,14 +206,19 @@ function getPolymarketMarketsRemote() {
   try { state = JSON.parse(stateRead.stdout); } catch { return null; }
 
   const exclusionsRead = runOnMini('cat', [MINI_POLYMARKET_EXCLUSIONS_PATH]);
-  let exclusions = [];
+  let exclusionsData = { present: false, valid: true, exclusions: [], error: null };
   if (exclusionsRead.ok) {
-    try { exclusions = JSON.parse(exclusionsRead.stdout); } catch {}
+    try { 
+      const data = JSON.parse(exclusionsRead.stdout);
+      if (data && Array.isArray(data.exclusions)) {
+        exclusionsData = { present: true, valid: true, exclusions: data.exclusions, error: null };
+      }
+    } catch {}
   }
 
   // Reuse the local summarization logic but with remote data
   const rows = new Map();
-  const exclusionsById = new Map(exclusions.map(item => [item.market_id, item]));
+  const exclusionsById = new Map((exclusionsData.exclusions || []).map(item => [item.market_id, item]));
   
   if (state?.execution_engine?.order_books) {
     for (const [marketId, book] of Object.entries(state.execution_engine.order_books)) {
@@ -253,6 +258,14 @@ function getPolymarketMarketsRemote() {
       markets: rows.size,
     },
     markets: Array.from(rows.values()),
+    exclusions: {
+      path: MINI_POLYMARKET_EXCLUSIONS_PATH,
+      present: exclusionsData.present,
+      valid: exclusionsData.valid,
+      count: exclusionsData.valid ? (exclusionsData.exclusions?.length || 0) : null,
+      items: exclusionsData.exclusions || [],
+      error: exclusionsData.error,
+    },
   };
 }
 
