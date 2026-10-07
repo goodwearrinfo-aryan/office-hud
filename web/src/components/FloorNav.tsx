@@ -1,22 +1,35 @@
-import { useLive, type Summary, type QueueSummary, type TaskRecord, type AutonomyState, type JarvisTasksResponse, type ProjectRecord } from '../api';
+import { useLive, useViewers, type FleetLaunchdState, type JarvisTasksResponse, type ProjectRecord, type QueueSummary, type Summary, type TerminalsPayload } from '../api.js';
 
-type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16' | 'f17' | 'f18' | 'f19' | 'f20' | 'f21' | 'f22';
+type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16'   | 'f17'
+  | 'f18'
+  | 'f19'
+  | 'f20';
 
 interface BadgeData {
   summary: Summary | null;
   queue: QueueSummary | null;
-  tasks: TaskRecord[];
+  taskCounts: Record<string, number>;
+  viewers: number;
   projects: ProjectRecord[];
   tasksLoaded: boolean;
   projectsLoaded: boolean;
-  jarvisQueue: number;
-  validationArms: number;
-  autonomyProposals: number;
-  autopilotProposals: number;
-  tradingMonitors: number;
-  replay: any;
-  fleet: any;
-  alphainsider: any;
+  failedLaunchd: number;
+  staleHosts: number;
+  fleetHosts: number;
+  terminalsTotal: number;
+  /**
+   * Work the office has been told and has not started. Counted from the queue
+   * rather than from the command history, because a command that was queued and
+   * then claimed is not pending any more.
+   */
+  pendingCommands: number;
+  /**
+   * Open paper legs and feeds that have stopped being written. Both are the
+   * figures on F20 that must be readable without opening the floor: exposure
+   * that is currently on, and telemetry that has gone quiet.
+   */
+  openAliceActiveLegs: number;
+  openAliceStaleFeeds: number;
 }
 
 interface FloorDefinition {
@@ -33,33 +46,29 @@ const FLOORS: FloorDefinition[] = [
   { id: 'f3', label: 'F3', name: 'Agents', badge: data => data.summary?.agents?.length ?? 0 },
   { id: 'f4', label: 'F4', name: 'Projects', badge: data => data.projects.length, taskCount: true },
   { id: 'f5', label: 'F5', name: 'HQ', badge: data => (data.queue?.queued ?? 0) + (data.queue?.inProgress ?? 0) },
-  { id: 'f6', label: 'F6', name: 'Trading Lab', badge: data => taskCountsForFloor(data.tasks, 'f6'), taskCount: true },
-  { id: 'f7', label: 'F7', name: 'Strategy Lab', badge: data => taskCountsForFloor(data.tasks, 'f7'), taskCount: true },
-  { id: 'f8', label: 'F8', name: 'Candle Strategies', badge: data => taskCountsForFloor(data.tasks, 'f8'), taskCount: true },
-  { id: 'f9', label: 'F9', name: '24x7 Ops', badge: data => taskCountsForFloor(data.tasks, 'f9'), taskCount: true },
-  { id: 'f10', label: 'F10', name: 'Knowledge', badge: data => taskCountsForFloor(data.tasks, 'f10'), taskCount: true },
-  { id: 'f11', label: 'F11', name: 'Risk Metrics', badge: data => taskCountsForFloor(data.tasks, 'f11'), taskCount: true },
-  { id: 'f12', label: 'F12', name: 'Knowledge Graph', badge: data => taskCountsForFloor(data.tasks, 'f12'), taskCount: true },
-  { id: 'f13', label: 'F13', name: 'Time Machine', badge: data => data.replay?.eventsAvailable ?? 0 },
-  { id: 'f14', label: 'F14', name: 'Fleet', badge: data => data.fleet?.hosts?.length ?? 0 },
-  { id: 'f15', label: 'F15', name: 'Alpha Insider', badge: data => data.alphainsider?.length ?? 0 },
-  { id: 'f16', label: 'F16', name: 'Overview', badge: data => (data.queue?.inProgress ?? 0) + (data.queue?.queued ?? 0) },
-  { id: 'f17', label: 'F17', name: 'Desk', badge: data => data.jarvisQueue + (data.queue?.inProgress ?? 0) },
-  { id: 'f18', label: 'F18', name: 'Validation', badge: data => data.validationArms },
-  { id: 'f19', label: 'F19', name: 'Autonomy', badge: data => data.autonomyProposals },
-  { id: 'f20', label: 'F20', name: 'Autopilot', badge: data => data.autopilotProposals },
-  { id: 'f21', label: 'F21', name: 'God', badge: () => 1 },
-  { id: 'f22', label: 'F22', name: 'Trading Monitor', badge: data => data.tradingMonitors },
+  { id: 'f6', label: 'F6', name: 'Trading Lab', badge: data => (data.taskCounts['f6'] ?? 0), taskCount: true },
+  { id: 'f7', label: 'F7', name: 'Strategy Lab', badge: data => (data.taskCounts['f7'] ?? 0), taskCount: true },
+  { id: 'f8', label: 'F8', name: 'Live Trading', badge: data => (data.taskCounts['f8'] ?? 0), taskCount: true },
+  { id: 'f9', label: 'F9', name: '24x7 Ops', badge: data => (data.taskCounts['f9'] ?? 0), taskCount: true },
+  { id: 'f10', label: 'F10', name: 'Knowledge', badge: data => (data.taskCounts['f10'] ?? 0), taskCount: true },
+  { id: 'f11', label: 'F11', name: 'Risk Metrics', badge: data => (data.taskCounts['f11'] ?? 0), taskCount: true },
+  { id: 'f12', label: 'F12', name: 'Knowledge Graph', badge: data => (data.taskCounts['f12'] ?? 0), taskCount: true },
+  { id: 'f13', label: 'F13', name: 'Time Machine', badge: data => data.viewers },
+  { id: 'f14', label: 'F14', name: 'Validation', badge: data => (data.taskCounts['f14'] ?? 0), taskCount: true },
+  { id: 'f15', label: 'F15', name: 'Combined', badge: () => 0 },
+  { id: 'f16', label: 'F16', name: 'Overview', badge: data => data.failedLaunchd },
+  // The one figure on this nav that should be readable without opening the
+  // floor: how many machines have stopped reporting.
+  { id: 'f17', label: 'F17', name: 'Fleet', badge: data => data.staleHosts },
+  // The one desk figure readable without opening the floor: work that has been
+  // given to the office and has not started.
+  { id: 'f18', label: 'F18', name: 'The Desk', badge: data => data.pendingCommands },
+  { id: 'f19', label: 'F19', name: 'Workspaces', badge: data => data.terminalsTotal },
+  // OpenAlice's own trading telemetry, merged in from the writer tree that used
+  // to be reachable only through the separate :3002 dashboards. The badge is
+  // open legs, because that is what decides whether anyone needs to open it.
+  { id: 'f20', label: 'F20', name: 'OpenAlice', badge: data => data.openAliceActiveLegs },
 ];
-
-function floorForValue(value: string | null | undefined): FloorId | null {
-  const match = value?.trim().toLowerCase().match(/^f([1-9]|1[0-9]|2[0-2])$/);
-  return match ? `f${match[1]}` as FloorId : null;
-}
-
-function taskCountsForFloor(tasks: TaskRecord[], floor: FloorId) {
-  return tasks.filter(task => floorForValue(task.assigned_agent) === floor || floorForValue(task.claimed_by) === floor).length;
-}
 
 interface Props {
   current: FloorId;
@@ -69,30 +78,40 @@ interface Props {
 
 export default function FloorNav({ current, onChange, summary }: Props) {
   const { data: queue } = useLive<QueueSummary>('/api/queue');
-  const { data: tasksData } = useLive<{ tasks: TaskRecord[] }>('/api/tasks');
+  // counts=1 returns a handful of bytes; the full /api/tasks payload is megabytes.
+  const { data: tasksData } = useLive<{ counts: Record<string, number> }>('/api/tasks?counts=1');
   const { data: projectsData } = useLive<{ projects: ProjectRecord[] }>('/api/projects');
-  const { data: jarvisTasks } = useLive<JarvisTasksResponse>('/api/jarvis/tasks?limit=1');
-  const { data: validationEvidence } = useLive<any>('/api/validationEvidence');
-  const { data: autonomy } = useLive<AutonomyState>('/api/autonomy');
-  const { data: autopilot } = useLive<any>('/api/autopilot/snapshot');
-  const { data: alphainsider } = useLive<any>('/api/trading/alphainsider');
-  const { data: fleet } = useLive<any>('/api/terminals');
-  const { data: replay } = useLive<any>('/api/replay/window');
+  // The failed-job count is the one badge that must be true on a glance, so it
+  // rides the same ops snapshot the F16 overview renders.
+  const { data: ops } = useLive<{ launchdState?: FleetLaunchdState }>('/api/trading/ops');
+  // The fleet badge counts machines that have gone quiet. /api/terminals is already
+  // being served for F17, so this costs a subscription rather than another route.
+  const { data: fleet } = useLive<TerminalsPayload>('/api/terminals');
+  // Pulled here rather than counted in App so the badge costs one shared socket
+  // subscription instead of a second one. A command that was queued and has since
+  // been claimed is not pending, which is why this reads the queue and not history.
+  const { data: jarvisTasks } = useLive<JarvisTasksResponse>('/api/jarvis/tasks');
+  const { data: openAlice } = useLive<{ legs?: { active?: number }; feeds?: Record<string, { state?: string }> }>('/api/openalice');
+  const queuedJarvis = (jarvisTasks?.tasks ?? [])
+    .filter(t => String(t.status || '').toUpperCase() === 'QUEUED').length;
+  const viewers = useViewers();
   const data: BadgeData = {
     summary,
     queue,
-    tasks: tasksData?.tasks ?? [],
+    viewers: viewers.length,
+    taskCounts: tasksData?.counts ?? {},
     projects: projectsData?.projects ?? [],
     tasksLoaded: tasksData !== null,
     projectsLoaded: projectsData !== null,
-    jarvisQueue: (jarvisTasks?.tasks ?? []).length,
-    validationArms: validationEvidence?.arms?.length ?? 0,
-    autonomyProposals: (autonomy?.proposals ?? []).filter(p => p.status === 'pending').length,
-    autopilotProposals: (autopilot?.proposals ?? []).filter(p => p.state === 'open').length,
-    tradingMonitors: alphainsider ? 1 : 0,
-    fleet,
-    replay,
-    alphainsider,
+    failedLaunchd: ops?.launchdState?.counts.failed ?? 0,
+    staleHosts: fleet?.stale_hosts?.length ?? 0,
+    pendingCommands: queuedJarvis,
+    fleetHosts: fleet?.hosts?.length ?? 0,
+    terminalsTotal: fleet?.terminals?.length ?? 0,
+    openAliceActiveLegs: openAlice?.legs?.active ?? 0,
+    // A feed that stopped being written is not the same as no exposure, so it is
+    // surfaced rather than silently dropped from the badge.
+    openAliceStaleFeeds: Object.values(openAlice?.feeds ?? {}).filter(f => f.state && f.state !== 'live').length,
   };
 
   return (
@@ -106,9 +125,11 @@ export default function FloorNav({ current, onChange, summary }: Props) {
       <div className="flex-1 overflow-auto py-2">
         {FLOORS.map(floor => {
           const count = floor.badge(data);
-          const taskCount = taskCountsForFloor(data.tasks, floor.id);
+          const taskCount = data.taskCounts[floor.id] ?? 0;
           const showProjectBadge = floor.id === 'f4' && data.projectsLoaded;
           const showTaskBadge = floor.taskCount && data.tasksLoaded;
+          // A failed job is the one nav signal that must never look routine.
+          const showFailedBadge = floor.id === 'f16' && data.failedLaunchd > 0;
           return (
             <button
               key={floor.id}
@@ -125,8 +146,9 @@ export default function FloorNav({ current, onChange, summary }: Props) {
                 <span className="font-mono text-xs">{floor.label}</span>
                 <span className="flex items-center gap-1">
                   {showProjectBadge && <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-hud-blue/15 text-hud-blue" title={`${count} projects`}>{count}</span>}
+                  {showFailedBadge && <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-hud-red/20 text-hud-red" title={`${count} launchd job(s) failed`}>{count}</span>}
                   {showTaskBadge && <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-hud-amber/15 text-hud-amber" title={`${taskCount} tasks`}>{taskCount}</span>}
-                  {!showProjectBadge && !showTaskBadge && count > 0 && <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-hud-amber/15 text-hud-amber">{count}</span>}
+                  {!showProjectBadge && !showTaskBadge && !showFailedBadge && count > 0 && <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-hud-amber/15 text-hud-amber">{count}</span>}
                 </span>
               </div>
               <div className="text-[10px] text-hud-dim mt-0.5">
@@ -138,12 +160,7 @@ export default function FloorNav({ current, onChange, summary }: Props) {
         })}
       </div>
       <div className="p-3 border-t border-hud-edge text-[10px] font-mono text-hud-dim">
-        <kbd className="bg-hud-edge px-1.5 py-0.5 rounded mr-1">1</kbd>–<kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">0</kbd>
-        <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">-</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">=</kbd>
-        <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">Bksp</kbd>
-        <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">F1</kbd>–<kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">F4</kbd>
-        <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">Shift+1</kbd>–<kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">6</kbd>
-        switch floors
+        <kbd className="bg-hud-edge px-1.5 py-0.5 rounded mr-1">1</kbd>–<kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">0</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">-</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">=</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">Bksp</kbd> <kbd className="bg-hud-edge px-1.5 py-0.5 rounded ml-1">.</kbd> switch floors
       </div>
     </nav>
   );
