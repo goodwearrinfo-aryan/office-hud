@@ -264,6 +264,24 @@ function agentLivenessSystem(world, context) {
   // string alone is a claim, not evidence. Only FRESH host docs are consulted
   // (a frozen remote doc is not evidence about now), a session older than the
   // stale window is skipped, and fresher LOCAL evidence always wins.
+  // Local sessions.json is a second local source of truth that the events-derived
+  // map above does not contain: the local hive's own heartbeat writers update it
+  // directly. Comparing against the remote doc using only the event map would let
+  // a remote session overwrite a FRESHER local record, so the local file is read
+  // here purely for that comparison. It is not merged into the payload -- the
+  // event-derived session stays authoritative for status.
+  const localSessionsFreshest = new Map();
+  try {
+    const localDoc = JSON.parse(fs.readFileSync(path.join(hivePath, 'sessions.json'), 'utf8'));
+    for (const s of Array.isArray(localDoc?.sessions) ? localDoc.sessions : []) {
+      if (!s || typeof s !== 'object' || !s.agent_id) continue;
+      const hb = s.last_heartbeat ? Date.parse(s.last_heartbeat) : 0;
+      if (hb && hb > (localSessionsFreshest.get(s.agent_id) || 0)) {
+        localSessionsFreshest.set(s.agent_id, hb);
+      }
+    }
+  } catch { /* absent or unreadable local sessions is not an error here */ }
+
   const remoteDir = path.join(hivePath, 'remote');
   let remoteEntries = [];
   try { remoteEntries = fs.readdirSync(remoteDir, { withFileTypes: true }); } catch { remoteEntries = []; }
@@ -284,6 +302,8 @@ function agentLivenessSystem(world, context) {
       const remoteHb = s.last_heartbeat ? Date.parse(s.last_heartbeat) : 0;
       const existing = sessions.get(s.agent_id);
       if (existing && existing.lastHeartbeat && existing.lastHeartbeat >= remoteHb && existing.lastHeartbeat > 0) continue;
+      // ...and the same rule against the local hive's own sessions.json.
+      if ((localSessionsFreshest.get(s.agent_id) || 0) >= remoteHb && remoteHb > 0) continue;
       const hostVerified = s.process_alive === true && !!s.pid_verified_by;
       sessions.set(s.agent_id, {
         fresh: true,
@@ -294,6 +314,8 @@ function agentLivenessSystem(world, context) {
         heartbeatAgeSec: ageSec,
         remote: true,
         remoteHost: entry.name,
+        host: doc.host || entry.name,
+        host_stale: !docFresh,
         remoteProcessId: (s.process_id != null ? s.process_id : existing?.remoteProcessId) || null,
         processLiveness: hostVerified ? 'remote-verified' : 'remote-unverified',
       });
@@ -310,13 +332,17 @@ function agentLivenessSystem(world, context) {
     
     const entityId = `agent:${agentId}`;
     const regAgent = registryAgents[agentId] || {};
-    const session = sessions.get(agentId) || { fresh: false, hasTask: false, taskStatus: null, heartbeatAgeSec: null };
-    
+const session = sessions.get(agentId) || { fresh: false, hasTask: false, taskStatus: null, heartbeatAgeSec: null };
+
+    // DEBUG
+    console.log('[AGENT DEBUG] agentId=' + agentId + ', session=' + JSON.stringify(session) + ', fleetAgent.processId=' + fleetAgent.processId);
+
     // Get process ID from registry. The remote merge may attach the real PID
     // reported by the remote host's collector (host-verified via process_alive)
-    // when neither local source has one — labeled in evidence.processLiveness,
+    // when neither local source has one -- labeled in evidence.processLiveness,
     // never presented as locally verified.
-    const processId = regAgent.processId || fleetAgent.processId || session.remoteProcessId || null;
+    // Priority: remote session (live) > fleet.json (static) > registry (static)
+    const processId = session.remoteProcessId || regAgent.processId || fleetAgent.processId || null;
     
     // Get current task from session (now tracked via events)
     const currentTaskId = session.currentTaskId || null;
@@ -355,8 +381,16 @@ function agentLivenessSystem(world, context) {
       sessionFresh: session.fresh,
       currentTaskId: currentTaskId,
       currentTaskTitle: currentTaskTitle,
+      // Remote host provenance: which machine this agent's process actually runs on,
+      // and whether that host's data is fresh. This distinguishes a local agent
+      // (host = this machine, host_stale = false) from a remote agent whose
+      // heartbeat comes from another machine's collector.
+      host: session.host || null,
+      host_stale: session.host_stale ?? false,
       evidence: computeEvidence(fleetAgent, session, processId, session.heartbeatAgeSec, currentTaskId, currentTaskTitle)
     };
+
+
     
     world.setAgent(agent);
   }

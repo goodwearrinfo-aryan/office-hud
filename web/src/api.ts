@@ -57,6 +57,15 @@ export interface Agent {
   currentTaskId: string | null;
   currentTaskTitle: string | null;
   /**
+   * Which host owns this agent's process, and whether that host's report is
+   * fresh. A local agent reports the HUD's own host with host_stale=false; a
+   * remote agent names the machine it actually runs on. This is what separates
+   * "alive here" from "alive there" -- a PID alone cannot, because the HUD
+   * cannot verify a process it does not own.
+   */
+  host?: string | null;
+  host_stale?: boolean;
+  /**
    * What backs the status/display labels above, so a panel can show its
    * reasoning instead of asking the reader to trust a colour.
    *
@@ -77,8 +86,15 @@ export interface Agent {
     taskStatus: string | null;
     heartbeatAgeSec: number | null;
     processId: number | null;
-    processLiveness: 'alive' | 'dead' | 'no-pid' | null;
+    // 'remote-verified' means the agent's OWNING host checked the PID directly
+    // (os.kill on that machine), which is the only trusted reading for a process
+    // that does not run here. 'remote-unverified' is a remote report the local
+    // HUD cannot corroborate -- reported as such rather than as alive or dead.
+    processLiveness: 'alive' | 'dead' | 'no-pid' | 'remote-verified' | 'remote-unverified' | null;
     processVerified: boolean;
+    // Which host owns the session, when it is not this one. Null for a local
+    // agent. Lets the UI say "alive on the mini" instead of guessing from a PID.
+    remoteHost?: string | null;
   };
 }
 
