@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readTasks } = require('./agentSystem');
 
 const STALE_MS = 5 * 60 * 1000;
 
@@ -300,8 +301,8 @@ function buildTaskBoard(world, limit = 25) {
         completion_truth: t.status === 'COMPLETE' ? ct.truth : null,
         evidence_score: t.status === 'COMPLETE' ? ct.score : null,
         evidence_reason: t.status === 'COMPLETE' ? ct.reason : null
-      });
-    });
+      }
+    })
   }
   
   return {
@@ -334,7 +335,6 @@ module.exports = {
   buildTaskBoard,
   buildFloorTaskCounts,
   readTasks,
-  readProjects,
   timestampMs,
   nowMs
 };

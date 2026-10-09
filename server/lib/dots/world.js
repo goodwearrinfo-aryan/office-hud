@@ -77,7 +77,9 @@ function createAgentStore() {
     sessionFreshes: [],
     currentTaskIds: [],
     currentTaskTitles: [],
-    evidence: []
+    evidence: [],
+    hosts: [],
+    hostStales: []
   };
 }
 
@@ -267,6 +269,8 @@ class World {
       store.currentTaskIds.push(agent.currentTaskId || null);
       store.currentTaskTitles.push(agent.currentTaskTitle || null);
       store.evidence.push(agent.evidence || {});
+      store.hosts.push(agent.host || null);
+      store.hostStales.push(!!agent.host_stale);
     } else {
       // Update existing
       store.names[idx] = agent.name;
@@ -297,6 +301,8 @@ class World {
       store.currentTaskIds[idx] = agent.currentTaskId || null;
       store.currentTaskTitles[idx] = agent.currentTaskTitle || null;
       store.evidence[idx] = agent.evidence || {};
+      store.hosts[idx] = agent.host || null;
+      store.hostStales[idx] = !!agent.host_stale;
     }
 
     this._markChanged(entityId);
@@ -340,7 +346,9 @@ class World {
       sessionFresh: store.sessionFreshes[idx],
       currentTaskId: store.currentTaskIds[idx],
       currentTaskTitle: store.currentTaskTitles[idx],
-      evidence: store.evidence[idx]
+      evidence: store.evidence[idx],
+      host: store.hosts[idx],
+      host_stale: store.hostStales[idx]
     };
   }
 
@@ -815,7 +823,9 @@ class World {
         sessionFresh: store.sessionFreshes[i],
         currentTaskId: store.currentTaskIds[i],
         currentTaskTitle: store.currentTaskTitles[i],
-        evidence: store.evidence[i]
+        evidence: store.evidence[i],
+        host: store.hosts[i],
+        host_stale: store.hostStales[i]
       });
     }
   }

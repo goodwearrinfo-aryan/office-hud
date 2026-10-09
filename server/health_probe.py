@@ -18,11 +18,12 @@ module and calls it. If the module is missing, index.js falls back to
 omitting `ok` entirely rather than asserting a truth it cannot support.
 
 Checks performed (each independently failable):
-  hive        - HIVE directory exists and is readable
-  tasks       - tasks.json parses and is a list/dict
-  agents      - how many agent managers are alive
-  feed        - the task feed daemon is alive
-  floors      - evidence-based floor states, when floor_health.py exists
+  hive              - HIVE directory exists and is readable
+  tasks             - tasks.json parses and is a list/dict
+  local_agents      - how many LOCAL agent managers are alive on this host
+  remote_fleet      - remote fleet health via terminals.json evidence
+  feed              - the task feed daemon is alive
+  floors            - evidence-based floor states, when floor_health.py exists
 
 `ok` is true only when no check is in a failing state. A warning (some
 agents down, floors idle) does not make the system unhealthy; a missing
@@ -40,6 +41,9 @@ import time
 HIVE = os.environ.get("OPENALICE_HIVE") or os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", ".."
 )
+
+# Staleness threshold matches SESSION_STALE_MS in server/index.js (5 minutes)
+REMOTE_STALE_SEC = 300
 
 
 def _hive_dir():
@@ -94,6 +98,125 @@ def _alive_case_insensitive(path):
     return ""
 
 
+def _check_remote_fleet(hive):
+    """Check remote fleet health via terminals.json evidence.
+
+    The Mac Mini publishes its terminal/agent state to hive/remote/Mac/terminals.json
+    via the push-terminals-to-laptop.sh script. We use this as trusted cross-host
+    evidence rather than attempting local process discovery on a remote machine.
+    """
+    remote_dir = os.path.join(hive, "remote")
+    if not os.path.isdir(remote_dir):
+        return _check("remote_fleet", False, "no remote hosts directory", level="warn", checked=False)
+
+    hosts = []
+    try:
+        entries = os.listdir(remote_dir)
+    except OSError:
+        return _check("remote_fleet", False, "cannot read remote hosts directory", level="warn", checked=False)
+
+    total_remote_managers = 0
+    fresh_remote_managers = 0
+    stale_hosts = []
+    unreachable_hosts = []
+    now = time.time()
+
+    for entry in entries:
+        if entry.startswith("."):
+            continue
+        host_dir = os.path.join(remote_dir, entry)
+        if not os.path.isdir(host_dir):
+            continue
+
+        terminals_file = os.path.join(host_dir, "terminals.json")
+        if not os.path.exists(terminals_file):
+            unreachable_hosts.append(entry)
+            continue
+
+        try:
+            with open(terminals_file, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError) as exc:
+            unreachable_hosts.append(f"{entry}: unreadable ({exc})")
+            continue
+
+        collected_at = data.get("collected_at")
+        agent_sessions = data.get("agent_sessions", [])
+
+        # Check collector freshness
+        collector_age = None
+        if collected_at:
+            try:
+                from datetime import datetime, timezone
+                collected = datetime.fromisoformat(collected_at.replace("Z", "+00:00"))
+                if collected.tzinfo is None:
+                    collected = collected.replace(tzinfo=timezone.utc)
+                collector_age = (datetime.now(timezone.utc) - collected).total_seconds()
+            except ValueError:
+                pass
+
+        host_stale = collector_age is None or collector_age > REMOTE_STALE_SEC
+
+        # Count manager agents (F1-F12, PM-*, god, mainbot, mastercoordinator, etc.)
+        manager_ids = set()
+        for session in agent_sessions:
+            agent_id = session.get("agent_id", "")
+            if not agent_id:
+                continue
+            # Count manager-type agents (those with heartbeats)
+            last_hb = session.get("last_heartbeat")
+            hb_age = None
+            if last_hb:
+                try:
+                    from datetime import datetime, timezone
+                    hb_time = datetime.fromisoformat(last_hb.replace("Z", "+00:00"))
+                    if hb_time.tzinfo is None:
+                        hb_time = hb_time.replace(tzinfo=timezone.utc)
+                    hb_age = (datetime.now(timezone.utc) - hb_time).total_seconds()
+                except ValueError:
+                    pass
+
+            total_remote_managers += 1
+            if hb_age is not None and hb_age <= REMOTE_STALE_SEC:
+                fresh_remote_managers += 1
+
+        host_name = data.get("host", entry)
+        hosts.append({
+            "host": host_name,
+            "collector_age_sec": collector_age,
+            "stale": host_stale,
+            "agent_count": len(agent_sessions),
+        })
+
+        if host_stale:
+            stale_hosts.append(f"{host_name} (collector age: {collector_age:.0f}s)" if collector_age else f"{host_name} (no collector timestamp)")
+        else:
+            fresh_remote_managers = max(fresh_remote_managers, len(agent_sessions))
+
+    if not hosts:
+        return _check("remote_fleet", False, "no remote hosts found", level="warn", checked=False)
+
+    # Determine overall remote fleet health
+    all_stale = all(h["stale"] for h in hosts)
+    any_fresh = any(not h["stale"] for h in hosts)
+
+    if all_stale:
+        detail = "all remote hosts stale: " + ", ".join(stale_hosts)
+        level = "fail"
+        ok = False
+    elif unreachable_hosts:
+        detail = f"{len(hosts)} host(s) fresh, {len(unreachable_hosts)} unreachable: {', '.join(unreachable_hosts[:3])}"
+        level = "warn"
+        ok = True
+    else:
+        host_details = ", ".join(f"{h['host']}={h['agent_count']} agents" for h in hosts)
+        detail = f"{len(hosts)} remote host(s) fresh ({host_details})"
+        level = "warn" if fresh_remote_managers < total_remote_managers else "warn"  # warn because not all managers have fresh heartbeats
+        ok = True
+
+    return _check("remote_fleet", ok, detail, level=level, checked=True)
+
+
 def probe():
     hive = _hive_dir()
     checks = []
@@ -125,7 +248,7 @@ def probe():
     else:
         checks.append(_check("tasks", False, "hive missing", checked=False))
 
-    # --- agent managers alive ---
+    # --- local agent managers alive (on THIS host) ---
     agents_dir = os.path.join(hive, "agents")
     total = alive = 0
     dead = []
@@ -135,25 +258,9 @@ def probe():
             if not os.path.exists(mgr):
                 continue
             total += 1
-            # pgrep -f is case-SENSITIVE on the pattern while the filesystem
-            # here is case-INSENSITIVE, so `agents/f1/...` matches the file
-            # but never the running process line `agents/F1/...`. Matching the
-            # bare filename would also be ambiguous, so match the agent name
-            # case-insensitively by asking pgrep for a pattern built from the
-            # real on-disk name and matching on the process command itself.
             if _alive(mgr) or _alive_case_insensitive(mgr):
                 alive += 1
                 continue
-            # Not every manager agent's entrypoint is agent_manager.js.
-            # office-manager runs office_manager.js, so a probe that only ever
-            # looks for agent_manager.js reports a healthy, running component
-            # as dead -- permanently, and with no data to correct it, because
-            # office-manager's status.json carries no pid. Only consulted once
-            # the primary entrypoint is not running, and deliberately still
-            # gated on agent_manager.js existing, so agents that never had one
-            # (graph-backend) keep being skipped and the denominator is
-            # unchanged. ".backup" copies are excluded so a retired script
-            # cannot make a stopped agent look alive.
             alternates = [
                 os.path.join(agents_dir, name, "bin", n)
                 for n in sorted(os.listdir(os.path.join(agents_dir, name, "bin")))
@@ -165,18 +272,22 @@ def probe():
                 alive += 1
             else:
                 dead.append(name)
+
     if total == 0:
-        checks.append(_check("agents", False, "no agent managers found", checked=False))
+        checks.append(_check("local_agents", True, "no local agent managers (expected on HUD host)", level="warn", checked=True))
     else:
-        # One dead agent degrades the system; it does not make it unhealthy.
         checks.append(_check(
-            "agents", alive > 0,
-            "%d/%d agent manager(s) alive%s" % (
+            "local_agents", alive > 0,
+            "%d/%d local agent manager(s) alive%s" % (
                 alive, total,
                 "" if not dead else "; not running: " + ", ".join(dead[:8]),
             ),
             level="fail" if alive == 0 else "warn",
         ))
+
+    # --- remote fleet health (Mac Mini etc.) ---
+    remote_check = _check_remote_fleet(hive)
+    checks.append(remote_check)
 
     # --- feed daemon alive ---
     feed = _alive("continuous_feed_daemon")

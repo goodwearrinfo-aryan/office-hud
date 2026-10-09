@@ -141,7 +141,7 @@ test('every agent carries the evidence block the type promises', () => {
     assert.equal(typeof agent.evidence.hasSession, 'boolean', `agent ${agent.id}: hasSession must be boolean`);
     assert.equal(typeof agent.evidence.processVerified, 'boolean', `agent ${agent.id}: processVerified must be boolean`);
     assert.ok(
-      ['alive', 'dead', 'no-pid', null, undefined].includes(agent.evidence.processLiveness),
+      ['alive', 'dead', 'no-pid', 'remote-verified', 'remote-unverified', null, undefined].includes(agent.evidence.processLiveness),
       `agent ${agent.id}: unexpected processLiveness ${agent.evidence.processLiveness}`,
     );
   }
@@ -153,7 +153,7 @@ test('processLiveness keeps "no pid" distinct from "dead"', () => {
   const states = new Set(live.agentsAll.map((a) => a.evidence?.processLiveness));
   for (const state of states) {
     assert.ok(
-      state === 'alive' || state === 'dead' || state === 'no-pid' || state === null || state === undefined,
+      state === 'alive' || state === 'dead' || state === 'no-pid' || state === 'remote-verified' || state === 'remote-unverified' || state === null || state === undefined,
       `unexpected processLiveness: ${state}`,
     );
   }

@@ -166,7 +166,10 @@ function buildAgentsPayload(world) {
       sessionFresh: a.sessionFresh,
       currentTaskId: a.currentTaskId,
       currentTaskTitle: a.currentTaskTitle,
-      evidence: a.evidence
+      evidence: a.evidence,
+      status: a.currentTaskId ? 'working' : (a.sessionStatus?.toLowerCase() || a.display),
+      host: a.host || null,
+      host_stale: a.host_stale ?? false
     });
   });
   

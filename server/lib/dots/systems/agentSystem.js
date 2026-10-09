@@ -332,10 +332,7 @@ function agentLivenessSystem(world, context) {
     
     const entityId = `agent:${agentId}`;
     const regAgent = registryAgents[agentId] || {};
-const session = sessions.get(agentId) || { fresh: false, hasTask: false, taskStatus: null, heartbeatAgeSec: null };
-
-    // DEBUG
-    console.log('[AGENT DEBUG] agentId=' + agentId + ', session=' + JSON.stringify(session) + ', fleetAgent.processId=' + fleetAgent.processId);
+    const session = sessions.get(agentId) || { fresh: false, hasTask: false, taskStatus: null, heartbeatAgeSec: null };
 
     // Get process ID from registry. The remote merge may attach the real PID
     // reported by the remote host's collector (host-verified via process_alive)
@@ -390,8 +387,6 @@ const session = sessions.get(agentId) || { fresh: false, hasTask: false, taskSta
       evidence: computeEvidence(fleetAgent, session, processId, session.heartbeatAgeSec, currentTaskId, currentTaskTitle)
     };
 
-
-    
     world.setAgent(agent);
   }
   

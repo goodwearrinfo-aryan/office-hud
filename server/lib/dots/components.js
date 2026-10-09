@@ -135,7 +135,7 @@ const COMPONENT_SCHEMAS = new Map([
       lastSeen: 'number|null', sessionId: 'string|null', sessionStatus: 'string|null',
       processId: 'number|null', heartbeatAgeSec: 'number|null', sessionFresh: 'boolean',
       currentTaskId: 'string|null', currentTaskTitle: 'string|null',
-      evidence: 'object'
+      evidence: 'object', host: 'string|null', host_stale: 'boolean'
     }
   }],
   ['Task', {

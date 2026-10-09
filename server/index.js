@@ -89,6 +89,8 @@ const SERVICE_PORTS = [
   { name: 'Trading bot', port: 8765, role: 'paper/testnet' },
   { name: 'LLM gate', port: 8091, role: 'unsupervised' },
   { name: 'Cloudflared', port: 20241, role: 'tunnel metrics' },
+  { name: 'Quant dashboard', port: 4750, role: 'mini: quant/dashboard.py' },
+  { name: 'Workspace UI', port: 3003, role: 'mini: workspace_ui_server' },
 ];
 // Browser-facing services, reachable through this one origin. The request path
 // never contributes a host and verbs are restricted to GET/HEAD, so this cannot
@@ -1137,9 +1139,14 @@ function sessionRows() {
   };
   // Local sessions plus whatever each remote host published into its own
   // terminals.json, so the sessions view is not blind to another machine.
-  const remote = terminalSnapshot().sessions;
+  // Prefer remote sessions (authoritative runtime) over local sessions.
+  const localHost = os.hostname().split('.')[0];
+  const remote = terminalSnapshot().sessions.filter(s => s.host && s.host !== localHost);
+  const remoteAgentIds = new Set(remote.map(s => String(s.agent_id || '').toLowerCase()));
   return [
-    ...(getSessions().sessions || []).map(s => stamp(s, { host: s.host || os.hostname().split('.')[0] })),
+    ...(getSessions().sessions || [])
+      .filter(s => !remoteAgentIds.has(String(s.agent_id || '').toLowerCase()))
+      .map(s => stamp(s, { host: s.host || localHost })),
     ...remote.map(s => stamp(s)),
   ].sort((a, b) => {
     if (a.fresh !== b.fresh) return a.fresh ? -1 : 1;
@@ -1255,9 +1262,29 @@ function mergedAgents() {
         // "not verified". The three states stay distinct, because a live process,
         // a dead one, and no process reported at all are different facts, and
         // reporting all three identically is what made this unreadable.
-        processLiveness: !session?.process_id ? 'no-pid'
-          : (processIsAlive(session.process_id) ? 'alive' : 'dead'),
-        processVerified: processIsAlive(session?.process_id ?? null),
+        //
+        // Remote host evidence takes precedence: if the remote host's collector
+        // verified the PID locally (process_alive=true, pid_verified_by=host),
+        // that is authoritative. A local processIsAlive check on a remote PID
+        // would always fail and incorrectly mark the agent as dead.
+        processLiveness: (() => {
+          if (!session?.process_id) return 'no-pid';
+          // Remote host verified this PID on its own machine
+          if (session.process_alive === true && session.pid_verified_by) {
+            return 'remote-verified';
+          }
+          // Local process check (for agents actually running on this machine)
+          return processIsAlive(session.process_id) ? 'alive' : 'dead';
+        })(),
+        processVerified: (() => {
+          if (!session?.process_id) return false;
+          // Remote host verified this PID on its own machine
+          if (session.process_alive === true && session.pid_verified_by) {
+            return true;
+          }
+          // Local process check
+          return processIsAlive(session.process_id);
+        })(),
       },
       archived,
       breaker,
@@ -1283,6 +1310,12 @@ function mergedAgents() {
       sessionFresh,
       currentTaskId,
       currentTaskTitle: task?.title || null,
+      // Remote host provenance: which machine this agent's process actually runs on,
+      // and whether that host's data is fresh. This distinguishes a local agent
+      // (host = this machine, host_stale = false) from a remote agent whose
+      // heartbeat comes from another machine's collector.
+      host: session?.host || null,
+      host_stale: session?.host_stale ?? false,
     };
   }).sort((a, b) => {
     if (a.isGod !== b.isGod) return a.isGod ? -1 : 1;
@@ -2219,8 +2252,28 @@ app.get('/api/summary', (_req, res) => {
   res.json(buildSnapshot('summary'));
 });
 
+app.get('/api/fleet', (_req, res) => {
+  const fleet = getFleet();
+  const floors = [
+    { id: 'f1', name: 'Floor 1', lead: 'F1' },
+    { id: 'f2', name: 'Floor 2', lead: 'F2' },
+    { id: 'f3', name: 'Floor 3', lead: 'F3' },
+    { id: 'f4', name: 'Floor 4', lead: 'F4' },
+    { id: 'f5', name: 'Floor 5', lead: 'F5' },
+    { id: 'f6', name: 'Floor 6', lead: 'F6' },
+    { id: 'f7', name: 'Floor 7', lead: 'F7' },
+    { id: 'f8', name: 'Floor 8', lead: 'F8' },
+    { id: 'f9', name: 'Floor 9', lead: 'F9' },
+    { id: 'f10', name: 'Floor 10', lead: 'F10' },
+    { id: 'f11', name: 'Floor 11', lead: 'F11' },
+    { id: 'f12', name: 'Floor 12', lead: 'F12' },
+  ];
+  res.json({ godId: 'god', floors, agents: fleet.agents || [] });
+});
+
 app.get('/api/agents', (_req, res) => {
-  res.json(buildSnapshot('agents'));
+  const { produceAgentsDots } = require('./lib/dots/bridge');
+  res.json(produceAgentsDots());
 });
 
 // The drawer reads up to ~100 files per agent (inbox and outbox), so the
@@ -2233,7 +2286,9 @@ function getAgentDetail(id) {
   const now = Date.now();
   const cached = agentDetailCache.get(id);
   if (cached && now - cached.at < AGENT_DETAIL_TTL_MS) return cached.value;
-  const agent = mergedAgents().find(item => item.id === id);
+  const { produceAgentsDots } = require('./lib/dots/bridge');
+  const agents = produceAgentsDots().agents;
+  const agent = agents.find(item => item.id === id);
   if (!agent) {
     agentDetailCache.delete(id);
     return null;
@@ -3329,7 +3384,10 @@ const RESOURCES = {
     }
     return { ...hiveStatus(), fleet: { ...roster, ...rosterAge }, godId: getRegistry().godId, agents, floors: rollupFloors(agents) };
   }),
-  agents: build('agents', () => ({ agents: mergedAgents() })),
+  agents: build('agents', () => {
+    const { produceAgentsDots } = require('./lib/dots/bridge');
+    return produceAgentsDots();
+  }),
   queue: build('queue', () => getQueueSummary()),
   projects: build('projects', () => getProjects()),
   taskCounts: build('taskCounts', () => ({ counts: getFloorTaskCounts() })),
