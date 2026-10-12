@@ -33,11 +33,27 @@ function call(app, p) {
   return Promise.resolve(app.handler(p)({}, res)).then(() => res);
 }
 
-/** A hive with no probe at all: the shape of this laptop right now. */
+/**
+ * A hive with no probe at all. An empty hive used to be enough to express
+ * "no producer", but the tracked sibling beside floor_health.js is now a
+ * legitimate fallback, so the producer search is also pinned to a path that
+ * does not exist. Without that, these tests would silently exercise the real
+ * producer and stop testing the honesty of the unavailable path.
+ */
 function hiveWithoutProbe() {
   const hive = fs.mkdtempSync(path.join(os.tmpdir(), 'floors-noprobe-'));
   fs.mkdirSync(path.join(hive, 'lib'), { recursive: true });
   return hive;
+}
+
+function withNoProducerAnywhere(fn) {
+  const hive = hiveWithoutProbe();
+  process.env.OPENALICE_FLOOR_HEALTH_SCRIPT = path.join(hive, 'definitely-absent.py');
+  try {
+    return fn(hive);
+  } finally {
+    delete process.env.OPENALICE_FLOOR_HEALTH_SCRIPT;
+  }
 }
 
 test('the route is registered once, not once per require', () => {
@@ -58,14 +74,18 @@ test('register refuses anything that is not an app', () => {
 
 test('a hive with no probe reports every floor UNKNOWN and never claims health', async () => {
   floorRoute.resetFloorCache();
-  const payload = await floorRoute.getFloorRoutePayload({ hive: hiveWithoutProbe() });
+  const payload = await withNoProducerAnywhere(
+    (hive) => floorRoute.getFloorRoutePayload({ hive }));
   assert.equal(payload.not_verified, true, 'a missing probe must be flagged unverified');
   assert.equal(payload.source, 'unavailable');
   assert.equal(payload.floors.length, FLOOR_IDS.length, 'every floor still appears');
   for (const f of payload.floors) {
     assert.equal(f.state, 'UNKNOWN');
     assert.equal(f.manager_alive, false);
-    assert.match(f.reason, /missing/, 'each UNKNOWN floor says why');
+    // Asserts the reason points at the actual producer, not a particular
+    // wording: an UNKNOWN floor with a blank or generic reason is the failure
+    // mode this whole file exists to prevent.
+    assert.match(f.reason, /floor_health\.py/, 'each UNKNOWN floor names the producer it looked for');
   }
   // The whole point: an absent floor must never render as a healthy one.
   assert.ok(!Object.values(payload.summary).includes('IDLE'));
@@ -130,7 +150,7 @@ test('a probe that fails loudly is reported as unverified, not swallowed', async
 
 test('counts come from the same read as floors, so they cannot disagree', () => {
   floorRoute.resetFloorCache();
-  const payload = floorRoute.readFloors(hiveWithoutProbe());
+  const payload = withNoProducerAnywhere((hive) => floorRoute.readFloors(hive));
   assert.deepEqual(Object.keys(payload.counts).sort(), payload.floors.map((f) => f.floor).sort());
   for (const f of payload.floors) {
     const c = payload.counts[f.floor];

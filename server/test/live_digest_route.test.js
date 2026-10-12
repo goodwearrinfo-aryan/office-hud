@@ -125,3 +125,169 @@ test('the freshness threshold is stated, not magic', () => {
   assert.equal(typeof DIGEST_STALE_AFTER_SECONDS, 'number');
   assert.ok(DIGEST_STALE_AFTER_SECONDS > 0);
 });
+
+// ---------------------------------------------------------------------------
+// gatesView
+//
+// This exists because every silent gate state used to read as harmless: a gate
+// with no criteria, a stats layer that could not run, and a drawdown over its own
+// cap all arrived as ordinary-looking JSON. The assertions below are the failure
+// modes, not the happy path.
+// ---------------------------------------------------------------------------
+
+const { gatesView } = require('../live_digest_route');
+
+function fixtureDigest(overrides) {
+  return {
+    generated_at: '2026-09-28T12:00:00Z',
+    polymarket_taker: {
+      gate: { verdict: 'INSUFFICIENT_DATA', reason: '52 of 164 required closes',
+        criteria: { min_closes: 164 }, in_band_closes: 52, historical_closes: 52 },
+      significance: { error: null },
+      risk_cap: { portfolio_drawdown_pct: 4.2, cap_pct: 15 },
+      ...(overrides && overrides.taker || {}),
+    },
+    openalice_live: {
+      gate: { verdict: 'PASS', reason: 'fine', criteria: { min_days: 90 } },
+      equity_points: 240,
+      ...(overrides && overrides.live || {}),
+    },
+    sma_gauntlet: { present: true, age_s: 61 },
+    ...(overrides && overrides.top || {}),
+  };
+}
+
+test('worst_verdict reports the actual worst gate, not a constant', () => {
+  // The first version seeded the accumulator at ABSENT and only replaced it when
+  // something ranked worse, so every digest read ABSENT.
+  const view = gatesView(fixtureDigest(), Date.parse('2026-09-28T12:00:30Z'));
+  assert.equal(view.worst_verdict, 'INSUFFICIENT_DATA');
+  assert.equal(view.any_gate_absent, false);
+  assert.equal(view.gates[0].key, 'polymarket_taker', 'worst gate sorts first');
+});
+
+test('an absent gate outranks an explicit FAIL', () => {
+  // A FAIL is a gate doing its job and disliking the answer. An absent gate
+  // communicates nothing, which is the class of bug that has already cost four
+  // routes, so it must not be able to hide behind a passing sibling.
+  const view = gatesView(fixtureDigest({
+    live: { gate: { verdict: 'FAIL', reason: 'calmar ratio 0.9 < 1.5' } },
+  }));
+  assert.equal(view.worst_verdict, 'FAIL');
+
+  const gone = gatesView(fixtureDigest({ live: { gate: null } }));
+  assert.equal(gone.worst_verdict, 'ABSENT');
+  assert.equal(gone.any_gate_absent, true);
+});
+
+test('a verdict outside the known set is UNRECOGNISED, never defaulted', () => {
+  // Silently treating an unfamiliar verdict as benign is how a renamed gate
+  // becomes invisible.
+  const view = gatesView(fixtureDigest({
+    taker: { gate: { verdict: 'GREEN', reason: 'optimistic' } },
+  }));
+  assert.equal(view.worst_verdict, 'UNRECOGNISED');
+  assert.equal(view.gates[0].verdict, 'UNRECOGNISED');
+});
+
+test('a broken stats layer is not confused with a thin sample', () => {
+  const view = gatesView(fixtureDigest({
+    taker: { significance: { error: "ModuleNotFoundError: no module named 'x'" } },
+  }));
+  assert.equal(view.any_stats_broken, true);
+  assert.match(view.gates[0].stats_broken, /ModuleNotFoundError/);
+  // The verdict is still whatever the gate said; this only surfaces the second
+  // fact, which the verdict string does not carry.
+  assert.equal(view.gates[0].verdict, 'INSUFFICIENT_DATA');
+});
+
+test('cap_comparison.breached is null when a side is unknown, never false', () => {
+  // false reads as "within the cap", which is a claim about money.
+  for (const cap of [
+    { portfolio_drawdown_pct: null, cap_pct: 15 },
+    { portfolio_drawdown_pct: 23.06, cap_pct: null },
+    { portfolio_drawdown_pct: 'n/a', cap_pct: 15 },
+  ]) {
+    const view = gatesView(fixtureDigest({ taker: { risk_cap: cap } }));
+    assert.equal(view.cap_comparison.breached, null, JSON.stringify(cap));
+  }
+  const over = gatesView(fixtureDigest({
+    taker: { risk_cap: { portfolio_drawdown_pct: 23.06, cap_pct: 15 } },
+  }));
+  assert.equal(over.cap_comparison.breached, true);
+  const under = gatesView(fixtureDigest({
+    taker: { risk_cap: { portfolio_drawdown_pct: 4.0, cap_pct: 15 } },
+  }));
+  assert.equal(under.cap_comparison.breached, false);
+});
+
+test('a digest with no gate sections in it is ABSENT, not an empty pass', () => {
+  // Both gates are still listed, as absent, so the view says which two went
+  // missing instead of showing an empty list that could mean anything.
+  const view = gatesView({ generated_at: '2026-09-28T12:00:00Z' });
+  assert.equal(view.worst_verdict, 'ABSENT');
+  assert.equal(view.any_gate_absent, true);
+  assert.deepEqual(view.gates.map((g) => g.verdict), ['ABSENT', 'ABSENT']);
+});
+
+test('a missing gauntlet is reported as absent rather than omitted', () => {
+  // The out-of-sample run lives in another file and can be absent without the
+  // gates noticing; a consumer must not infer that from a missing key.
+  const view = gatesView(fixtureDigest({ top: { sma_gauntlet: undefined } }));
+  assert.equal(view.sma_gauntlet.present, false);
+  assert.equal(view.sma_gauntlet.age_s, null);
+});
+
+test('gatesView returns null for nothing rather than a plausible empty view', () => {
+  // A null input is a publisher problem, and the route answers it with a 503.
+  assert.equal(gatesView(null), null);
+  assert.equal(gatesView(undefined), null);
+});
+
+test('the gates route is mounted alongside the full digest', () => {
+  const app = fakeApp();
+  register(app);
+  assert.ok(app.routes.has('/api/live-digest'));
+  assert.ok(app.routes.has('/api/live-digest/gates'));
+});
+
+test('the gates route is a named 503 when the publisher is gone', () => {
+  // Same contract as the full digest: "no publisher" must stay distinguishable
+  // from "no verdicts".
+  const app = fakeApp();
+  register(app);
+  const handler = app.routes.get('/api/live-digest/gates');
+  const res = fakeRes();
+  let present = true;
+  try { require('node:fs').accessSync(LIVE_DIGEST_PATH); } catch { present = false; }
+  handler({}, res);
+  if (!present) {
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.body.error, 'LIVE_DIGEST_UNAVAILABLE');
+  } else {
+    assert.equal(res.statusCode, 200);
+    assert.ok(Array.isArray(res.body.gates));
+  }
+});
+
+test('the live digest carries a recognisable verdict for every gate', () => {
+  // Run against the real file when it exists. NO_CRITERIA is rejected here even
+  // though it is a known verdict string: it means the criteria files went
+  // missing again, which is the state both gates sat in for their entire
+  // existence while every consumer read them as merely inconclusive.
+  let digest;
+  try {
+    digest = JSON.parse(require('node:fs').readFileSync(LIVE_DIGEST_PATH, 'utf8'));
+  } catch {
+    return; // no publisher on this machine; the 503 tests above cover the shape
+  }
+  const view = gatesView(digest);
+  assert.ok(view.gates.length >= 2, 'expected both gates in the digest');
+  for (const gate of view.gates) {
+    assert.ok(gate.verdict !== 'ABSENT', `${gate.key} publishes no verdict`);
+    assert.ok(gate.verdict !== 'UNRECOGNISED', `${gate.key}: ${gate.verdict}`);
+    assert.ok(gate.verdict !== 'NO_CRITERIA',
+      `${gate.key}: criteria file missing or unreadable`);
+  }
+  assert.equal(view.any_stats_broken, false, 'the significance layer must run');
+});

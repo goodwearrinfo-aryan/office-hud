@@ -231,6 +231,68 @@ test('a websocket upgrade with a foreign Host is refused', async () => {
   );
 });
 
+test('originIsAllowed follows the same loopback rule as Host', () => {
+  const { originIsAllowed } = server.internals;
+  // No Origin at all is a non-browser client: curl, scripts, the fleet's agents.
+  for (const origin of [undefined, '', null]) {
+    assert.equal(originIsAllowed(origin), true, `${origin} should be accepted`);
+  }
+  for (const origin of [
+    'http://127.0.0.1:4747', 'http://localhost:4747', 'http://localhost:5174',
+    'http://[::1]:4747', 'https://localhost',
+  ]) {
+    assert.equal(originIsAllowed(origin), true, `${origin} should be accepted`);
+  }
+  for (const origin of [
+    'http://evil.example.com', 'https://attacker.test:8443', 'http://127.0.0.1.evil.com',
+    'http://localhost@evil.test', 'null', 'file://', 'javascript:alert(1)', 'garbage',
+  ]) {
+    assert.equal(originIsAllowed(origin), false, `${origin} should be refused`);
+  }
+});
+
+test('a cross-site POST is refused before it reaches a handler', async () => {
+  // This is the form-post CSRF path: no preflight, no CORS needed, and the
+  // server has no urlencoded body parser to reject it on shape.
+  const httpModule = require('http');
+  const status = await new Promise((resolve, reject) => {
+    const request = httpModule.request(
+      {
+        host: '127.0.0.1',
+        port: http.port,
+        path: '/api/alerts/ack-all',
+        method: 'POST',
+        headers: { Origin: 'http://evil.example.com', 'Content-Type': 'text/plain' },
+      },
+      (response) => { response.resume(); resolve(response.statusCode); }
+    );
+    request.on('error', reject);
+    request.end('');
+  });
+  assert.equal(status, 403);
+});
+
+test('a same-origin POST, and one with no Origin, still get through', async () => {
+  const withOrigin = await http.post('/api/alerts/ack-all', {});
+  assert.ok([200, 503].includes(withOrigin.status), `unexpected status ${withOrigin.status}`);
+  const httpModule = require('http');
+  const status = await new Promise((resolve, reject) => {
+    const request = httpModule.request(
+      {
+        host: '127.0.0.1',
+        port: http.port,
+        path: '/api/alerts/ack-all',
+        method: 'POST',
+        headers: { Origin: `http://127.0.0.1:${http.port}`, 'Content-Type': 'application/json' },
+      },
+      (response) => { response.resume(); resolve(response.statusCode); }
+    );
+    request.on('error', reject);
+    request.end('{}');
+  });
+  assert.ok([200, 503].includes(status), `unexpected status ${status}`);
+});
+
 test('alert ack routes are reachable and answer for a local caller', async () => {
   // The 403 branch needs a genuinely remote socket, which is covered by the
   // isLocalRequest unit test above; here we prove the route is not swallowed by

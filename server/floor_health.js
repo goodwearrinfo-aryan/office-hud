@@ -20,14 +20,35 @@
 // reason. It is never optimistically reported healthy, and a floor whose
 // state cannot be established is visibly NOT VERIFIED rather than blank.
 
+const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
 const HIVE = process.env.OFFICE_HUD_HIVE
   || path.join(require('os').homedir(), 'openalice-fleet', 'hive');
-// Default only. getFloorHealth() resolves the script per call so a hive
-// override is honoured; this is never the path actually executed.
-const FLOOR_HEALTH_SCRIPT = path.join(HIVE, 'lib', 'floor_health.py');
+
+// The producer module can live in two places, and both are legitimate:
+//   <hive>/lib/floor_health.py  -- original location, still preferred when
+//                                  present so hive-local tooling keeps working
+//   <this dir>/floor_health.py  -- the tracked copy
+// hive/ is git-ignored (it holds runtime state), so the first location can
+// never be delivered by git. That meant the mini simply did not have the
+// producer, and all twelve floors reported UNKNOWN with "file is missing" --
+// a deployment gap rendered as a fleet-wide health failure. The tracked
+// sibling is what makes this module portable across hosts.
+function resolveScript(hive) {
+  // Explicit seam: pin the producer to one path and disable the search.
+  // Operators use it to run against a second hive; the route tests use it to
+  // express "no producer anywhere", which an empty hive no longer conveys now
+  // that a tracked sibling exists.
+  const pinned = process.env.OPENALICE_FLOOR_HEALTH_SCRIPT;
+  if (pinned) return fs.existsSync(pinned) ? pinned : null;
+  const inHive = path.join(hive, 'lib', 'floor_health.py');
+  if (fs.existsSync(inHive)) return inHive;
+  const sibling = path.join(__dirname, 'floor_health.py');
+  if (fs.existsSync(sibling)) return sibling;
+  return null;
+}
 
 const FLOOR_IDS = Array.from({ length: 12 }, (_, i) => `F${i + 1}`);
 
@@ -47,24 +68,31 @@ function unknownFloors(reason) {
 }
 
 function getFloorHealth(hiveOverride) {
-  const fs = require('fs');
   // Resolve the script per call. Capturing it at require() time meant a
   // later OFFICE_HUD_HIVE override was ignored and the module probed a
   // different hive than the caller asked for -- untestable, and capable of
   // reporting on the wrong system.
   const hive = hiveOverride || process.env.OFFICE_HUD_HIVE || HIVE;
-  const script = path.join(hive, 'lib', 'floor_health.py');
-  if (!fs.existsSync(script)) {
+  const script = resolveScript(hive);
+  if (!script) {
     return {
-      floors: unknownFloors('hive/lib/floor_health.py is missing'),
+      floors: unknownFloors(
+        `floor health producer not found: looked for ${path.join(hive, 'lib', 'floor_health.py')}`
+        + ` and ${path.join(__dirname, 'floor_health.py')}`
+      ),
       source: 'unavailable',
       not_verified: true,
     };
   }
   try {
+    // Pass the hive explicitly. The producer falls back to its own parent
+    // directory when OPENALICE_HIVE is unset, which is correct for the hive
+    // copy but wrong for the tracked sibling beside this file -- it would
+    // silently read office-hud/ as if it were the hive and report on nothing.
     const out = execFileSync('/usr/bin/python3', [script, '--json'], {
       encoding: 'utf8',
       timeout: 25000,
+      env: { ...process.env, OPENALICE_HIVE: hive },
     });
     const floors = JSON.parse(out);
     if (!Array.isArray(floors) || floors.length === 0) {
@@ -127,4 +155,4 @@ function floorCounts(hiveOverride) {
   return counts;
 }
 
-module.exports = { getFloorHealth, floorCounts, FLOOR_IDS, BAD_STATES };
+module.exports = { getFloorHealth, floorCounts, resolveScript, FLOOR_IDS, BAD_STATES };
