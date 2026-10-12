@@ -12,13 +12,20 @@ class TestWebSocketClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       const key = crypto.randomBytes(16).toString('base64');
       const socket = net.connect(port, host, () => {
+        // Extra raw headers, for cases a browser sends and this helper must be
+        // able to imitate — Origin being the one that matters for the guards.
+        const extra = Object.entries(options.headers || {})
+          .filter(([, value]) => value != null)
+          .map(([name, value]) => `${name}: ${value}\r\n`)
+          .join('');
         socket.write(
           `GET ${path} HTTP/1.1\r\n` +
           `Host: ${options.host || `${host}:${port}`}\r\n` +
           'Upgrade: websocket\r\n' +
           'Connection: Upgrade\r\n' +
           `Sec-WebSocket-Key: ${key}\r\n` +
-          'Sec-WebSocket-Version: 13\r\n\r\n'
+          'Sec-WebSocket-Version: 13\r\n' +
+          `${extra}\r\n`
         );
       });
 
