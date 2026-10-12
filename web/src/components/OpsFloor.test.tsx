@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/dom';
 import '@testing-library/jest-dom';
 import { renderWithProviders, mockUseLive, clearMockUseLive } from '../test/utils';
 import OpsFloor from '../components/OpsFloor';
@@ -99,8 +99,8 @@ describe('OpsFloor', () => {
   });
 
   it('renders without crashing', () => {
-    renderWithProviders(<OpsFloor />);
-    expect(screen.container).toBeInTheDocument();
+    const { container } = renderWithProviders(<OpsFloor />);
+    expect(container).toBeInTheDocument();
   });
 
   it('shows floor title', () => {
@@ -116,7 +116,11 @@ describe('OpsFloor', () => {
 
   it('renders service ports metric cards', () => {
     renderWithProviders(<OpsFloor />);
-    expect(screen.getByText('SERVICE PORTS')).toBeInTheDocument();
+    // 'SERVICE PORTS' is deliberately rendered twice: as the metric card label
+    // (OpsFloor.tsx:283) and as the section heading (OpsFloor.tsx:292). Both
+    // are real, so the singular query this test used is what no longer fits.
+    const servicePorts = screen.getAllByText('SERVICE PORTS');
+    expect(servicePorts.length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('HARNESS')).toBeInTheDocument();
     expect(screen.getByText('PROVIDERS')).toBeInTheDocument();
     expect(screen.getByText('ADHERENCE')).toBeInTheDocument();
@@ -181,8 +185,15 @@ describe('OpsFloor', () => {
   it('renders Polymarket JEV history', () => {
     renderWithProviders(<OpsFloor />);
     expect(screen.getByText('POLYMARKET JEV HISTORY')).toBeInTheDocument();
-    const task1 = screen.getAllByText('jarvis-1');
-    expect(task1.length).toBeGreaterThanOrEqual(1);
+    // OpsFloor.tsx:471-483 renders each history card as status / stamp / title /
+    // assigned agent (+ resolved target). task_id is consumed only as the React
+    // key on line 472 and is never painted, so the old getAllByText('jarvis-1')
+    // could not match any DOM text. Assert on the fields that are rendered.
+    expect(screen.getByText('[Jarvis] Test task')).toBeInTheDocument();
+    expect(screen.getByText('QUEUED')).toBeInTheDocument();
+    expect(screen.getByText('pm-worker')).toBeInTheDocument();
+    // The empty state (line 486) must not be showing alongside a real row.
+    expect(screen.queryByText('No Polymarket-routed JEV commands yet.')).not.toBeInTheDocument();
   });
 
   it('renders adherence/runtime section', () => {

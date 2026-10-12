@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/dom';
 import '@testing-library/jest-dom';
 import { renderWithProviders, mockUseLive, createMockBacktestData, clearMockUseLive } from '../test/utils';
 import StrategyLab from '../components/StrategyLab';
@@ -22,8 +22,8 @@ describe('StrategyLab', () => {
   });
 
   it('renders without crashing', () => {
-    renderWithProviders(<StrategyLab />);
-    expect(screen.container).toBeInTheDocument();
+    const { container } = renderWithProviders(<StrategyLab />);
+    expect(container).toBeInTheDocument();
   });
 
   it('shows floor title', () => {
