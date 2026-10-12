@@ -183,7 +183,7 @@ export function DrawdownChart({ drawdowns }: { drawdowns: number[] }) {
           ...darkOptions,
           scales: {
             ...darkOptions.scales,
-            y: { ...darkOptions.scales!.y, title: { display: true, text: 'Drawdown %', color: '#8b93a7' }, ticks: { color: '#8b93a7', callback: (v: number) => `${v}%` } },
+            y: { ...darkOptions.scales!.y, title: { display: true, text: 'Drawdown %', color: '#8b93a7' }, ticks: { color: '#8b93a7', callback: (value: number | string, _index: number, _ticks: any) => { if (typeof value === 'number') { return `${value}%`; } return value; } } },
           },
         }}
       />
