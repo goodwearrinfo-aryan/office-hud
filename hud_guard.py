@@ -105,6 +105,19 @@ def floor_liveness_evidence(f: Dict[str, Any]) -> List[str]:
 
 WORKING_STATES = {"working", "busy"}
 
+# Displays that tell the reader this agent exists right now. `offline` is the
+# only label that admits the process is gone, so any of these next to a dead PID
+# is the guard's core contradiction: the HUD says present, the OS says absent.
+# `stale` belongs here because it promises contact may resume -- for a dead PID
+# it never will.
+CLAIMS_PRESENT = {"busy", "working", "idle", "stale"}
+
+# The hive's own freshness window (server/lib/dots STALE_SECONDS): inside it a
+# session row is treated as speaking about the present, so the pid it carries is
+# a claim about now. Outside it the row is history, and history cannot be a lie
+# about the current moment.
+STALE_WINDOW_SEC = 300
+
 # Signals that an agent is doing something, in descending order of directness.
 # A heartbeat is deliberately NOT sufficient on its own: the brief says a
 # heartbeat is not proof of work.
@@ -309,12 +322,13 @@ def fetch(path: str, timeout: int = 8) -> Tuple[int, Any]:
         return code, None
 
 
-def classify_verification(withheld, checked, claimed_true, unassessable):
-    """Turn the four scanner values into one verdict. Pure: no I/O.
+def classify_verification(withheld, checked, claimed_true, unassessable,
+                          consistent_false=0, mislabelled=()):
+    """Turn the six scanner values into one verdict. Pure: no I/O.
 
     Returns (status, message) where status is "ok" or "degraded".
 
-    The only branch allowed to return "ok" is the last one, where every
+    The branches allowed to return "ok" are the last two, where every
     inspectable agent positively asserts processVerified. Everything else is
     reported, including the "nothing was inspectable" case, because a guard that
     cannot see must say NOT VERIFIED rather than pass.
@@ -330,12 +344,48 @@ def classify_verification(withheld, checked, claimed_true, unassessable):
             "%d agent(s) claim processVerified=false while their PID is alive "
             "(e.g. %s); liveness evidence is available and withheld"
             % (len(withheld), names))
+    if mislabelled:
+        return "degraded", (
+            "%d of %d inspected agent(s) display as present (%s) while their "
+            "recorded PID is not running. The processVerified claim may be "
+            "accurate and the label still mislead the reader -- offline "
+            "processes must render offline."
+            % (len(mislabelled), checked, "; ".join(mislabelled[:3])))
     if unassessable:
         return "degraded", (
             "NOT VERIFIED: %d of %d inspected agent(s) make no boolean "
             "processVerified claim (e.g. %s). An agent that asserts nothing is "
             "not a verified agent."
             % (len(unassessable), checked, ", ".join(unassessable[:5])))
+    if claimed_true + consistent_false != checked:
+        # Reachable only if a future bucket is added and not classified here.
+        # Falling through to "ok" would be a false green, so the positive
+        # assertion is stated explicitly instead. Checked before the honest-dead
+        # branch so an unknown evidence shape cannot hide behind agents that
+        # happen to report truthfully.
+        return "degraded", (
+            "NOT VERIFIED: %d of %d inspected agent(s) assert verified; the "
+            "remainder fall outside every known classification, so the evidence "
+            "shape has changed and this guard is not reading it correctly."
+            % (claimed_true, checked))
+    if consistent_false:
+        # Truthful but not running: these agents state they are unverified, their
+        # recorded PID really is gone, and their display admits it. Nothing is
+        # withheld and nothing is invented, so what remains depends on whether
+        # any agent at all asserts a live process. With none, a green here would
+        # be indistinguishable from an evidence feed that silently stopped
+        # reporting -- so it stays degraded until a real process shows up.
+        if claimed_true:
+            return "ok", (
+                "process verification truthful (%d/%d agents assert verified; %d "
+                "more honestly report a dead PID)"
+                % (claimed_true, checked, consistent_false))
+        return "degraded", (
+            "%d of %d inspected agent(s) assert processVerified=false and their "
+            "recorded PIDs are not running. The claims are honest; the processes "
+            "are absent — check the session registry for stale entries rather "
+            "than treating these as unverified-by-silence."
+            % (consistent_false, checked))
     return "ok", ("process verification truthful (%d/%d agents assert verified)"
                   % (claimed_true, checked))
 
@@ -343,12 +393,14 @@ def classify_verification(withheld, checked, claimed_true, unassessable):
 def scan_withheld_verification():
     """Agents claiming they are unverified while their PID is actually alive.
 
-    Returns (withheld, checked, claimed_true, unassessable).
+    Returns (withheld, checked, claimed_true, unassessable, consistent_false,
+    mislabelled).
 
     withheld      [(agent_id, pid)] claiming unverified while the PID is alive.
     checked       agents whose evidence object and processId were inspectable.
     claimed_true  agents that actually assert processVerified is true.
     unassessable  [agent_id] inspected but carrying no boolean claim at all.
+    mislabelled   [str] displayed as present while their PID is verifiably gone.
 
     The last two are the whole point. "Inspected and found no lie" is not
     "verified": an agent whose payload omits processVerified has made no claim,
@@ -358,16 +410,18 @@ def scan_withheld_verification():
     """
     withheld = []
     unassessable = []
+    mislabelled = []
+    consistent_false = 0
     claimed_true = 0
     checked = 0
     try:
         with urllib.request.urlopen(BASE + "/api/agents", timeout=20) as resp:
             body = json.loads(resp.read().decode("utf-8", "replace"))
     except Exception:
-        return withheld, checked, claimed_true, unassessable
+        return withheld, checked, claimed_true, unassessable, consistent_false, mislabelled
     agents = body.get("agents", body) if isinstance(body, dict) else body
     if not isinstance(agents, list):
-        return withheld, checked, claimed_true, unassessable
+        return withheld, checked, claimed_true, unassessable, consistent_false, mislabelled
     for a in agents:
         if not isinstance(a, dict):
             continue
@@ -377,16 +431,38 @@ def scan_withheld_verification():
             continue
         checked += 1
         claim = ev.get("processVerified")
-        if claim is False and pid_alive(pid):
+        display = str(a.get("display") or "").strip().lower()
+        alive = pid_alive(pid)
+        if claim is False and alive:
             withheld.append((str(a.get("id")), pid))
         elif claim is True:
             claimed_true += 1
+        elif claim is False:
+            consistent_false += 1
         else:
             # No boolean claim: absent, null, or something else entirely. The
             # agent makes no verification statement, so its liveness is
             # unverified. That is a reportable state, not a silent pass.
             unassessable.append(str(a.get("id") or a.get("name") or "?"))
-    return withheld, checked, claimed_true, unassessable
+        # The contradiction this guard exists to catch: a label that says the
+        # agent is present while the process it points at is verifiably gone.
+        # Measured here rather than inferred from the claim, because a truthful
+        # processVerified=false next to display=stale is still a lie about the
+        # agent -- `stale` promises the reader that contact may resume.
+        #
+        # Only a record that says it is heartbeating NOW makes its pid a claim
+        # about now. The ids in fleet.json and registry.json are written at spawn
+        # time and this hive's telemetry feed is days old, so an agent that
+        # restarted shows the OLD pid as gone: its absence proves nothing about
+        # the present and flagging it would accuse the HUD of a lie it did not
+        # tell. heartbeatAgeSec is the row's own age, so it is the test.
+        if not alive and display in CLAIMS_PRESENT:
+            hb_age = a.get("heartbeatAgeSec")
+            if isinstance(hb_age, (int, float)) and not isinstance(hb_age, bool) \
+                    and hb_age <= STALE_WINDOW_SEC:
+                mislabelled.append("%s(display=%s, pid=%s, heartbeat=%ss)"
+                                   % (a.get("id"), display, pid, hb_age))
+    return withheld, checked, claimed_true, unassessable, consistent_false, mislabelled
 
 
 def pid_alive(pid):
@@ -665,12 +741,14 @@ def check() -> Tuple[List[Dict[str, str]], List[Dict[str, str]], List[str]]:
     #    reporting it as unverified is a false negative - a lie in the safe
     #    direction, and just as wrong as the optimistic kind.
     #
-    #    This currently fails on this machine (58/58 agents carry
-    #    processVerified=false while all 58 PIDs are alive). It is reported as
-    #    a degradation rather than a hard failure, because the service is up and
-    #    every view answers; it is serving something untrue, not nothing.
-    _w, _c, _t, _u = scan_withheld_verification()
-    _verdict, _why = classify_verification(_w, _c, _t, _u)
+    #    This reads the measured PID against both the processVerified claim and
+    #    the display label, because they can disagree: an agent can honestly
+    #    report an unverifiable process and still be labelled `stale`, which
+    #    promises the reader that contact may resume when the process is gone.
+    #    Reported as a degradation rather than a hard failure, because a service
+    #    serving something untrue is still serving, not nothing.
+    _w, _c, _t, _u, _cf, _ml = scan_withheld_verification()
+    _verdict, _why = classify_verification(_w, _c, _t, _u, _cf, _ml)
     if _verdict == "ok":
         ok.append(_why)
     else:
@@ -718,6 +796,8 @@ def check() -> Tuple[List[Dict[str, str]], List[Dict[str, str]], List[str]]:
 # computing every floor correctly, so the floor view itself is treated as a
 # thing that can be wrongly deleted, not just an endpoint that can 404.
 # --------------------------------------------------------------------------
+# regular expression for floor ids, used in scans
+# _FLOOR_ID_RE defined earlier
 _FLOOR_ID_RE = re.compile(r"^f\d+$")
 _STOPWORDS = set("""a an and are as at be by for from has have in is it its of on or that the to
 with your you watch monitor detect report prompt when own floor managers state health
