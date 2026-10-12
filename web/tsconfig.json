@@ -1,28 +1,30 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "useDefineForClassFields": true,
-    "lib": [
-      "ES2020",
-      "DOM",
-      "DOM.Iterable"
-    ],
     "module": "ESNext",
-    "skipLibCheck": true,
-    "moduleResolution": "bundler",
+    "useDefineForClassFields": true,
+    "moduleResolution": "node",
+    "lib": ["es2020", "dom", "dom.iterable"],
+    "allowJs": true,
+    "allowSyntheticDefaultImports": true,
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
-    "isolatedModules": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "strict": false,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true
+    "skipLibCheck": true,
+    "downlevelIteration": true
   },
-  "exclude": [
-    "node_modules"
-  ],
   "include": [
-    "src"
+    "src",
+    "vitest.setup.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "src/test"
   ]
 }

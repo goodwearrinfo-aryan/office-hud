@@ -1,4 +1,4 @@
-import '@testing-library/jest-dom';
+/// <reference path="../node_modules/@testing-library/jest-dom/types/vitest.d.ts" />
 import { vi } from 'vitest';
 
 // Mock the live store for tests
@@ -30,4 +30,4 @@ vi.mock('../live/store', () => {
 });
 
 // Export LiveStoreProvider for use in renderWithProviders
-export { MockLiveStoreProvider as LiveStoreProvider } from './test/utils';
+export { LiveStoreProvider } from './src/test/utils';
