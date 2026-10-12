@@ -48,6 +48,7 @@ const FLEET_ROOT = path.dirname(HIVE);
 // times in one session, and once reached production wide open.
 const { isLocalRequest } = require('./lib/local_only');
 const { isLaptop, getPolymarketRuntimeRemote, getPolymarketStateRemote, getPolymarketMarketsRemote } = require('./lib/polymarket_remote');
+const { buildSnapshot: fleetLoadBuildSnapshot, mutateWorker: fleetLoadMutateWorker, writeThrottleState: fleetLoadWriteThrottleState } = require('./lib/fleet_load');
 const { TerminalManager } = require('./lib/terminal/manager');
 const { redactCommand, redactEntry, redactAll } = require('./lib/redact');
 const alphaInsiderStats = require('./alphainsider_stats_route');
@@ -87,10 +88,7 @@ const SERVICE_PORTS = [
   { name: 'Office HUD', port: PORT, role: 'operations console' },
   { name: 'Ollama', port: 11434, role: 'local model runtime' },
   { name: 'Trading bot', port: 8765, role: 'paper/testnet' },
-  { name: 'LLM gate', port: 8091, role: 'unsupervised' },
   { name: 'Cloudflared', port: 20241, role: 'tunnel metrics' },
-  { name: 'Quant dashboard', port: 4750, role: 'mini: quant/dashboard.py' },
-  { name: 'Workspace UI', port: 3003, role: 'mini: workspace_ui_server' },
 ];
 // Browser-facing services, reachable through this one origin. The request path
 // never contributes a host and verbs are restricted to GET/HEAD, so this cannot
@@ -189,6 +187,28 @@ function hostIsAllowed(hostHeader) {
   return ALLOWED_HOSTS.has(host) || EXTRA_ALLOWED_HOSTS.has(host);
 }
 
+// Loopback is not a trust boundary on its own: any page the operator opens in a
+// browser can post to 127.0.0.1, and a cross-site <form method=post> needs no
+// CORS preflight to do it. Browsers attach an Origin to every POST and to every
+// websocket upgrade, so a request that carries one must carry this HUD's own.
+// Requests with no Origin header at all — curl, scripts, the fleet's own agents,
+// and the health probes — are unaffected, which keeps this from breaking the
+// tooling that talks to the HUD from the shell.
+function originIsAllowed(originHeader) {
+  if (originHeader == null || originHeader === '') return true;
+  // `null` is what a file:// or sandboxed page sends. It is not this origin.
+  let url;
+  try {
+    url = new URL(String(originHeader));
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  // Port is deliberately not compared: the vite dev server proxies /api to this
+  // origin from a different port, and hostIsAllowed already restricts the host.
+  return hostIsAllowed(url.hostname);
+}
+
 app.use((req, res, next) => {
   if (hostIsAllowed(req.headers.host)) return next();
   return sendError(res, 421, 'bad_host', `Host ${req.headers.host} is not allowed`);
@@ -197,6 +217,9 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use('/api', (req, res, next) => {
   if (req.method === 'GET' || req.method === 'HEAD') return next();
+  if (!originIsAllowed(req.headers.origin)) {
+    return sendError(res, 403, 'bad_origin', `Origin ${req.headers.origin} is not allowed`);
+  }
   const p = req.originalUrl.split('?')[0];
   if (req.method === 'POST'
     && (SAFE_POST.has(p)
@@ -422,6 +445,24 @@ function sendError(res, status, code, message, details) {
   const error = { code, message };
   if (details !== undefined) error.details = details;
   return res.status(status).json({ ok: false, error });
+}
+
+// Express 4 never awaits a handler's promise, so a rejection in an async route
+// is dropped: the process-level `unhandledRejection` listener logs it, and the
+// socket goes on holding the request open until the client gives up. That is
+// worse than the crash the listener was written to prevent, because a launchd
+// restart heals visibly while a hung request just looks like missing data.
+// Wrap every async handler so a throw answers the way a synchronous one would.
+function asyncRoute(handler) {
+  return (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch((error) => {
+      if (res.headersSent) return;
+      const status = Number.isInteger(error && error.statusCode) ? error.statusCode : 500;
+      const message = (error && error.message) ? error.message : String(error);
+      console.error(`[office-hud] ${req.method} ${req.originalUrl} failed: ${message}`);
+      sendError(res, status, 'route_failed', message);
+    });
+  };
 }
 
 
@@ -1192,7 +1233,8 @@ function mergedAgents() {
   // earlier version kept only fresh ones, so a session that had gone stale was
   // indistinguishable from no session at all and the agent rendered as a bare
   // `offline` with no explanation. Keeping the record lets the display say
-  // `stale` — the actual state — instead of implying the agent is gone.
+  // `stale` — contact lost — instead of implying the agent is gone. A record
+  // whose PID is verifiably dead is the exception, and is labelled below.
   // sessionRows() sorts fresh-first, so the first record seen for an agent is
   // the freshest one and is kept.
   const latestSession = new Map();
@@ -1221,16 +1263,40 @@ function mergedAgents() {
     const agentKey = String(agent.id || '').toLowerCase();
     const session = latestSession.get(agentKey) || null;
     const task = currentTask.get(agentKey) || null;
-    const currentTaskId = task?.task_id || session?.current_task_id || null;
     const sessionFresh = !!session?.fresh;
+    // Remote host evidence takes precedence: if the remote host's collector
+    // verified the PID locally (process_alive=true, pid_verified_by=host), that
+    // is authoritative. A local processIsAlive check on a remote PID would
+    // always fail and incorrectly mark the agent as dead.
+    const processLiveness = (() => {
+      if (!session?.process_id) return 'no-pid';
+      if (session.process_alive === true && session.pid_verified_by) return 'remote-verified';
+      return processIsAlive(session.process_id) ? 'alive' : 'dead';
+    })();
+    const processVerified = processLiveness === 'alive' || processLiveness === 'remote-verified';
+    // Heartbeat freshness is a claim about when a writer last touched the row;
+    // the PID check above is a measurement of the process now, and a row stays
+    // inside the stale window for minutes after its process dies. A measured-dead
+    // PID therefore voids the task claim and outranks the label, or a crashed
+    // agent is rendered `busy`/`idle` -- present, working or waiting -- from a
+    // record nobody is updating any more.
+    const processDead = processLiveness === 'dead';
+    const currentTaskId = processDead ? null : (
+        task?.task_id
+        || (sessionFresh ? session?.current_task_id : null)
+        || null
+      );
     const hasWork = !!currentTaskId;
     // `busy` requires a claimed in-flight task. A fresh session with no task is
-    // a live process doing nothing known — that is `idle`, not `busy`. A session
+    // a live process doing nothing known -- that is `idle`, not `busy`. A session
     // that exists but has aged out is `stale`, which is different again from an
-    // agent that was never seen.
+    // agent that was never seen. A session whose PID is verifiably no longer
+    // running is not "contact lost" but "gone", and leaving it labelled stale
+    // keeps a dead process on the board and alerting forever.
     let display = 'offline';
     if (archived) display = 'offline';
     else if (breaker !== 'healthy') display = 'breaker';
+    else if (processDead) display = 'offline';
     else if (hasWork) display = 'busy';
     else if (sessionFresh) display = 'idle';
     else if (session) display = 'stale';
@@ -1262,29 +1328,8 @@ function mergedAgents() {
         // "not verified". The three states stay distinct, because a live process,
         // a dead one, and no process reported at all are different facts, and
         // reporting all three identically is what made this unreadable.
-        //
-        // Remote host evidence takes precedence: if the remote host's collector
-        // verified the PID locally (process_alive=true, pid_verified_by=host),
-        // that is authoritative. A local processIsAlive check on a remote PID
-        // would always fail and incorrectly mark the agent as dead.
-        processLiveness: (() => {
-          if (!session?.process_id) return 'no-pid';
-          // Remote host verified this PID on its own machine
-          if (session.process_alive === true && session.pid_verified_by) {
-            return 'remote-verified';
-          }
-          // Local process check (for agents actually running on this machine)
-          return processIsAlive(session.process_id) ? 'alive' : 'dead';
-        })(),
-        processVerified: (() => {
-          if (!session?.process_id) return false;
-          // Remote host verified this PID on its own machine
-          if (session.process_alive === true && session.pid_verified_by) {
-            return true;
-          }
-          // Local process check
-          return processIsAlive(session.process_id);
-        })(),
+        processLiveness,
+        processVerified,
       },
       archived,
       breaker,
@@ -2086,7 +2131,7 @@ async function proxyFreeHarnessJson(pathname, res, query = {}) {
 
 function readPolymarketPlist() {
   try {
-    const parsed = JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', POLYMARKET_LAUNCHD_INSTALLED_PLIST], { encoding: 'utf8' }));
+    const parsed = JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', POLYMARKET_LAUNCHD_INSTALLED_PLIST], { encoding: 'utf8', timeout: 5000 }));
     if (!isPlainObject(parsed)) return { plist: null, error: 'installed plist must contain a dictionary' };
     return { plist: parsed, error: null };
   } catch (error) {
@@ -2111,7 +2156,10 @@ function readPolymarketConfig() {
 function getProcessCommand(pid) {
   if (!Number.isInteger(pid) || pid < 2) return null;
   try {
-    return execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).trim() || null;
+    // Every caller here is inside a request. An untimed synchronous child can
+    // freeze the event loop, and with it the dashboard, the SSE streams and the
+    // websocket heartbeats, for as long as the OS takes to answer.
+    return execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 5000 }).trim() || null;
   } catch {
     return null;
   }
@@ -2130,13 +2178,15 @@ function processIsAlive(pid) {
 function findEngineProcesses(enginePath) {
   if (!enginePath) return [];
   try {
-    const output = execFileSync('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8' });
+    const output = execFileSync('/bin/ps', ['-axo', 'pid=,command='], { encoding: 'utf8', timeout: 8000 });
     const processes = [];
     for (const line of output.split('\n')) {
       if (!line.includes(enginePath) || line.includes('heartbeat.py')) continue;
       const match = line.trim().match(/^(\d+)\s+(.*)$/);
       if (!match || !processIsAlive(Number(match[1]))) continue;
-      processes.push({ pid: Number(match[1]), command: match[2] });
+      // The command line is served to the browser, and an engine started with
+      // a key on argv would otherwise be handed out verbatim.
+      processes.push({ pid: Number(match[1]), command: redactCommand(match[2]) });
     }
     return processes;
   } catch {
@@ -2146,7 +2196,7 @@ function findEngineProcesses(enginePath) {
 
 function getPolymarketLaunchdStatus() {
   try {
-    const output = execFileSync('/bin/launchctl', ['print', POLYMARKET_LAUNCHD_TARGET], { encoding: 'utf8' });
+    const output = execFileSync('/bin/launchctl', ['print', POLYMARKET_LAUNCHD_TARGET], { encoding: 'utf8', timeout: 8000 });
     const state = output.match(/\n\s*state = ([^\s]+)/)?.[1] || 'unknown';
     const pid = output.match(/\n\s*pid = (\d+)/)?.[1] || null;
     const installedPath = output.match(/\n\s*path = ([^\n]+)/)?.[1]?.trim() || null;
@@ -2186,7 +2236,7 @@ function getPolymarketRuntime() {
   const processes = findEngineProcesses(enginePath);
   if (processes.length === 0 && launchd.pid && processIsAlive(launchd.pid)) {
     const command = getProcessCommand(launchd.pid);
-    if (command && command.includes(enginePath)) processes.push({ pid: launchd.pid, command });
+    if (command && command.includes(enginePath)) processes.push({ pid: launchd.pid, command: redactCommand(command) });
   }
   const expectedPlistLoaded = launchd.loaded && launchd.path === POLYMARKET_LAUNCHD_INSTALLED_PLIST;
   return {
@@ -2222,7 +2272,10 @@ function getPolymarketRuntime() {
 
 app.get('/api/health', (_req, res) => {
   try {
-    const output = execFileSync('/usr/bin/python3', [path.join(__dirname, 'health_probe.py')]);
+    // The UI and the HUD guard both poll this route, so a probe that never
+    // returns has to degrade to the fallback below rather than wedge the
+    // single-threaded server that answers everything else.
+    const output = execFileSync('/usr/bin/python3', [path.join(__dirname, 'health_probe.py')], { timeout: 15000 });
     const probeResult = JSON.parse(output.toString());
     res.json({ ...probeResult, ...hiveStatus(), ts: Date.now() });
   } catch (_) {
@@ -2622,13 +2675,13 @@ app.get('/api/office-manager', (_req, res) => {
   res.json(buildSnapshot('officeManager'));
 });
 
-app.get('/api/harness/health', async (_req, res) => {
+app.get('/api/harness/health', asyncRoute(async (_req, res) => {
   res.json(await buildSnapshotAsync('harness'));
-});
+}));
 
-app.get('/api/services/health', async (_req, res) => {
+app.get('/api/services/health', asyncRoute(async (_req, res) => {
   res.json(await buildSnapshotAsync('services'));
-});
+}));
 
 app.get('/api/sessions', (_req, res) => {
   res.json(buildSnapshot('sessions'));
@@ -2669,7 +2722,7 @@ app.get('/api/terminals/spawned', (_req, res) => {
   res.json(terminalManager.collectedTerminals(collected));
 });
 
-app.post('/api/terminals/spawn', async (req, res) => {
+app.post('/api/terminals/spawn', asyncRoute(async (req, res) => {
   if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   try {
@@ -2679,9 +2732,9 @@ app.post('/api/terminals/spawn', async (req, res) => {
   } catch (error) {
     sendError(res, error.statusCode || 500, 'TERMINAL_SPAWN_REJECTED', error.message);
   }
-});
+}));
 
-app.post('/api/terminals/bulk', async (req, res) => {
+app.post('/api/terminals/bulk', asyncRoute(async (req, res) => {
   if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   const body = req.body || {};
@@ -2706,7 +2759,7 @@ app.post('/api/terminals/bulk', async (req, res) => {
   } catch (error) {
     sendError(res, error.statusCode || 500, 'TERMINAL_BULK_REJECTED', error.message);
   }
-});
+}));
 
 // Literal sub-paths are registered BEFORE the ':id' routes below. Express
 // matches in registration order, so a ':id' route placed first would swallow
@@ -2731,10 +2784,10 @@ app.get('/api/terminals/health', (_req, res) => {
 // reveals host names and reachability, which the merged terminal view already
 // exposes, and it performs no action. Acting on a peer requires a 'remote'
 // spawn, which is gated and allowlisted like any other.
-app.get('/api/terminals/peers', async (_req, res) => {
+app.get('/api/terminals/peers', asyncRoute(async (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({ peers: await terminalManager.peers() });
-});
+}));
 
 // ---------------------------------------------------------------------------
 // Autopilot — proposes, never lands.
@@ -2766,7 +2819,7 @@ function autopilotGuard(req, res) {
   return true;
 }
 
-app.get('/api/autopilot/snapshot', async (req, res) => {
+app.get('/api/autopilot/snapshot', asyncRoute(async (req, res) => {
   res.set('Cache-Control', 'no-store');
   const state = await autopilotRunner.readState(autopilot);
   const persisted = autopilotRunner.loadState();
@@ -2782,7 +2835,7 @@ app.get('/api/autopilot/snapshot', async (req, res) => {
       lastRegression: persisted.lastRegression ?? null,
     }),
   });
-});
+}));
 
 app.get('/api/autopilot/proposals', (_req, res) => {
   res.set('Cache-Control', 'no-store');
@@ -2830,13 +2883,13 @@ app.post('/api/autopilot/policy', (req, res) => {
 });
 
 // One manual tick, for the operator who does not want to wait for the interval.
-app.post('/api/autopilot/tick', async (req, res) => {
+app.post('/api/autopilot/tick', asyncRoute(async (req, res) => {
   if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (autopilotGuard(req, res)) return;
   const verdict = await autopilot.tick();
   autopilotRunner.persist(autopilot);
   res.json({ ok: true, ...verdict });
-});
+}));
 
 // Read-only performance roll-up over the hive. Deliberately unauthenticated
 // read, like the other GETs, and deliberately free of side effects.
@@ -2925,7 +2978,7 @@ app.get('/api/terminals/:id/follow', (req, res) => {
   }, 700);
 });
 
-app.post('/api/terminals/:id/kill', async (req, res) => {
+app.post('/api/terminals/:id/kill', asyncRoute(async (req, res) => {
   if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   try {
@@ -2935,9 +2988,9 @@ app.post('/api/terminals/:id/kill', async (req, res) => {
   } catch (error) {
     sendError(res, error.statusCode || 500, 'TERMINAL_KILL_FAILED', error.message);
   }
-});
+}));
 
-app.post('/api/terminals/:id/signal', async (req, res) => {
+app.post('/api/terminals/:id/signal', asyncRoute(async (req, res) => {
   if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'spawning and signalling happen on this machine; available only from the local HUD');
   if (terminalGuard(req, res)) return;
   try {
@@ -2946,9 +2999,9 @@ app.post('/api/terminals/:id/signal', async (req, res) => {
   } catch (error) {
     sendError(res, error.statusCode || 500, 'TERMINAL_SIGNAL_FAILED', error.message);
   }
-});
+}));
 
-app.post('/api/terminals/:id/input', async (req, res) => {
+app.post('/api/terminals/:id/input', asyncRoute(async (req, res) => {
     if (!isLocalRequest(req)) return sendError(res, 403, 'local_only', 'typing into a terminal happens on this machine; available only from the local HUD');
     if (terminalGuard(req, res)) return;
     try {
@@ -2958,7 +3011,7 @@ app.post('/api/terminals/:id/input', async (req, res) => {
     } catch (error) {
       sendError(res, error.statusCode || 500, 'TERMINAL_INPUT_FAILED', error.message);
     }
-  });
+  }));
 
   function getProcesses() {
   const doc = readJson(path.join(HIVE, 'processes.json'), { processes: [] });
@@ -2997,9 +3050,9 @@ app.get('/api/trading/strategies', (_req, res) => {
   res.json(buildSnapshot('tradingStrategies'));
 });
 
-app.get('/api/trading/live', async (_req, res) => {
+app.get('/api/trading/live', asyncRoute(async (_req, res) => {
   res.json(await getLiveMetrics());
-});
+}));
 
 app.get('/api/trading/ops', (_req, res) => {
   res.json(buildSnapshot('tradingOps'));
@@ -3102,7 +3155,7 @@ app.post('/api/llm/circuit-breakers/reset', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/llm/test', async (req, res) => {
+app.post('/api/llm/test', asyncRoute(async (req, res) => {
   if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'llm/test is local-only');
   const { prompt, agentId, taskType, provider, model } = req.body || {};
   if (typeof prompt !== 'string' || !prompt.trim()) return sendError(res, 400, 'bad_request', 'prompt is required');
@@ -3114,7 +3167,7 @@ app.post('/api/llm/test', async (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
-});
+}));
 
 // ---------- Polymarket Paper Trading ----------
 function getPolymarketState() {
@@ -3215,14 +3268,14 @@ app.get('/api/polymarket/status', (_req, res) => {
   res.json(getPolymarketRuntime());
 });
 
-app.post('/api/polymarket/start', async (_req, res) => {
+app.post('/api/polymarket/start', asyncRoute(async (_req, res) => {
   const runtime = getPolymarketRuntime();
   if (!runtime.managed) return sendError(res, 501, 'engine_not_managed', 'No managed paper-only Polymarket engine configuration is available');
   if (!runtime.paper_only) return sendError(res, 409, 'paper_only_required', 'Paper-only mode is required');
   if (!runtime.launchd.expected_loaded) return sendError(res, 409, 'engine_not_loaded', 'The managed Polymarket engine is not loaded from the expected launchd plist');
   if (runtime.running) return res.json({ ok: true, already_running: true, ...runtime });
   try {
-    execFileSync('/bin/launchctl', ['kickstart', '-k', POLYMARKET_LAUNCHD_TARGET], { stdio: 'pipe' });
+    execFileSync('/bin/launchctl', ['kickstart', '-k', POLYMARKET_LAUNCHD_TARGET], { stdio: 'pipe', timeout: 20000 });
   } catch (error) {
     return sendError(res, 502, 'engine_start_error', 'Unable to start the managed Polymarket engine', { reason: error.message });
   }
@@ -3232,16 +3285,16 @@ app.post('/api/polymarket/start', async (_req, res) => {
     return sendError(res, 503, 'engine_start_failed', 'The managed Polymarket engine did not become visible after launchctl kickstart', after);
   }
   res.json({ ok: true, started: true, ...after });
-});
+}));
 
-app.post('/api/polymarket/stop', async (_req, res) => {
+app.post('/api/polymarket/stop', asyncRoute(async (_req, res) => {
   const runtime = getPolymarketRuntime();
   if (!runtime.managed) return sendError(res, 501, 'engine_not_managed', 'No managed paper-only Polymarket engine configuration is available');
   if (!runtime.paper_only) return sendError(res, 409, 'paper_only_required', 'Paper-only mode is required');
   if (!runtime.launchd.loaded) return res.json({ ok: true, already_stopped: true, ...runtime });
   if (!runtime.launchd.expected_loaded) return sendError(res, 409, 'engine_plist_mismatch', 'The launchd job does not use the expected Polymarket plist');
   try {
-    execFileSync('/bin/launchctl', ['bootout', POLYMARKET_LAUNCHD_TARGET], { stdio: 'pipe' });
+    execFileSync('/bin/launchctl', ['bootout', POLYMARKET_LAUNCHD_TARGET], { stdio: 'pipe', timeout: 20000 });
   } catch (error) {
     return sendError(res, 502, 'engine_stop_error', 'Unable to stop the managed Polymarket engine', { reason: error.message });
   }
@@ -3251,7 +3304,7 @@ app.post('/api/polymarket/stop', async (_req, res) => {
     return sendError(res, 503, 'engine_stop_failed', 'The managed Polymarket engine is still loaded or running after launchctl bootout', after);
   }
   res.json({ ok: true, stopped: true, ...after });
-});
+}));
 
 // ---------- Office Python Classification ----------
 app.get('/api/office/classification', (_req, res) => {
@@ -3282,12 +3335,12 @@ app.get('/api/office/classification', (_req, res) => {
 });
 
 // ---------- Recovery System ----------
-app.get('/api/recovery/stats', async (_req, res) => {
+app.get('/api/recovery/stats', asyncRoute(async (_req, res) => {
   const { getRecoveryStats } = require(path.join(HIVE, 'lib', 'recovery'));
   res.json(await getRecoveryStats());
-});
+}));
 
-app.post('/api/recovery/manual/:agentId', async (req, res) => {
+app.post('/api/recovery/manual/:agentId', asyncRoute(async (req, res) => {
   if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'recovery is local-only');
   if (!isIdentifier(req.params.agentId)) return sendError(res, 400, 'bad_request', 'invalid agentId');
   const { manualRecover } = require(path.join(HIVE, 'lib', 'recovery'));
@@ -3297,9 +3350,9 @@ app.post('/api/recovery/manual/:agentId', async (req, res) => {
   } catch (error) {
     sendError(res, error.statusCode || 500, 'RECOVERY_FAILED', error.message);
   }
-});
+}));
 
-app.post('/api/recovery/start', async (req, res) => {
+app.post('/api/recovery/start', asyncRoute(async (req, res) => {
   if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'recovery is local-only');
   const { startRecoveryEngine } = require(path.join(HIVE, 'lib', 'recovery'));
   try {
@@ -3308,9 +3361,9 @@ app.post('/api/recovery/start', async (req, res) => {
   } catch (error) {
     sendError(res, error.statusCode || 500, 'RECOVERY_FAILED', error.message);
   }
-});
+}));
 
-app.post('/api/recovery/stop', async (req, res) => {
+app.post('/api/recovery/stop', asyncRoute(async (req, res) => {
   if (!isLocalRequest(req)) return sendError(res, 403, 'forbidden', 'recovery is local-only');
   const { stopRecoveryEngine } = require(path.join(HIVE, 'lib', 'recovery'));
   try {
@@ -3319,7 +3372,7 @@ app.post('/api/recovery/stop', async (req, res) => {
   } catch (error) {
     sendError(res, error.statusCode || 500, 'RECOVERY_FAILED', error.message);
   }
-});
+}));
 
 // ---------- JEV / Task Queue ----------
 app.get('/api/jev/stats', (_req, res) => {
@@ -3334,12 +3387,12 @@ app.get('/api/jev/stats', (_req, res) => {
 });
 
 // ---------- Sessions with reattach ----------
-app.post('/api/sessions/:id/reattach', async (req, res) => {
+app.post('/api/sessions/:id/reattach', asyncRoute(async (req, res) => {
   const { reattachSession } = require(path.join(HIVE, 'lib', 'session'));
   const { agentId, processId } = req.body;
   const ok = reattachSession(req.params.id, agentId, processId);
   res.json({ ok });
-});
+}));
 
 // ---------- live data: resource snapshots + change detection ----------
 
@@ -3833,7 +3886,7 @@ app.get('/api/live/status', (_req, res) => {
 // `agents/<id>`. Express 4 matches '*' and hands the remainder back in
 // params[0]; the named form (`*name`) is Express 5 syntax and silently matches
 // nothing here.
-app.get('/api/live/*', async (req, res) => {
+app.get('/api/live/*', asyncRoute(async (req, res) => {
   const raw = req.params[0] ?? '';
   const name = Array.isArray(raw) ? raw.join('/') : String(raw);
   const resource = resolveResource(name);
@@ -3844,7 +3897,7 @@ app.get('/api/live/*', async (req, res) => {
   } catch (error) {
     sendError(res, error.statusCode || 500, 'resource_failed', error.message);
   }
-});
+}));
 
 // ---------- single-port portal ----------
 
@@ -3940,7 +3993,7 @@ app.get('/port/:slug/*', portalEntry);
 app.head('/port/:slug/*', (_req, res) => res.status(405).end());
 app.get('/port/:slug', portalEntry);
 
-app.get('/api/portal', async (_req, res) => {
+app.get('/api/portal', asyncRoute(async (_req, res) => {
   const health = await getServiceHealth();
   const byPort = new Map((health.services || []).map((service) => [service.port, service]));
   res.json({
@@ -3958,7 +4011,7 @@ app.get('/api/portal', async (_req, res) => {
       };
     }),
   });
-});
+}));
 
 // ---------- tournament (password-free, served HUD-side) ----------
 // The public pubserver (:3002) guards its dashboards with a shared secret, so
@@ -4194,6 +4247,41 @@ if (fs.existsSync(dist)) {
     if (html === null) return res.sendFile(path.join(dist, 'index.html'));
     res.type('html').send(html);
   });
+  // Fleet load and throttle
+  app.get("/api/fleet/load", (_req, res) => {
+    try {
+      res.json(fleetLoadBuildSnapshot());
+    } catch (e) {
+      res.status(503).json({ error: "fleet_load_unavailable", detail: String(e) });
+    }
+  });
+
+  app.post("/api/fleet/load/:pid/action", (req, res) => {
+    try {
+      const { pid } = req.params;
+    const { action } = req.body;
+    if (!pid || !action) {
+        return res.status(400).json({ error: "missing pid or action" });
+      }
+      fleetLoadMutateWorker(pid, action);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(400).json({ error: "fleet_load_action_failed", detail: String(e) });
+    }
+  });
+  app.post("/api/fleet/throttle", (req, res) => {
+    try {
+      const { mode } = req.body;
+      if (!mode || (mode !== 'normal' && mode !== 'paused')) {
+        return res.status(400).json({ error: "invalid throttle mode" });
+      }
+      fleetLoadWriteThrottleState(mode);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: "throttle_failed", detail: String(e) });
+    }
+  });
+
   app.use(express.static(dist));
   app.get('*', (_req, res) => {
     const html = indexHtml();
@@ -4295,8 +4383,11 @@ function verifyDependencies() {
 
 function bootstrap() {
   verifyDependencies();
-  // Express 4 does not catch async handler rejections; without these a single
-  // throw kills the process and launchd restarts it.
+  // Last-resort logging, not a fix. Registering these means Node does NOT exit
+  // on an unhandled rejection, so the process survives and the request that
+  // caused it stays open with no answer ever sent. Async routes are wrapped in
+  // asyncRoute() so they respond; these remain only so anything that escapes
+  // that net is still written to the log.
   process.on('unhandledRejection', (reason) => {
     console.error('[office-hud] unhandled rejection:', reason && reason.stack ? reason.stack : reason);
   });
@@ -4341,6 +4432,7 @@ function bootstrap() {
       alerts: () => (alertEngine ? alertEngine.snapshotList() : []),
       heartbeatMs: 25000,
       isHostAllowed: hostIsAllowed,
+      isOriginAllowed: originIsAllowed,
     });
     liveHub.attach(server);
     announceReady(PORT);
@@ -4448,9 +4540,11 @@ module.exports = {
     readPublicSyncStatus, PUBLIC_SYNC_STALE_SECONDS,
     openaliceStatus, frozenFeedsRoute, liveDigestRoute, strategySearchRoute,
     isLocalRequest, isIdentifier, requestError, sendError, buildSnapshot,
+    asyncRoute,
     portalTarget, rewriteUpstreamLocation, portalSlugForPort, PORTAL_SERVICES,
     parseLaunchctlList, getFleetLaunchdState,
     changedResources, signatureOf, resourceNames, invalidateCaches, hostIsAllowed, hostOnly,
+    originIsAllowed,
       HIVE_WATCH_DEBOUNCE_MS,
     HIVE, FLEET_ROOT, SERVICE_PORTS, JSON_CACHE_MS, RESOURCES,
   },
