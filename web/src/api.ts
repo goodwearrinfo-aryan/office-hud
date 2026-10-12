@@ -1208,6 +1208,14 @@ const RESOURCE_BY_PATH: Record<string, string> = {
 
 const POLL_ONLY_MS = 20000;
 
+/**
+ * Ceiling on one poll. `fetch` never times out on its own, so a route that
+ * accepts the connection and does not answer leaves the request open and the
+ * panel stuck on its previous value with no error to show. See the same guard
+ * in live/store.ts.
+ */
+const FETCH_TIMEOUT_MS = 10000;
+
 /** Fallback for endpoints the socket does not carry. */
 function usePolled<T>(path: string) {
   const [data, setData] = useState<T | null>(null);
@@ -1221,14 +1229,21 @@ function usePolled<T>(path: string) {
     // must be inert: fetch('') resolves against the document base URL and
     // fetches the SPA shell, which then fails response.json().
     if (!path) return;
-    fetch(path, { headers: { Accept: 'application/json' } })
+    const controller = new AbortController();
+    const timer = setTimeout(() => { controller.abort(); }, FETCH_TIMEOUT_MS);
+    fetch(path, { headers: { Accept: 'application/json' }, signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json() as Promise<T>;
       })
       .then((json) => { if (alive.current) { setData(json); setError(null); } })
-      .catch((e: unknown) => { if (alive.current) setError(e instanceof Error ? e.message : String(e)); })
-      .finally(() => { if (alive.current) setLoading(false); });
+      .catch((e: unknown) => {
+        if (!alive.current) return;
+        setError(controller.signal.aborted
+          ? `no response within ${Math.round(FETCH_TIMEOUT_MS / 1000)}s`
+          : (e instanceof Error ? e.message : String(e)));
+      })
+      .finally(() => { clearTimeout(timer); if (alive.current) setLoading(false); });
   }, [path]);
 
   useEffect(() => {

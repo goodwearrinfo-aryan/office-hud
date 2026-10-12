@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { useLive, type GraphifyGraph } from '../api';
+import { useLive, type GraphifyGraph, type GraphNode } from '../api';
 
 const MAX_NODES = 400;
 
@@ -19,7 +19,11 @@ function drag(simulation: d3.Simulation<any, any>) {
     d.fx = null;
     d.fy = null;
   }
-  return d3.drag().on('start', dragstarted).on('drag', dragged).on('end', dragended);
+  // The element and datum generics must be pinned to the same types the circle
+  // selection is built with. Left implicit, d3-drag widens GElement to Element
+  // while selectAll('circle') yields `BaseType | SVGCircleElement` (BaseType
+  // admits null), and selection.call() then rejects the behaviour.
+  return d3.drag<SVGCircleElement, GraphNode>().on('start', dragstarted).on('drag', dragged).on('end', dragended);
 }
 
 type RenderGraph = { nodes: any[]; links: any[]; totalNodes: number; totalLinks: number; builtAt?: string };
@@ -98,7 +102,7 @@ export default function KnowledgeGraph() {
       .join('line');
 
     const node = svg.append('g')
-      .selectAll('circle')
+      .selectAll<SVGCircleElement, GraphNode>('circle')
       .data(nodes)
       .join('circle')
       .attr('r', 7)

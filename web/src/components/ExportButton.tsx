@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { exportAgents, exportLedger, exportBacktest, exportRiskMetrics, type ExportFormat } from '../utils/export';
-import { useLive, type Agent, type LedgerEvent, type BacktestData, type Summary } from '../api';
+import { useLive, type Agent, type LedgerEvent, type BacktestData, type StrategyBacktest, type Summary } from '../api';
 
 interface Props {
   type: 'agents' | 'ledger' | 'backtest' | 'risk';
@@ -33,8 +33,8 @@ export default function ExportButton({ type, label = 'Export', agents, events, b
         case 'risk':
           // compute risk metrics from backtest
           const bt = backtestData ?? backtest?.backtest ?? {};
-          const metrics = Object.entries(bt).map(([name, data]: [string, any]) => {
-            const rets = data.windows.map((w: any) => w.test_return);
+          const metrics = Object.entries<StrategyBacktest>(bt).map(([name, data]) => {
+            const rets = data.windows.map((w) => w.test_return);
             const equity = data.windows.map((w: any) => w.test_return).reduce((acc: number[], r: number) => [...acc, (acc[acc.length - 1] || 0) + r], [] as number[]);
             let peak = -Infinity, maxDD = 0;
             for (const v of equity) { if (v > peak) peak = v; const dd = (peak - v) / (peak || 1); if (dd > maxDD) maxDD = dd; }
