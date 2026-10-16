@@ -73,7 +73,10 @@ REQUIRED_VIEWS = [
 
 # Words that would mean a view is asserting health without evidence. The brief
 # forbids turning "no error detected" into "healthy".
-UNEVIDENCED_HEALTH = {"healthy", "ok", "fine", "good", "up"}
+# /api/agents status vocabulary is active|stale|offline (measured live
+# 2026-10-15); "active" is its health word, so a bare "active" with no
+# session/heartbeat/task evidence is an unbacked health claim.
+UNEVIDENCED_HEALTH = {"healthy", "ok", "fine", "good", "up", "active"}
 
 # Evidence, not names. A floor qualifies if it carries ANY of: a boolean
 # liveness fact, a non-empty state string, or integer state counters. The real

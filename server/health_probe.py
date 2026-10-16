@@ -47,7 +47,7 @@ def _hive_dir():
     return os.path.abspath(HIVE)
 
 
-def _check(name, ok, detail, level="fail", checked=True):
+def _check(name, ok, detail, level="fail", checked=True, extra=None):
     """Build one check record.
 
     `level` is the severity the check carries *right now*, not the severity it
@@ -80,6 +80,12 @@ def _check(name, ok, detail, level="fail", checked=True):
         "level": level,
         "detail": detail,
         "verified": checked,
+        # Structured counts for consumers that must not parse `detail`.
+        # `detail` is prose written for a human reading a fleet-health line, and
+        # a metrics exporter scraping "42/42 agent(s) alive" out of it breaks the
+        # moment the sentence is reworded -- which is exactly the kind of change
+        # that looks harmless in review.
+        **(extra or {}),
     }
 
 
@@ -121,6 +127,48 @@ def _alive_case_insensitive(path):
     return ""
 
 
+_WORKER_LABEL_PREFIX = "com.aryan.opencode-worker-"
+
+
+def _worker_plist_names():
+    """Agent names that have a launchd worker plist on *this* host.
+
+    Empty on any host that is not the deployment host, which is why
+    `probe()` treats an empty result as "registration unknown" and keeps the
+    old denominator rather than concluding that no agent is expected to run.
+    """
+    try:
+        entries = os.listdir(os.path.expanduser("~/Library/LaunchAgents"))
+    except OSError:
+        return set()
+    suffix = ".plist"
+    return {n[len(_WORKER_LABEL_PREFIX):-len(suffix)]
+            for n in entries
+            if n.startswith(_WORKER_LABEL_PREFIX) and n.endswith(suffix)}
+
+
+def _alive_worker_launcher(name):
+    """An agent alive as `opencode-worker.sh <name>` rather than agent_manager.js.
+
+    The fleet's long-lived agents are launched by the repo launcher, so the
+    process command line is
+
+        /bin/zsh /Users/a/bin/opencode-worker.sh pm-data
+
+    and never mentions `hive/agents/<name>/bin/agent_manager.js`. Every liveness
+    check here keys on that path, so all of them reported false negatives: on the
+    mini, 28 workers were running while the probe counted 10, and god, mainbot,
+    pm-attribution, pm-data and pm-ops were named as dead in a fleet-health read
+    despite having live pids.
+
+    `name` has already been validated against `_AGENT_NAME`, so it needs no
+    regex escaping here. The pattern is anchored at the end of the command line
+    so `pm-data` cannot be satisfied by `pm-data-worker`, or by any path that
+    merely contains the name.
+    """
+    return _alive("opencode-worker.sh %s$" % name)
+
+
 def probe():
     hive = _hive_dir()
     checks = []
@@ -154,8 +202,9 @@ def probe():
 
     # --- agent managers alive ---
     agents_dir = os.path.join(hive, "agents")
-    total = alive = 0
+    live = []
     dead = []
+    scaffolds = []
     # Entries that are not agent directories. Something ran a command with an
     # unexpanded or comma-separated variable and the hive rebuild created real
     # scaffolds named "," and "d", "g", "o" -- each with a full
@@ -165,6 +214,15 @@ def probe():
     # letters, digits, dash, underscore, at least two characters.
     _AGENT_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]+$")
     skipped = []
+    # Candidates are the union of two sources. Enumerating hive directories
+    # alone cannot see a worker that has no scaffold, because admission
+    # requires hive/agents/<name>/bin/agent_manager.js to exist. On the mini 28
+    # workers are registered as launchd jobs and most have no scaffold, so a
+    # hive-only read counted 19 of the 38 running agents and reported
+    # "19/19 ok" -- an all-clear that ten of them could die inside without
+    # changing the answer. Registration contributes the missing names, with no
+    # script to inspect, so only the launcher check applies to them.
+    candidates = {}
     if os.path.isdir(agents_dir):
         for name in sorted(os.listdir(agents_dir)):
             mgr = os.path.join(agents_dir, name, "bin", "agent_manager.js")
@@ -173,15 +231,26 @@ def probe():
             if not _AGENT_NAME.match(name):
                 skipped.append(name)
                 continue
-            total += 1
+            candidates[name] = mgr
+    registered = _worker_plist_names()
+    for name in sorted(registered):
+        candidates.setdefault(name, None)
+
+    if candidates:
+        for name, mgr in sorted(candidates.items()):
             # pgrep -f is case-SENSITIVE on the pattern while the filesystem
             # here is case-INSENSITIVE, so `agents/f1/...` matches the file
             # but never the running process line `agents/F1/...`. Matching the
             # bare filename would also be ambiguous, so match the agent name
             # case-insensitively by asking pgrep for a pattern built from the
             # real on-disk name and matching on the process command itself.
-            if _alive(mgr) or _alive_case_insensitive(mgr):
-                alive += 1
+            #
+            # The worker launcher is checked alongside the script because it is
+            # how the fleet actually runs most of its agents, and a probe that
+            # cannot see the dominant launch mode calls live agents dead.
+            if _alive_worker_launcher(name) or (mgr and (
+                    _alive(mgr) or _alive_case_insensitive(mgr))):
+                live.append(name)
                 continue
             # Not every manager agent's entrypoint is agent_manager.js.
             # office-manager runs office_manager.js, so a probe that only ever
@@ -193,6 +262,9 @@ def probe():
             # (graph-backend) keep being skipped and the denominator is
             # unchanged. ".backup" copies are excluded so a retired script
             # cannot make a stopped agent look alive.
+            if mgr is None:
+                dead.append(name)
+                continue
             alternates = [
                 os.path.join(agents_dir, name, "bin", n)
                 for n in sorted(os.listdir(os.path.join(agents_dir, name, "bin")))
@@ -201,18 +273,41 @@ def probe():
                 and ".backup" not in n
             ]
             if any(_alive(a) or _alive_case_insensitive(a) for a in alternates):
-                alive += 1
+                live.append(name)
             else:
                 dead.append(name)
+
+    # A directory in hive/agents/ is not a promise that the agent should be
+    # running. The hive rebuild leaves scaffolds behind for agents that were
+    # never registered as launchd jobs, and counting those in the denominator
+    # manufactured a permanent warn: on the mini, 8 of the 8 "not running"
+    # agents had no plist and were simply never meant to start, while all 28
+    # plist-registered agents were up. So an agent is *expected* to run when it
+    # is registered as a worker job or when it is already running; anything else
+    # is a scaffold, named in the detail but excluded from the ratio.
+    #
+    # Registration is only known on the deployment host. Where no worker plists
+    # exist at all, "expected" is unknowable, so every candidate stays in the
+    # denominator -- the previous behaviour -- rather than collapsing to 0/N and
+    # reporting a healthy host as having nothing to run.
+    if registered:
+        unstarted = set(dead) - registered
+        dead = [n for n in dead if n in registered]
+        scaffolds.extend(n for n in sorted(unstarted))
+
+    total = len(live) + len(dead)
+    alive = len(live)
     if total == 0:
         checks.append(_check("agents", False, "no agent managers found", checked=False))
     else:
         # One dead agent degrades the system; it does not make it unhealthy.
         # But "degraded" has to survive into the payload, which is the whole
         # reason _check no longer overwrites a caller's warn.
-        detail = "%d/%d agent manager(s) alive%s%s" % (
+        detail = "%d/%d agent(s) alive%s%s%s" % (
             alive, total,
             "" if not dead else "; not running: " + ", ".join(dead[:8]),
+            "" if not scaffolds else
+            "; never registered (scaffold): " + ", ".join(scaffolds[:8]),
             "" if not skipped else
             "; ignored non-agent entries: " + ", ".join(repr(s) for s in skipped[:8]),
         )
@@ -224,6 +319,15 @@ def probe():
             # as degraded, which is the same class of lie as the one this
             # replaces -- just pointing the other way.
             level="fail" if alive == 0 else ("warn" if dead else "ok"),
+            # Counts rather than prose, so a metrics exporter never has to
+            # scrape the ratio out of the sentence above.
+            extra={
+                "alive": alive,
+                "total": total,
+                "dead": list(dead),
+                "scaffolds": list(scaffolds),
+                "skipped_entries": list(skipped),
+            },
         ))
 
     # --- feed daemon alive ---
