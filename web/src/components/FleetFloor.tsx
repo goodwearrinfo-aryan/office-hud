@@ -1,3 +1,4 @@
+import FleetLoadPanel from './FleetLoadPanel';
 import { useLive, type TerminalsPayload, type TradingOpsPayload, type FleetLaunchdEntry } from '../api';
 import { ageLabel, hostStatus, hostSummary, isIdentified, isVerified, undeclaredJobs } from '../fleetTruth';
 
@@ -51,6 +52,7 @@ function JobRow({ job }: { job: FleetLaunchdEntry }) {
 }
 
 function HostCard({ host }: { host: TerminalsPayload['hosts'][number] }) {
+      <FleetLoadPanel />
   return (
     <div className="panel p-4">
       <div className="flex items-center justify-between mb-1">
@@ -226,6 +228,7 @@ export default function FleetFloor() {
       {fleet?.spawn_policy && <SpawnPolicyPanel audit={fleet.spawn_policy} />}
 
       {hosts.map((h) => <HostCard key={h.host} host={h} />)}
+      <FleetLoadPanel />
 
       <div className="panel p-4">
         <div className="flex items-center justify-between mb-3">
