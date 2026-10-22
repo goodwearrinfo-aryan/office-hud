@@ -24,6 +24,7 @@ Reads `~/openalice-fleet/hive/` and serves a dark mission-control dashboard at `
 | **F15 — Combined Portfolio** | Aggregated P&L, exposure, and risk across all strategies |
 | **F16 — Overview** | Fleet health, active agents, queue status, and top strategies |
 | **F17 — Fleet** | Complete agent roster, task queue, and system metrics |
+| **F18 — The Desk** | Command compose + preview, jarvis task queue, verify tally, live audit — the office's own account of what it was told, what it is doing, and what became of it |
 
 ## Quick start
 
