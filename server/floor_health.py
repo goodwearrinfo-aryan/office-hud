@@ -60,18 +60,45 @@ def is_process_alive(pid):
         return False
 
 
+def records(doc, key):
+    """Return the row list from a hive doc, whichever envelope shape it has.
+
+    hive/*.json is rewritten by concurrent agents, and a bare top-level list has
+    been left behind often enough to raise 323 AttributeErrors out of this probe
+    in one day. A probe that dies prints nothing, so its consumer reads the
+    absence as health rather than as a failure.
+    """
+    if isinstance(doc, list):
+        return doc
+    if isinstance(doc, dict):
+        rows = doc.get(key)
+        return rows if isinstance(rows, list) else []
+    return []
+
+
+def resolve_floor(task, floor_by_agent):
+    """Resolve the floor a task belongs to.
+
+    Task rows carry `assigned_agent`; they do not carry `floorId`/`floor_id`.
+    Matching only the explicit fields kept every floor at zero queued and zero
+    stalled no matter how much work the store held, so the attribution falls
+    back to the roster. An explicit field still wins, for producers that write
+    one.
+    """
+    floor = task.get("floorId") or task.get("floor_id") or ""
+    if not floor:
+        floor = floor_by_agent.get(str(task.get("assigned_agent") or "").lower(), "")
+    return str(floor).lower()
+
+
 def main():
     hive = os.environ.get("OPENALICE_HIVE") or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), ".."
     )
 
-    fleet = read_json(os.path.join(hive, "fleet.json"), {"agents": []})
-    sessions = read_json(os.path.join(hive, "sessions.json"), {"sessions": []})
-    tasks = read_json(os.path.join(hive, "tasks.json"), {"tasks": []})
-
-    agents = fleet.get("agents", [])
-    sessions_list = sessions.get("sessions", [])
-    tasks_list = tasks.get("tasks", [])
+    agents = records(read_json(os.path.join(hive, "fleet.json"), {}), "agents")
+    sessions_list = records(read_json(os.path.join(hive, "sessions.json"), {}), "sessions")
+    tasks_list = records(read_json(os.path.join(hive, "tasks.json"), {}), "tasks")
 
     # Build session map by agent_id (case-insensitive)
     session_map = {}
@@ -132,25 +159,30 @@ def main():
             )
             session_map[key] = merged
 
+    # Build agent map by floor, and the agent id -> floor lookup tasks resolve
+    # through. Both must exist before counting, so this runs first now.
+    agents_by_floor = {}
+    floor_by_agent = {}
+    for agent in agents:
+        floor = agent.get("floor", "")
+        agent_id = agent.get("id")
+        if floor and agent_id:
+            floor_by_agent[str(agent_id).lower()] = str(floor).lower()
+        if floor:
+            if floor not in agents_by_floor:
+                agents_by_floor[floor] = []
+            agents_by_floor[floor].append(agent)
+
     # Build task counts by floor
     task_counts_by_floor = {}
     for task in tasks_list:
-        floor = task.get("floorId") or task.get("floor_id") or ""
+        floor = resolve_floor(task, floor_by_agent)
         if not floor:
             continue
         status = task.get("status", "UNKNOWN")
         if floor not in task_counts_by_floor:
             task_counts_by_floor[floor] = {"QUEUED": 0, "IN_PROGRESS": 0, "COMPLETE": 0, "FAILED": 0, "QUARANTINED": 0, "REVIEW": 0, "BLOCKED": 0}
         task_counts_by_floor[floor][status] = task_counts_by_floor[floor].get(status, 0) + 1
-
-    # Build agent map by floor
-    agents_by_floor = {}
-    for agent in agents:
-        floor = agent.get("floor", "")
-        if floor:
-            if floor not in agents_by_floor:
-                agents_by_floor[floor] = []
-            agents_by_floor[floor].append(agent)
 
     # Determine floor states
     FLOOR_IDS = [f"f{i}" for i in range(1, 13)]
@@ -209,8 +241,7 @@ def main():
         
         # Count stalled tasks
         for task in tasks_list:
-            task_floor = task.get("floorId") or task.get("floor_id") or ""
-            if task_floor.lower() == floor_id.lower():
+            if resolve_floor(task, floor_by_agent) == floor_id:
                 if task.get("status") in ("IN_PROGRESS", "STALLED"):
                     stalled_tasks += 1
         
