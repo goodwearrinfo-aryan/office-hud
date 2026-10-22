@@ -49,8 +49,7 @@ const TOWNS = [
  */
 const VOLATILE = new Set([
   'checkedAt', 'checked_at', 'generatedAt', 'now', 'ts', 'at', 'updatedAt',
-  'heartbeat_age_sec',
-    'heartbeatAgeSec', 'latencyMs', 'ageMs', 'startedAt', 'endedAt',
+  'updated_at', 'heartbeat_age_sec', 'latencyMs', 'ageMs', 'startedAt', 'endedAt',
 ]);
 
 /**
