@@ -126,12 +126,33 @@ def check_task_truth():
 
     # The board must surface the evidenced/unsupported split rather than a
     # single done number. Absent the split, every completion reads as proof.
-    split = body.get("evidenced")
+    # summarizeTasks publishes it as `completion` (server/taskTruth.js); reading
+    # it as `evidenced` meant this check never saw the split on any host --
+    # including the mini, which had 580 evidenced of 603 claims behind it -- and
+    # so it reported a revert that had not happened.
+    split = body.get("completion")
     if split is None:
         return False, (
             "board reports %d done with no evidenced/unsupported split -- "
             "%d completions are unverified" % (done, done)
         )
+
+    claimed = split.get("complete_claimed", 0)
+    source = body.get("source") or {}
+    if not claimed:
+        if source.get("present") is False:
+            # Nothing was read. This passes only because the board declares the
+            # missing source -- the same contract check_floors holds, where a
+            # labelled degradation to UNKNOWN is honest and an unlabelled one is
+            # a regression.
+            return True, "no task source on this host (%s), declared" % source.get("file")
+        if "present" not in source:
+            return False, (
+                "board reports 0 completions and declares no source -- cannot "
+                "tell an empty hive from an unreadable one"
+            )
+        return True, "0 completions claimed from %s" % source.get("file")
+
     if split.get("unsupported_share", 0) > 0:
         return False, (
             "%d of %d completions unsupported (%.1f%%) and the board "
@@ -140,7 +161,7 @@ def check_task_truth():
                 100 * split.get("unsupported_share", 0),
             )
         )
-    return True, "%d done, all evidenced" % done
+    return True, "%d of %d completions evidenced" % (split.get("evidenced", 0), claimed)
 
 
 def main():
