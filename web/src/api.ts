@@ -871,6 +871,10 @@ export interface HarnessHealth {
  *
  * `attempts` is sent by the collector (how many times it tried before recording
  * a status) and was previously undeclared.
+ *
+ * `observedVia` says which host actually measured the row. Mini-hosted services
+ * bind 127.0.0.1 there, so a loopback probe from the laptop can only ever report
+ * them offline; the collector reads those rows from the mini's own HUD instead.
  */
 export interface ServicePort {
   name: string;
@@ -880,6 +884,7 @@ export interface ServicePort {
   latencyMs: number;
   error: string | null;
   attempts?: number;
+  observedVia?: 'local' | 'mini';
 }
 
 export interface ServiceHealth {
