@@ -25,5 +25,8 @@
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "chartjs-adapter-date-fns": "^3.0.0"
   }
 }
