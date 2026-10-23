@@ -19,6 +19,14 @@ Reads `~/openalice-fleet/hive/` and serves a dark mission-control dashboard at `
 | **F10 — Knowledge** | Document search, semantic index, graph explorer, communities |
 | **F11 — Risk Metrics** | Portfolio risk analytics, VaR, drawdown, exposure, correlation |
 | **F12 — Knowledge Graph** | Interactive graph of knowledge nodes and links, community detection |
+| **F13 — Time Machine** | Historical audit log, replay, and comparison tools |
+| **F14 — Validation** | Strategy validation, signal backtesting, and performance attribution |
+| **F15 — Combined Portfolio** | Aggregated P&L, exposure, and risk across all strategies |
+| **F16 — Overview** | Fleet health, active agents, queue status, and top strategies |
+| **F17 — Fleet** | Complete agent roster, task queue, and system metrics |
+| **F18 — The Desk** | Command compose + preview, jarvis task queue, verify tally, live audit — the office's own account of what it was told, what it is doing, and what became of it |
+| **F19 — Workspaces** | Open paper legs and feeds that have stopped being written |
+| **F20 — OpenAlice** | Merged OpenAlice trading view, the writer tree behind the HUD |
 
 ## Quick start
 
