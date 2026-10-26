@@ -19,9 +19,6 @@ Reads `~/openalice-fleet/hive/` and serves a dark mission-control dashboard at `
 | **F10 — Knowledge** | Document search, semantic index, graph explorer, communities |
 | **F11 — Risk Metrics** | Portfolio risk analytics, VaR, drawdown, exposure, correlation |
 | **F12 — Knowledge Graph** | Interactive graph of knowledge nodes and links, community detection |
-| **F13 — Time Machine** | Replay recorded event windows from snapshots; on-demand variant for examining specific ranges |
-| **F17 — Fleet Floor** | Overview of the entire hive: agent status, worktrees, fleet health, and cross-machine state |
-| **F18 — Headroom Section** | Resource monitoring, rate limits, and headroom indicators for the desk floor |
 
 ## Quick start
 
