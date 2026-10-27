@@ -4,7 +4,7 @@ type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f
   | 'f18'
   | 'f19'
   | 'f20'
-  | 'f21';
+  | 'f22';
 
 interface BadgeData {
   summary: Summary | null;
@@ -72,7 +72,7 @@ const FLOORS: FloorDefinition[] = [
   { id: 'f20', label: 'F20', name: 'OpenAlice', badge: data => data.openAliceActiveLegs },
   // A red CI run is the one GitHub fact that must be readable without opening
   // the floor; the badge counts failing workflow runs across all repos.
-  { id: 'f21', label: 'F21', name: 'GitHub', badge: data => data.githubFailing },
+  { id: 'f22', label: 'F22', name: 'GitHub', badge: data => data.githubFailing },
 ];
 
 interface Props {

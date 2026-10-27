@@ -73,7 +73,7 @@ type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f
   | 'f18'
   | 'f19'
   | 'f20'
-  | 'f21';
+  | 'f22';
 
 export default function App() {
   const [floor, setFloor] = useState<FloorId>('f3');
@@ -239,7 +239,7 @@ export default function App() {
       {floor === 'f18' && <DeskFloor />}
       {floor === 'f19' && <ActivityBoard />}
       {floor === 'f20' && <OpenAliceCommand />}
-      {floor === 'f21' && <GithubFloor />}
+      {floor === 'f22' && <GithubFloor />}
       {floor === 'f16' && (
         <div className="mt-6 grid grid-cols-1 xl:grid-cols-2 gap-4">
           <AlphaInsiderPanel />
