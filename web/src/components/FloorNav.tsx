@@ -3,7 +3,8 @@ import { useLive, useViewers, type FleetLaunchdState, type JarvisTasksResponse, 
 type FloorId = 'f1' | 'f2' | 'f3' | 'f4' | 'f5' | 'f6' | 'f7' | 'f8' | 'f9' | 'f10' | 'f11' | 'f12' | 'f13' | 'f14' | 'f15' | 'f16'   | 'f17'
   | 'f18'
   | 'f19'
-  | 'f20';
+  | 'f20'
+  | 'f21';
 
 interface BadgeData {
   summary: Summary | null;
@@ -30,6 +31,7 @@ interface BadgeData {
    */
   openAliceActiveLegs: number;
   openAliceStaleFeeds: number;
+  githubFailing: number;
 }
 
 interface FloorDefinition {
@@ -68,6 +70,9 @@ const FLOORS: FloorDefinition[] = [
   // to be reachable only through the separate :3002 dashboards. The badge is
   // open legs, because that is what decides whether anyone needs to open it.
   { id: 'f20', label: 'F20', name: 'OpenAlice', badge: data => data.openAliceActiveLegs },
+  // A red CI run is the one GitHub fact that must be readable without opening
+  // the floor; the badge counts failing workflow runs across all repos.
+  { id: 'f21', label: 'F21', name: 'GitHub', badge: data => data.githubFailing },
 ];
 
 interface Props {
@@ -92,6 +97,7 @@ export default function FloorNav({ current, onChange, summary }: Props) {
   // been claimed is not pending, which is why this reads the queue and not history.
   const { data: jarvisTasks } = useLive<JarvisTasksResponse>('/api/jarvis/tasks');
   const { data: openAlice } = useLive<{ legs?: { active?: number }; feeds?: Record<string, { state?: string }> }>('/api/openalice');
+  const { data: github } = useLive<{ totals?: { failing?: number } }>('/api/github');
   const queuedJarvis = (jarvisTasks?.tasks ?? [])
     .filter(t => String(t.status || '').toUpperCase() === 'QUEUED').length;
   const viewers = useViewers();
@@ -112,6 +118,7 @@ export default function FloorNav({ current, onChange, summary }: Props) {
     // A feed that stopped being written is not the same as no exposure, so it is
     // surfaced rather than silently dropped from the badge.
     openAliceStaleFeeds: Object.values(openAlice?.feeds ?? {}).filter(f => f.state && f.state !== 'live').length,
+    githubFailing: github?.totals?.failing ?? 0,
   };
 
   return (

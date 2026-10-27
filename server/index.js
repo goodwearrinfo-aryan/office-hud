@@ -13,6 +13,8 @@ const { runHealthProbe, createSingleFlight, clampDeadlineMs, resolveArgv,
 const { LiveHub } = require('./lib/live_hub');
 const { AlertEngine } = require('./lib/alerts');
 const { AutonomyController } = require('./lib/autonomy');
+const { createGithubProbe } = require('./github_probe');
+const githubProbe = createGithubProbe({ log: (line) => console.log(line) });
 const replay = require('./lib/replay');
 const { rateLimitReport } = require('./rateLimitStatus');
 const { mountActivityRoute } = require('./lib/activity');
@@ -2344,6 +2346,7 @@ frozenFeedsRoute.register(app);
     floorRoute.register(app);
     registerEvidenceRoutes(app);
   registerWedgedRoutes(app, HIVE);
+  githubProbe.register(app);
 
 app.get('/api/summary', (_req, res) => {
   res.json(buildSnapshot('summary'));
@@ -4401,6 +4404,7 @@ function shutdown(signal) {
   console.log(`[office-hud] received ${signal}, shutting down gracefully...`);
   liveHub?.close();
   alertEngine?.stop();
+  githubProbe.stop();
   if (watcher) { try { watcher.close(); } catch { /* already closed */ } }
   // End the SSE streams first: an open event-stream response keeps the server
   // from draining, which used to trip the force-exit timer on every restart.
@@ -4484,6 +4488,7 @@ function bootstrap() {
   // The engines are constructed at module scope; bootstrap only starts them.
   alertEngine.start();
   autonomy.evaluate();
+  githubProbe.start();
 
   return startServer(PORT).then((server) => {
     serverInstance = server;

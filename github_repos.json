@@ -1,0 +1,9 @@
+{
+  "repos": [
+    { "id": "krisharyanagarwal-dev/openalice-fleet", "localPath": "/Users/a/trading/openalice-fleet", "gh": false },
+    { "id": "goodwearrinfo-aryan/openalice-fleet" },
+    { "id": "goodwearrinfo-aryan/office-hud", "localPath": "/Users/a/trading/openalice-fleet/office-hud" },
+    { "id": "goodwearrinfo-aryan/polymarket-private", "localPath": "/Users/a/polymarket" },
+    { "id": "goodwearrinfo-aryan/qoder-office", "localPath": "/Users/a/qoder-office" }
+  ]
+}
