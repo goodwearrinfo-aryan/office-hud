@@ -62,8 +62,8 @@ function ago(iso: string | null | undefined): string {
 function RateBar({ value, invert = false }: { value: number | null | undefined; invert?: boolean }) {
   const width = value === null || value === undefined ? 0 : Math.round(value * 100);
   const tone = invert
-    ? (value !== null && value > 0.25 ? 'bg-hud-red' : 'bg-hud-green')
-    : (value !== null && value < 0.5 ? 'bg-hud-amber' : 'bg-hud-green');
+    ? (value !== null && value !== undefined && value > 0.25 ? 'bg-hud-red' : 'bg-hud-green')
+    : (value !== null && value !== undefined && value < 0.5 ? 'bg-hud-amber' : 'bg-hud-green');
   return (
     <span className="block h-1.5 bg-hud-surface rounded-full overflow-hidden">
       <span className={`block h-full ${tone}`} style={{ width: `${Math.max(0, Math.min(100, width))}%` }} />

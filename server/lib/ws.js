@@ -214,10 +214,11 @@ class WebSocketConnection extends EventEmitter {
 /**
  * Attach a WebSocket endpoint to an existing http.Server.
  * @param {import('http').Server} server
- * @param {{path: string, maxClients?: number, onConnection: (conn: WebSocketConnection) => void}} options
+ * @param {{path: string, maxClients?: number, onConnection: (conn: WebSocketConnection) => void,
+ *          isHostAllowed?: (host?: string) => boolean, isOriginAllowed?: (origin?: string) => boolean}} options
  */
 function attachWebSocketServer(server, options) {
-  const { path: wsPath, maxClients = 12, onConnection, isHostAllowed } = options;
+  const { path: wsPath, maxClients = 12, onConnection, isHostAllowed, isOriginAllowed } = options;
   const clients = new Set();
 
   const onUpgrade = (req, socket, head) => {
@@ -227,6 +228,15 @@ function attachWebSocketServer(server, options) {
     // applied here too.
     if (typeof isHostAllowed === 'function' && !isHostAllowed(req.headers.host)) {
       socket.write('HTTP/1.1 421 Misdirected Request\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    // A websocket handshake is not subject to CORS, so any page the operator
+    // opens can connect to 127.0.0.1 and stream whatever this pushes — and 12
+    // such tabs would take every client slot from the real UI. The upgrade
+    // bypasses the API middleware, so the Origin rule is applied here as well.
+    if (typeof isOriginAllowed === 'function' && !isOriginAllowed(req.headers.origin)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
     }

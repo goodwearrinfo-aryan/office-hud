@@ -1,47 +1,43 @@
-import React, { ReactElement } from 'react';
+import { ReactElement, ReactNode } from 'react';
 import { render, RenderOptions, RenderResult } from '@testing-library/react';
 import { vi } from 'vitest';
-import { LiveStoreProvider } from './utils';
 
-// Mock the live store for tests
-vi.mock('../live/store', () => {
-  const mockLiveStore = {
-    subscribe: vi.fn(() => () => {}),
-    subscribeStatus: vi.fn(() => () => {}),
-    subscribeViewers: vi.fn(() => () => {}),
-    getStatus: vi.fn(() => ({ state: 'live', since: Date.now() })),
-    getViewers: vi.fn(() => []),
-    acquire: vi.fn(() => () => {}),
-    load: vi.fn(() => Promise.resolve()),
-    refresh: vi.fn(() => Promise.resolve()),
-    patch: vi.fn(),
-    isStale: vi.fn(() => false),
-  };
+vi.mock('../live/store', () => ({
+  liveStore: { subscribe: vi.fn(), subscribeStatus: vi.fn(), subscribeViewers: vi.fn() },
+  useResource: vi.fn((key: string) => {
+    const response = mockUseLiveResponses.get(key);
+    if (response) {
+      return { data: response.data, error: response.error, loading: response.loading, updatedAt: response.updatedAt, stale: response.stale, refresh: vi.fn() };
+    }
+    return { data: null, error: null, loading: false, updatedAt: null, stale: false, refresh: vi.fn() };
+  }),
+  useConnectionStatus: vi.fn(() => ({ state: 'live', since: Date.now() })),
+  useViewers: vi.fn(() => []),
+  acknowledgeAlert: vi.fn(),
+  acknowledgeAllAlerts: vi.fn(),
+  LiveStoreProvider: vi.fn(({ children }) => children),
+}));
 
-  const MockLiveStoreProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => children;
-
-  return {
-    liveStore: { subscribe: vi.fn(), subscribeStatus: vi.fn(), subscribeViewers: vi.fn() },
-    useResource: vi.fn(() => ({ data: null, error: null, loading: false, updatedAt: null, stale: false, refresh: vi.fn() })),
-    useConnectionStatus: vi.fn(() => ({ state: 'live', since: Date.now() })),
-    useViewers: vi.fn(() => []),
-    acknowledgeAlert: vi.fn(),
-    acknowledgeAllAlerts: vi.fn(),
-    LiveStoreProvider: vi.fn(({ children }) => children),
-  };
-});
+// Test-only stand-in, matching the vi.mock factory above. src/live/store.ts
+// exports a LiveStore class but no Provider, so this deliberately lives here
+// rather than being imported from production code -- vitest.setup.ts re-exports
+// it for consumers that render outside renderWithProviders.
+const LiveStoreProvider = ({ children }: { children: ReactNode }) => <>{children}</>;
+export { LiveStoreProvider };
 
 export function renderWithProviders(
   ui: ReactElement,
   options?: Omit<RenderOptions, 'wrapper'>
 ): RenderResult {
   return render(ui, {
-    wrapper: ({ children }) => <LiveStoreProvider>{children}</LiveStoreProvider>,
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <LiveStoreProvider>{children}</LiveStoreProvider>
+    ),
     ...options,
   });
 }
 
-const mockUseLiveResponses = new Map<string, { data: unknown; error: string | null; loading: boolean }>();
+const mockUseLiveResponses = new Map<string, { data: unknown; error: string | null; loading: boolean; updatedAt: number; stale: boolean }>();
 
 const URL_TO_RESOURCE_KEY: Record<string, string> = {
   '/api/trading/backtests': 'tradingBacktests',
@@ -82,22 +78,8 @@ function getResourceKey(url: string): string {
 
 export function mockUseLive<T>(url: string, data: T | null = null, error: string | null = null, loading = false) {
   const resourceKey = getResourceKey(url);
-  mockUseLiveResponses.set(resourceKey, { data, error, loading });
-  (useResource as ReturnType<typeof vi.fn>).mockImplementation((key: string) => {
-    const response = mockUseLiveResponses.get(key);
-    if (response) {
-      return {
-        data: response.data as T | null,
-        error: response.error,
-        loading: response.loading,
-        updatedAt: response.data ? Date.now() : null,
-        stale: false,
-        refresh: vi.fn(),
-      };
-    }
-    return { data: null, error: null, loading: false, updatedAt: null, stale: false, refresh: vi.fn() };
-  });
-}
+  mockUseLiveResponses.set(resourceKey, { data, error, loading, updatedAt: Date.now(), stale: false });
+};
 
 export function clearMockUseLive() {
   mockUseLiveResponses.clear();

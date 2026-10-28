@@ -1,18 +1,20 @@
 {
   "name": "office-hud",
   "version": "0.1.0",
-  "description": "Your own agent office — live HUD over an openalice-fleet hive",
+  "description": "Your own agent office \u2014 live HUD over an openalice-fleet hive",
   "private": true,
   "scripts": {
     "dev": "concurrently \"npm run -w server dev\" \"npm run -w web dev\"",
     "build": "npm run -w web build",
     "start": "node server/index.js",
     "make:app": "node scripts/make-app.js",
-    "test": "node --test --experimental-strip-types --test-timeout=100000 --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"server/test/*.test.js\" \"server/test/*.test.ts\"",
+    "test": "node --test --experimental-strip-types --test-timeout=100000 --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"server/test/*.test.js\" \"server/test/*.test.ts\" \"server/evidenceRoutes.test.js\" \"server/floor_health.test.js\" \"server/lib/local_only.test.js\" \"server/localonly.test.js\" \"server/openaliceStatus.test.js\"",
     "test:watch": "node --test --watch --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"server/test/*.test.js\"",
     "test:server": "node --test --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"server/test/*.test.js\"",
     "test:store": "node --test --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON server/test/store.test.ts",
-    "test:quiet": "node --test --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"server/test/*.test.js\" \"server/test/*.test.ts\" 2>&1 | grep -vE \"ExperimentalWarning|Use .node --trace-warnings\""
+    "test:quiet": "node --test --experimental-strip-types --test-timeout=100000 --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"server/test/*.test.js\" \"server/test/*.test.ts\" \"server/evidenceRoutes.test.js\" \"server/floor_health.test.js\" \"server/lib/local_only.test.js\" \"server/localonly.test.js\" \"server/openaliceStatus.test.js\" 2>&1 | grep -vE \"ExperimentalWarning|Use .node --trace-warnings\"",
+    "test:web": "npm run -w web test",
+    "test:all": "npm run test && npm run test:web"
   },
   "workspaces": [
     "server",
@@ -23,5 +25,8 @@
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "chartjs-adapter-date-fns": "^3.0.0"
   }
 }

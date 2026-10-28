@@ -20,6 +20,7 @@ test.before(async () => {
     snapshot: (name) => Promise.resolve(internals.buildSnapshot(name)),
     heartbeatMs: 1000,
     isHostAllowed: internals.hostIsAllowed,
+    isOriginAllowed: internals.originIsAllowed,
   });
   hub.attach(http.server);
 });
@@ -70,6 +71,31 @@ test('handshake succeeds and greets with hello', async () => {
   assert.match(hello.clientId, /^c\d+$/);
   assert.equal(hello.socketPath, '/api/live/socket');
   assert.ok(hello.serverTime > 0);
+});
+
+test('a cross-origin upgrade is refused (websockets bypass CORS)', async () => {
+  // A page on any origin can open a socket at 127.0.0.1 and read everything the
+  // hub pushes, so the Origin check has to run on the upgrade itself.
+  await assert.rejects(
+    () => TestWebSocketClient.connect(http.port, '/api/live/socket', '127.0.0.1', {
+      headers: { Origin: 'http://evil.example.com' },
+    }),
+    /403|handshake failed/
+  );
+});
+
+test('a same-origin upgrade is served', async () => {
+  const client = await TestWebSocketClient.connect(http.port, '/api/live/socket', '127.0.0.1', {
+    headers: { Origin: `http://127.0.0.1:${http.port}` },
+  });
+  try {
+    const hello = await client.waitForType('hello');
+    assert.match(hello.clientId, /^c\d+$/);
+  } finally {
+    // Not registered in `clients`: the hub caps at 12 sockets and the rest of
+    // this file needs those slots.
+    client.close();
+  }
 });
 
 test('subscribe pushes current state for each requested resource only', async () => {

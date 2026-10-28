@@ -73,6 +73,12 @@ test('a write to the hive is pushed to a subscribed client', async () => {
   await client.waitFor((m) => m.type === 'resource' && m.key === 'queue');
   client.messages.length = 0;
 
+  // Same in-flight window the "unchanged hive" test guards against: a late
+  // coalesced push from fixture construction can land after the clear and be
+  // mistaken for the push this write caused -- payload then reads pre-write.
+  await new Promise((resolve) => setTimeout(resolve, QUIESCENT_MS));
+  client.messages.length = 0;
+
   // Change the hive: two new tasks.
   const tasksFile = path.join(fixture.hive, 'tasks.json');
   const doc = JSON.parse(fs.readFileSync(tasksFile, 'utf8'));
@@ -80,7 +86,12 @@ test('a write to the hive is pushed to a subscribed client', async () => {
     { task_id: 't-new-1', title: 'fresh', status: 'QUEUED', created_at: new Date().toISOString() },
     { task_id: 't-new-2', title: 'fresh', status: 'QUEUED', created_at: new Date().toISOString() },
   );
-  fs.writeFileSync(tasksFile, JSON.stringify(doc, null, 2));
+  // Atomic rename: a raw writeFileSync lets the watcher observe a truncated
+  // intermediate file and push a stale-partial payload, which made this test
+  // flake against its own write.
+  const tmpFile = `${tasksFile}.tmp-${process.pid}`;
+  fs.writeFileSync(tmpFile, JSON.stringify(doc, null, 2));
+  fs.renameSync(tmpFile, tasksFile);
 
   // Expected values are read from the hive the test just wrote to, not hardcoded. The
   // old literals (total 7, queued 4) described one particular fixture state; any earlier

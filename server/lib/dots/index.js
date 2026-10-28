@@ -167,7 +167,15 @@ function buildAgentsPayload(world) {
       currentTaskId: a.currentTaskId,
       currentTaskTitle: a.currentTaskTitle,
       evidence: a.evidence,
-      status: a.currentTaskId ? 'working' : (a.sessionStatus?.toLowerCase() || a.display),
+      // `sessionStatus` describes the session record (active or aged out), while
+      // `display` carries the measured process state. A record can be recent
+      // about a process that is verifiably gone, so when the PID measures dead
+      // the measurement wins here too -- otherwise this payload says
+      // status=active next to display=offline, and a reader has to guess which
+      // field the server checked.
+      status: a.currentTaskId ? 'working'
+        : (a.evidence?.processLiveness === 'dead' ? a.display
+          : (a.sessionStatus?.toLowerCase() || a.display)),
       host: a.host || null,
       host_stale: a.host_stale ?? false
     });

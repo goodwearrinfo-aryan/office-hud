@@ -123,7 +123,16 @@ test('an unreadable registry never yields an ACTIVE project', () => {
 test('a missing floor probe yields all floors UNKNOWN, never a healthy default', () => {
   const { getFloorHealth } = loadFresh('floor_health.js');
   withHive({}, (hive) => {
-    const result = getFloorHealth(hive);
+    // An empty hive no longer means "no producer": floor_health.js falls back
+    // to the tracked producer beside it. Pin the search to a path that does
+    // not exist so this exercises the missing-probe path it is named for.
+    process.env.OPENALICE_FLOOR_HEALTH_SCRIPT = path.join(hive, 'absent-producer.py');
+    let result;
+    try {
+      result = getFloorHealth(hive);
+    } finally {
+      delete process.env.OPENALICE_FLOOR_HEALTH_SCRIPT;
+    }
     assert.equal(result.not_verified, true);
     assert.equal(result.floors.length, 12);
     for (const f of result.floors) {

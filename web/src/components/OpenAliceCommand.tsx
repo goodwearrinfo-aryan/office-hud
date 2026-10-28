@@ -281,6 +281,10 @@ export default function OpenAliceCommand() {
   }
 
   const feeds = data.feeds || {};
+  // `|| {}` alone erases the server's honest null, so every `? 'ON' : 'off'`
+  // below renders a verified negative for a feed that never answered. Keep the
+  // collapse for the member accesses, but remember whether data existed.
+  const legsKnown = data.legs != null;
   const legs = data.legs || {};
   const legRows = Array.isArray(legs.legs) ? legs.legs : [];
   const activeRows = legRows.filter(leg => String(leg.pos || 'flat').toLowerCase() !== 'flat');
@@ -292,6 +296,7 @@ export default function OpenAliceCommand() {
   const audit = combined.audit_reference || {};
   const benchmark = data.paper_benchmark || {};
   const families = Array.isArray(benchmark.families) ? benchmark.families : [];
+  const pipelineKnown = data.pipeline != null;
   const pipeline = data.pipeline || {};
   const jobs = Array.isArray(pipeline.jobs?.jobs) ? pipeline.jobs!.jobs! : [];
   // The `|| {}` fallback widens Object.entries to unknown, so the value type is
@@ -305,9 +310,11 @@ export default function OpenAliceCommand() {
   const eth = data.eth_paper || {};
   const heartbeat = data.heartbeat || {};
   const processStatus = Object.entries(heartbeat.process_status || {});
+  const honestyKnown = data.honesty != null;
   const honesty = data.honesty || {};
   const decision = data.freetrader?.latest_decision || null;
   const research = data.research_pipeline || {};
+  const algoKnown = data.algo20 != null;
   const algo = data.algo20 || {};
   const liveFeeds = Object.values(feeds).filter(f => f?.state === 'live').length;
   const totalFeeds = Object.keys(feeds).length;
@@ -346,8 +353,10 @@ export default function OpenAliceCommand() {
         />
         <Tile
           label="OPEN LEGS"
-          value={`${legs.active ?? 0} / ${legs.total ?? 0}`}
-          detail={`${String(legs.mode || 'paper').toUpperCase()} · execution ${legs.execution_enabled ? 'ON' : 'off'}`}
+          value={legsKnown ? `${legs.active ?? 0} / ${legs.total ?? 0}` : 'n/a'}
+          detail={legsKnown
+            ? `${String(legs.mode ?? 'unknown').toUpperCase()} · execution ${legs.execution_enabled == null ? 'unknown' : legs.execution_enabled ? 'ON' : 'off'}`
+            : 'legs feed unavailable - execution state unknown'}
           valueClass={(legs.active ?? 0) > 0 ? 'text-hud-amber' : 'text-hud-dim'}
         />
         <Tile
@@ -504,17 +513,17 @@ export default function OpenAliceCommand() {
         </Section>
 
         {/* Pipeline */}
-        <Section title="Pipeline & jobs" count={`${pipeline.jobs?.running ?? 0}/${pipeline.jobs?.total ?? 0} running`}>
+        <Section title="Pipeline & jobs" count={pipelineKnown ? `${pipeline.jobs?.running ?? 0}/${pipeline.jobs?.total ?? 0} running` : 'n/a running'}>
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 border-b border-hud-edge px-3 py-2 md:grid-cols-4">
             {[
               ['BOT LEGS', num(pipeline.bot_legs?.legs?.length ?? 0, 0)],
               ['BOOK P&L', num(pipeline.bot_legs?.total_pnl)],
               ['BOT N', num(pipeline.bot_legs?.total_n, 0)],
-              ['AGENTS', num(pipeline.agents?.count, 0)],
-              ['ALGOS', num(algo.n_algos, 0)],
-              ['PROFITABLE', num(algo.profitable, 0)],
-              ['BOOK DD', pct(algo.book_dd_pct)],
-              ['HONESTY', honesty.ok ? 'ok' : 'flags'],
+              ['AGENTS', pipelineKnown ? num(pipeline.agents?.count, 0) : 'n/a'],
+              ['ALGOS', algoKnown ? num(algo.n_algos, 0) : 'n/a'],
+              ['PROFITABLE', algoKnown ? num(algo.profitable, 0) : 'n/a'],
+              ['BOOK DD', algoKnown ? pct(algo.book_dd_pct) : 'n/a'],
+              ['HONESTY', honestyKnown ? (honesty.ok ? 'ok' : 'flags') : 'n/a'],
             ].map(([label, value]) => (
               <div key={label} className="flex justify-between gap-2 font-mono text-[10px]">
                 <span className="text-hud-dim">{label}</span>

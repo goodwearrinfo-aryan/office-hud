@@ -8,9 +8,13 @@ const os = require('os');
 const net = require('net');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
+const { runHealthProbe, createSingleFlight, clampDeadlineMs, resolveArgv,
+        probePayload, failedProbePayload } = require('./lib/healthProbe');
 const { LiveHub } = require('./lib/live_hub');
 const { AlertEngine } = require('./lib/alerts');
 const { AutonomyController } = require('./lib/autonomy');
+const { createGithubProbe } = require('./github_probe');
+const githubProbe = createGithubProbe({ log: (line) => console.log(line) });
 const replay = require('./lib/replay');
 const { rateLimitReport } = require('./rateLimitStatus');
 const { mountActivityRoute } = require('./lib/activity');
@@ -47,7 +51,9 @@ const FLEET_ROOT = path.dirname(HIVE);
 // no in-flight rewrite touches is deliberate: that inline check was reverted five
 // times in one session, and once reached production wide open.
 const { isLocalRequest } = require('./lib/local_only');
-const { isLaptop, getPolymarketRuntimeRemote, getPolymarketStateRemote, getPolymarketMarketsRemote } = require('./lib/polymarket_remote');
+const userAuth = require('./userAuth');
+const { isLaptop, getPolymarketRuntimeRemote, getPolymarketStateRemote, getPolymarketMarketsRemote,
+        getPolymarketRuntimeForAction, polymarketRemoteStatus } = require('./lib/polymarket_remote');
 const { TerminalManager } = require('./lib/terminal/manager');
 const { redactCommand, redactEntry, redactAll } = require('./lib/redact');
 const alphaInsiderStats = require('./alphainsider_stats_route');
@@ -79,18 +85,26 @@ const POLYMARKET_LAUNCHD_TARGET = `gui/${typeof process.getuid === 'function' ? 
 const TRADING_BOT = process.env.TRADING_BOT_PATH || path.join(os.homedir(), 'trading-bot');
 const PAPER_BENCHMARK = process.env.PAPER_BENCHMARK_PATH || path.join(os.homedir(), 'trading', 'paper-benchmark');
 const FREE_HARNESS_URL = process.env.FREE_HARNESS_URL || 'http://127.0.0.1:8080';
+// Ports that bind 127.0.0.1 on the mini are invisible to a loopback TCP probe
+// from this host, so they are read from the mini's own HUD over the forward that
+// com.aryan.mini-services-fwd already holds. `via: 'mini'` marks those rows.
+const MINI_HUD_HEALTH_URL = process.env.MINI_HUD_HEALTH_URL || 'http://127.0.0.1:4748/api/services/health';
+const SERVICE_OBSERVED_VIA = { local: 'local', mini: 'mini' };
 const SERVICE_PORTS = [
-  { name: 'Free harness', port: 8080, role: 'OpenAI API' },
-  { name: 'WebSocket', port: 8081, role: 'event stream' },
+  { name: 'Free harness', port: 8080, role: 'OpenAI API', via: SERVICE_OBSERVED_VIA.mini },
+  { name: 'WebSocket', port: 8081, role: 'event stream', via: SERVICE_OBSERVED_VIA.mini },
   { name: 'Bridge', port: 19593, role: 'Anthropic bridge' },
   { name: 'Dashboard', port: 3002, role: 'public dashboards' },
   { name: 'Office HUD', port: PORT, role: 'operations console' },
   { name: 'Ollama', port: 11434, role: 'local model runtime' },
-  { name: 'Trading bot', port: 8765, role: 'paper/testnet' },
-  { name: 'LLM gate', port: 8091, role: 'unsupervised' },
-  { name: 'Cloudflared', port: 20241, role: 'tunnel metrics' },
+  { name: 'Trading bot', port: 8765, role: 'paper/testnet', via: SERVICE_OBSERVED_VIA.mini },
+  { name: 'Cloudflared', port: 20241, role: 'tunnel metrics', via: SERVICE_OBSERVED_VIA.mini },
   { name: 'Quant dashboard', port: 4750, role: 'mini: quant/dashboard.py' },
   { name: 'Workspace UI', port: 3003, role: 'mini: workspace_ui_server' },
+  { name: 'Control center', port: 4950, role: 'mini: openalice-control, via SSH forward' },
+  { name: 'OpenClaw gateway', port: 18789, role: 'laptop: openclaw gateway' },
+  { name: 'Postgres', port: 5432, role: 'laptop: local database' },
+  { name: 'Redis', port: 6379, role: 'laptop: local cache/queue' },
 ];
 // Browser-facing services, reachable through this one origin. The request path
 // never contributes a host and verbs are restricted to GET/HEAD, so this cannot
@@ -2031,29 +2045,26 @@ async function getHarnessHealth() {
 
 const SERVICE_PROBE_ATTEMPTS = 2;
 const SERVICE_PROBE_RETRY_MS = 150;
+const MINI_HUD_TIMEOUT_MS = 2500;
 
-function checkServicePort(service, attempt = 0) {
+function publicServiceFields(service) {
+  const { via, ...fields } = service;
+  return fields;
+}
+
+// An SSH forward can bind only one loopback family -- `-L 19593:...` came up on
+// ::1 with nothing listening on 127.0.0.1 -- so a single-family probe reported the
+// live Bridge as an outage. Both families are tried per attempt; either answering
+// counts as online.
+const LOOPBACK_HOSTS = ['127.0.0.1', '::1'];
+
+function probeLoopback(host, port) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
-    const socket = net.createConnection({ host: '127.0.0.1', port: service.port });
-    let settled = false;
+    const socket = net.createConnection({ host, port });
     const finish = (online, error = null) => {
-      if (settled) return;
-      settled = true;
       socket.destroy();
-      if (!online && attempt + 1 < SERVICE_PROBE_ATTEMPTS) {
-        setTimeout(() => {
-          checkServicePort(service, attempt + 1).then(resolve);
-        }, SERVICE_PROBE_RETRY_MS);
-        return;
-      }
-      resolve({
-        ...service,
-        status: online ? 'online' : 'offline',
-        latencyMs: Date.now() - startedAt,
-        error,
-        attempts: attempt + 1,
-      });
+      resolve({ online, error, latencyMs: Date.now() - startedAt });
     };
     socket.setTimeout(1000);
     socket.once('connect', () => finish(true));
@@ -2062,11 +2073,71 @@ function checkServicePort(service, attempt = 0) {
   });
 }
 
+async function checkServicePort(service, attempt = 0) {
+  const startedAt = Date.now();
+  const probes = await Promise.all(LOOPBACK_HOSTS.map(host => probeLoopback(host, service.port)));
+  const online = probes.find(entry => entry.online);
+  if (!online && attempt + 1 < SERVICE_PROBE_ATTEMPTS) {
+    await new Promise(resolve => setTimeout(resolve, SERVICE_PROBE_RETRY_MS));
+    return checkServicePort(service, attempt + 1);
+  }
+  return {
+    ...publicServiceFields(service),
+    observedVia: SERVICE_OBSERVED_VIA.local,
+    status: online ? 'online' : 'offline',
+    latencyMs: online ? online.latencyMs : Date.now() - startedAt,
+    error: online ? null : [...new Set(probes.map(entry => entry.error))].join('+'),
+    attempts: attempt + 1,
+  };
+}
+
+// One call answers every `via: 'mini'` row.
+async function fetchMiniServiceHealth() {
+  const startedAt = Date.now();
+  try {
+    const res = await fetch(MINI_HUD_HEALTH_URL, { signal: AbortSignal.timeout(MINI_HUD_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`mini HUD answered ${res.status}`);
+    const payload = await res.json();
+    const byPort = new Map();
+    for (const row of (payload && payload.services) || []) byPort.set(row.port, row);
+    return { byPort, error: null, latencyMs: Date.now() - startedAt };
+  } catch (err) {
+    return { byPort: null, error: err && err.message ? err.message : String(err), latencyMs: Date.now() - startedAt };
+  }
+}
+
+// Only called with a mini payload that answered, so a port missing from it means
+// the two SERVICE_PORTS lists diverged -- reported, never shown as healthy.
+function projectMiniServiceRow(service, mini) {
+  const observed = mini.byPort.get(service.port);
+  return {
+    ...publicServiceFields(service),
+    observedVia: SERVICE_OBSERVED_VIA.mini,
+    status: observed && observed.status === 'online' ? 'online' : 'offline',
+    latencyMs: observed && Number.isFinite(observed.latencyMs) ? observed.latencyMs : mini.latencyMs,
+    error: observed ? (observed.error || null) : 'not-observed-by-mini-hud',
+    attempts: observed && observed.attempts ? observed.attempts : 1,
+  };
+}
+
 async function getServiceHealth() {
+  const miniRows = SERVICE_PORTS.filter(s => s.via === SERVICE_OBSERVED_VIA.mini);
+  const localRows = SERVICE_PORTS.filter(s => s.via !== SERVICE_OBSERVED_VIA.mini);
+  const mini = miniRows.length ? await fetchMiniServiceHealth() : null;
+  // On the mini itself there is no forward to read, so the same rows are simply
+  // probed locally. Falling back beats reporting a live service as offline.
+  const probeRows = mini && mini.byPort ? localRows : SERVICE_PORTS;
+  // Explicit arrow: `map(checkServicePort)` would pass the row index as `attempt`,
+  // so only the first row ever retried while later rows reported attempts=index+1
+  // after a single probe.
+  const resolved = new Map((await Promise.all(probeRows.map((service) => checkServicePort(service)))).map(r => [r.port, r]));
+  for (const service of miniRows) {
+    if (!resolved.has(service.port)) resolved.set(service.port, projectMiniServiceRow(service, mini));
+  }
   return {
     host: os.hostname(),
     checkedAt: new Date().toISOString(),
-    services: await Promise.all(SERVICE_PORTS.map(checkServicePort)),
+    services: SERVICE_PORTS.map(service => resolved.get(service.port)),
   };
 }
 
@@ -2220,13 +2291,41 @@ function getPolymarketRuntime() {
 
 // ---------- routes ----------
 
-app.get('/api/health', (_req, res) => {
+// Bounded and asynchronous on purpose. execFileSync here parked the event loop for as
+// long as health_probe.py took, and that probe spawns children of its own with
+// 5s/10s/20s budgets, so this route was measured at 0.15s and at 5.2s for identical
+// code. The shortest caller waits 3.0s (control-center upstream.probe), so the budget
+// lives in lib/healthProbe.js, where it is clamped against that, and a slow probe
+// degrades into a named failure instead of freezing every other route behind it.
+function healthProbeEnv() {
+  // Read per request, not at require time: a suite that arranges a hung or missing
+  // probe must not depend on when index.js happened to be imported. lib/healthProbe.js
+  // owns the production command, and disables the override under NODE_ENV=production.
+  return { ...process.env };
+}
+
+function healthProbeKey() {
+  const env = healthProbeEnv();
+  return JSON.stringify([resolveArgv(env), clampDeadlineMs(env.HEALTH_PROBE_TIMEOUT_MS).deadlineMs]);
+}
+
+// In-flight only, never a stored answer: concurrent polls share the probe that is
+// running now, and the next poll starts a fresh one. A degraded result therefore cannot
+// be echoed to a caller that arrives after the fleet recovered.
+const probeHealthOnce = createSingleFlight(() => runHealthProbe({ env: healthProbeEnv() }));
+
+app.get('/api/health', async (_req, res) => {
   try {
-    const output = execFileSync('/usr/bin/python3', [path.join(__dirname, 'health_probe.py')]);
-    const probeResult = JSON.parse(output.toString());
-    res.json({ ...probeResult, ...hiveStatus(), ts: Date.now() });
-  } catch (_) {
-    res.json({ ok: false, ...hiveStatus(), ts: Date.now() });
+    const probe = await probeHealthOnce(healthProbeKey());
+    const status = hiveStatus();
+    res.json(probe.ok
+      ? probePayload(probe, probe.data, status)
+      : failedProbePayload(probe, status));
+  } catch (error) {
+    // The blocking handler always answered JSON, and that guarantee is the point of this
+    // route. An exception here must not become a request that hangs until every monitor
+    // gives up -- which is the failure this rewrite exists to remove.
+    res.status(500).json({ ok: false, error: String((error && error.message) || error) });
   }
 });
 
@@ -2247,6 +2346,7 @@ frozenFeedsRoute.register(app);
     floorRoute.register(app);
     registerEvidenceRoutes(app);
   registerWedgedRoutes(app, HIVE);
+  githubProbe.register(app);
 
 app.get('/api/summary', (_req, res) => {
   res.json(buildSnapshot('summary'));
@@ -2368,6 +2468,8 @@ function taskSortTime(task) {
  * count for each so the header badge stays honest.
  */
 function getTaskBoard(perColumn = 25) {
+  const tasksFile = path.join(HIVE, 'tasks.json');
+  const tasksPresent = fs.existsSync(tasksFile);
   const all = getTasks().tasks || [];
   const groups = {};
   const counts = {};
@@ -2410,6 +2512,16 @@ function getTaskBoard(perColumn = 25) {
       groups,
       counts,
       completion: summarizeTasks(claimedComplete),
+      // getTasks() falls back to {tasks: []} when the file is absent, so without
+      // this a host with no hive publishes a confident all-zero completion
+      // summary and nothing can tell it apart from a genuinely empty board.
+      source: {
+        file: tasksFile,
+        present: tasksPresent,
+        // An absent local hive is not an idle fleet: name the host that holds
+        // the rows rather than letting a zero-filled board read as "nothing".
+        ...(tasksPresent ? {} : { liveBoard: new URL(MINI_HUD_HEALTH_URL).origin }),
+      },
       total: all.length,
       perColumn,
     // Tasks in a status the board does not draw, so the UI can say so.
@@ -3147,9 +3259,22 @@ function getPolymarketState() {
   };
 }
 
+// Freshness travels as headers, not as a fourteenth body field: the payload shape is a
+// pinned contract (polymarketStatusContract.test.js checks it against the web interface key
+// for key), while "how old is this and is a refresh in flight" is exactly the kind of thing
+// an operator curling the route needs and no panel currently parses.
+function sendPolymarket(res, evidenceName, body) {
+  const evidence = polymarketRemoteStatus(evidenceName);
+  res.set('x-hud-evidence-state', String(evidence.state));
+  res.set('x-hud-evidence-observed', String(evidence.observed));
+  res.set('x-hud-evidence-age-ms', evidence.age_ms === null ? 'unknown' : String(evidence.age_ms));
+  res.set('x-hud-evidence-refreshing', String(evidence.refreshing));
+  res.json(body);
+}
+
 app.get('/api/polymarket', (_req, res) => {
   try {
-    res.json(getPolymarketState());
+    sendPolymarket(res, 'state', getPolymarketState());
   } catch (error) {
     sendError(res, error.statusCode || 500, 'POLYMARKET_STATE_INVALID', error.message);
   }
@@ -3178,7 +3303,7 @@ function getPolymarketMarkets() {
 
 app.get('/api/polymarket/markets', (_req, res) => {
   try {
-    res.json(getPolymarketMarkets());
+    sendPolymarket(res, 'markets', getPolymarketMarkets());
   } catch (error) {
     sendError(res, error.statusCode || 500, 'POLYMARKET_STATE_INVALID', error.message);
   }
@@ -3212,11 +3337,21 @@ app.post('/api/polymarket/trades/clear', (req, res) => {
 });
 
 app.get('/api/polymarket/status', (_req, res) => {
-  res.json(getPolymarketRuntime());
+  sendPolymarket(res, 'runtime', getPolymarketRuntime());
 });
 
+// The engine's evidence is what authorises launchctl to be called, so the action routes
+// never read the panel snapshot: they force a fresh observation and are refused when it
+// cannot be established inside the gate budget. A snapshot that is up to a refresh
+// interval old is fine for a dashboard and not fine for a start/stop decision.
+async function polymarketActionEvidence() {
+  if (!isLaptop()) return getPolymarketRuntime();
+  const fresh = await getPolymarketRuntimeForAction();
+  return fresh || getPolymarketRuntime();
+}
+
 app.post('/api/polymarket/start', async (_req, res) => {
-  const runtime = getPolymarketRuntime();
+  const runtime = await polymarketActionEvidence();
   if (!runtime.managed) return sendError(res, 501, 'engine_not_managed', 'No managed paper-only Polymarket engine configuration is available');
   if (!runtime.paper_only) return sendError(res, 409, 'paper_only_required', 'Paper-only mode is required');
   if (!runtime.launchd.expected_loaded) return sendError(res, 409, 'engine_not_loaded', 'The managed Polymarket engine is not loaded from the expected launchd plist');
@@ -3227,7 +3362,7 @@ app.post('/api/polymarket/start', async (_req, res) => {
     return sendError(res, 502, 'engine_start_error', 'Unable to start the managed Polymarket engine', { reason: error.message });
   }
   await new Promise(resolve => setTimeout(resolve, 300));
-  const after = getPolymarketRuntime();
+  const after = await polymarketActionEvidence();
   if (!after.running || !after.launchd.expected_loaded) {
     return sendError(res, 503, 'engine_start_failed', 'The managed Polymarket engine did not become visible after launchctl kickstart', after);
   }
@@ -3235,7 +3370,7 @@ app.post('/api/polymarket/start', async (_req, res) => {
 });
 
 app.post('/api/polymarket/stop', async (_req, res) => {
-  const runtime = getPolymarketRuntime();
+  const runtime = await polymarketActionEvidence();
   if (!runtime.managed) return sendError(res, 501, 'engine_not_managed', 'No managed paper-only Polymarket engine configuration is available');
   if (!runtime.paper_only) return sendError(res, 409, 'paper_only_required', 'Paper-only mode is required');
   if (!runtime.launchd.loaded) return res.json({ ok: true, already_stopped: true, ...runtime });
@@ -3246,7 +3381,7 @@ app.post('/api/polymarket/stop', async (_req, res) => {
     return sendError(res, 502, 'engine_stop_error', 'Unable to stop the managed Polymarket engine', { reason: error.message });
   }
   await new Promise(resolve => setTimeout(resolve, 300));
-  const after = getPolymarketRuntime();
+  const after = await polymarketActionEvidence();
   if (after.running || after.launchd.loaded) {
     return sendError(res, 503, 'engine_stop_failed', 'The managed Polymarket engine is still loaded or running after launchctl bootout', after);
   }
@@ -4221,6 +4356,22 @@ function announceReady(port) {
 
 const createServer = () => http.createServer(app);
 
+// macOS resolves `localhost` to ::1 first, so a HUD bound only to 127.0.0.1
+// does not answer on the very http://localhost URL announceReady prints.
+// This companion bind is scoped to the IPv6 loopback -- it never widens the
+// surface beyond 127.0.0.1. Failure (e.g. IPv6 disabled) is tolerated.
+const loopbackCompanions = [];
+function bindLoopbackV6(port) {
+  if (HOST !== '127.0.0.1') return;
+  const companion = createServer();
+  companion.once('error', (err) => {
+    console.warn(`[office-hud] ipv6 loopback bind unavailable (${err.code || err.message})`);
+    try { companion.close(); } catch { /* not listening */ }
+  });
+  companion.listen({ port, host: '::1', reuseAddress: true });
+  loopbackCompanions.push(companion);
+}
+
 // A launchd restart can find the old process still holding the port; retry
 // briefly, but cap the backoff so a restart is never stuck for minutes.
 const PORT_BACKOFF_CAP_MS = 4000;
@@ -4230,6 +4381,7 @@ function startServer(port = PORT, retries = 12, delay = 500) {
   return new Promise((resolve, reject) => {
     server.listen({ port, host: HOST, reuseAddress: true }, () => {
       announceReady(port);
+      bindLoopbackV6(port);
       resolve(server);
     });
 
@@ -4252,6 +4404,7 @@ function shutdown(signal) {
   console.log(`[office-hud] received ${signal}, shutting down gracefully...`);
   liveHub?.close();
   alertEngine?.stop();
+  githubProbe.stop();
   if (watcher) { try { watcher.close(); } catch { /* already closed */ } }
   // End the SSE streams first: an open event-stream response keeps the server
   // from draining, which used to trip the force-exit timer on every restart.
@@ -4260,6 +4413,9 @@ function shutdown(signal) {
     try { res.end(); } catch { /* already gone */ }
   }
   if (!serverInstance) { process.exit(0); return; }
+  for (const companion of loopbackCompanions) {
+    try { companion.closeAllConnections(); companion.close(); } catch { /* already closed */ }
+  }
   const server = serverInstance;
   server.closeAllConnections();
   server.close((err) => {
@@ -4332,6 +4488,7 @@ function bootstrap() {
   // The engines are constructed at module scope; bootstrap only starts them.
   alertEngine.start();
   autonomy.evaluate();
+  githubProbe.start();
 
   return startServer(PORT).then((server) => {
     serverInstance = server;
@@ -4453,5 +4610,8 @@ module.exports = {
     changedResources, signatureOf, resourceNames, invalidateCaches, hostIsAllowed, hostOnly,
       HIVE_WATCH_DEBOUNCE_MS,
     HIVE, FLEET_ROOT, SERVICE_PORTS, JSON_CACHE_MS, RESOURCES,
+    getServiceHealth, fetchMiniServiceHealth, projectMiniServiceRow,
+    checkServicePort, LOOPBACK_HOSTS,
+    publicServiceFields, SERVICE_OBSERVED_VIA, MINI_HUD_HEALTH_URL, MINI_HUD_TIMEOUT_MS,
   },
 };

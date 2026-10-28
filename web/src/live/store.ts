@@ -64,6 +64,14 @@ const STORAGE_LIMIT = 24;
 const POLL_FALLBACK_MS = 20000;
 const STALE_AFTER_MS = 120000;
 /**
+ * Ceiling on a single HTTP read. `fetch` has no default timeout, so a route
+ * that accepts a connection and never answers -- the shape a rejecting async
+ * handler takes on Express 4 -- leaves the request open forever: `loading`
+ * never clears, the panel sits on "Connecting…", and no error is ever shown
+ * because nothing failed. Aborting turns a silent hang into a stated failure.
+ */
+const FETCH_TIMEOUT_MS = 10000;
+/**
  * Trailing debounce for localStorage writes. The socket delivers every
  * resource on a shared 1/60s tick, and `sessions` serializes to several MB,
  * so writing on each message re-serialized the same megabytes dozens of times
@@ -134,8 +142,17 @@ function writeCached(
   pendingWrites.set(key, { data, updatedAt, storage, timer, schedule });
 }
 
-/** Drop any pending debounced writes without writing them. Used by tests. */
-export function resetPendingWrites(cancel: (handle: unknown) => void = clearTimeout): void {
+/**
+ * Drop any pending debounced writes without writing them. Used by tests.
+ *
+ * The default wraps the global `clearTimeout` rather than passing it directly:
+ * with @types/node in scope that global is the overloaded Node signature
+ * (`string | number | NodeJS.Timeout | undefined`), which will not accept the
+ * `unknown` handle the store stores. Same adapter browserEnvironment() uses.
+ */
+export function resetPendingWrites(
+  cancel: (handle: unknown) => void = (handle) => { clearTimeout(handle as ReturnType<typeof setTimeout>); },
+): void {
   for (const pending of pendingWrites.values()) cancel(pending.timer);
   pendingWrites.clear();
 }
@@ -206,6 +223,37 @@ function browserEnvironment(): StoreEnvironment {
       host: typeof location !== 'undefined' ? location.host : '127.0.0.1',
     },
   };
+}
+
+/**
+ * One GET/POST with an abort deadline, returning the parsed body.
+ *
+ * The timer comes from the injected environment rather than the global, so the
+ * store's fake clock can advance it, and `AbortController` is used instead of
+ * `AbortSignal.timeout` because the jsdom this runs under does not define the
+ * static.
+ */
+async function fetchWithTimeout(
+  env: StoreEnvironment,
+  url: string,
+  init: RequestInit = {},
+): Promise<unknown> {
+  const controller = new AbortController();
+  const timer = env.setTimeout(() => { controller.abort(); }, FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    // Report the deadline as the failure, not the AbortError the browser throws:
+    // "The user aborted a request." would describe the guard, not the problem.
+    if (controller.signal.aborted) {
+      throw new Error(`no response within ${Math.round(FETCH_TIMEOUT_MS / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    env.clearTimeout(timer);
+  }
 }
 
 export class LiveStore {
@@ -326,9 +374,9 @@ export class LiveStore {
 
     const request = (async () => {
       try {
-        const response = await fetch(`/api/live/${key}`, { headers: { Accept: 'application/json' } });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = await response.json();
+        const payload = await fetchWithTimeout(this.env, `/api/live/${key}`, {
+          headers: { Accept: 'application/json' },
+        });
         // env.now(), not Date.now(): isStale() and the test harness both
         // compare against the injected clock.
         const updatedAt = this.env.now();
@@ -349,9 +397,9 @@ export class LiveStore {
   /** Fetch without the push/merge machinery, used for telemetry reads. */
   private async loadOnce(key: string): Promise<void> {
     try {
-      const response = await fetch(`/api/live/${key}`, { headers: { Accept: 'application/json' } });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const payload = await response.json();
+      const payload = await fetchWithTimeout(this.env, `/api/live/${key}`, {
+        headers: { Accept: 'application/json' },
+      });
       this.patch(key, { data: payload as never, error: null, loading: false, updatedAt: this.env.now(), stale: false });
     } catch (error) {
       this.patch(key, { error: error instanceof Error ? error.message : String(error), loading: false });
@@ -654,8 +702,7 @@ export function useViewers(): Viewer[] {
 export async function acknowledgeAlert(fingerprint: string, acknowledge = true): Promise<boolean> {
   const verb = acknowledge ? 'ack' : 'unack';
   try {
-    const response = await fetch(`/api/alerts/${encodeURIComponent(fingerprint)}/${verb}`, { method: 'POST' });
-    if (!response.ok) return false;
+    await fetchWithTimeout(liveStore.env, `/api/alerts/${encodeURIComponent(fingerprint)}/${verb}`, { method: 'POST' });
     const summary = liveStore.getState().resources.alerts?.data as AlertSummary | null;
     if (summary) {
       const alerts = summary.alerts.map((alert) => (
@@ -675,8 +722,7 @@ export async function acknowledgeAlert(fingerprint: string, acknowledge = true):
 
 export async function acknowledgeAllAlerts(): Promise<boolean> {
   try {
-    const response = await fetch('/api/alerts/ack-all', { method: 'POST' });
-    if (!response.ok) return false;
+    await fetchWithTimeout(liveStore.env, '/api/alerts/ack-all', { method: 'POST' });
     const summary = liveStore.getState().resources.alerts?.data as AlertSummary | null;
     if (summary) {
       const alerts = summary.alerts.map((alert) => ({ ...alert, acknowledged: true, acknowledgedAt: Date.now() }));

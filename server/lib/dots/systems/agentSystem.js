@@ -12,6 +12,10 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+// One freshness window for every source, so a session cannot be fresh to the
+// event map and stale to sessions.json.
+const STALE_SECONDS = 300;
+
 /**
  * Read hive registry.json
  * @param {string} hivePath
@@ -110,10 +114,11 @@ function isPidAlive(pid) {
 /**
  * Compute agent display status from raw fields
  * @param {Object} agent - raw agent from fleet.json
- * @param {Object} session - session info from events
+ * @param {Object} session - session info from events and sessions.json
+ * @param {'alive'|'dead'|'no-pid'|'remote-verified'|'remote-unverified'} [processLiveness]
  * @returns {'busy'|'idle'|'stale'|'breaker'|'offline'}
  */
-function computeDisplay(agent, session) {
+function computeDisplay(agent, session, processLiveness) {
   // Mimic original mergedAgents() logic: status field from fleet.json takes precedence
   const archived = !!agent.archived;
   const breaker = agent.breaker || (archived ? 'offline' : 'healthy');
@@ -126,8 +131,19 @@ function computeDisplay(agent, session) {
   
   if (archived) return 'offline';
   if (breaker !== 'healthy') return 'breaker';
+  // A PID that measures gone outranks every claim the record about it still
+  // carries. Heartbeat freshness is a claim about when a writer last touched the
+  // row; `os.kill(pid, 0)` is a measurement of the process now, and a row can
+  // stay inside the stale window for minutes after its process died. Honouring
+  // the heartbeat here rendered a dead agent `idle` -- present and doing nothing
+  // -- which is a lie in the optimistic direction.
+  if (processLiveness === 'dead') return 'offline';
   if (hasWork) return 'busy';
   if (sessionFresh) return 'idle';
+  // `stale` means contact lost, which invites waiting for it to come back. A
+  // record whose PID is verifiably gone is not contact lost, it is gone, and
+  // leaving it labelled stale keeps a dead process on the office floor alerting
+  // forever. This is the same measurement index.js:1297 makes.
   if (session) return 'stale';
   return 'offline';
 }
@@ -249,7 +265,7 @@ function agentLivenessSystem(world, context) {
     if (sess.lastHeartbeat) {
       sess.heartbeatAgeSec = Math.max(0, Math.floor((now - sess.lastHeartbeat) / 1000));
       // Session stale if no heartbeat in 5 minutes
-      if (sess.heartbeatAgeSec > 300) {
+      if (sess.heartbeatAgeSec > STALE_SECONDS) {
         sess.fresh = false;
       }
     }
@@ -264,23 +280,70 @@ function agentLivenessSystem(world, context) {
   // string alone is a claim, not evidence. Only FRESH host docs are consulted
   // (a frozen remote doc is not evidence about now), a session older than the
   // stale window is skipped, and fresher LOCAL evidence always wins.
-  // Local sessions.json is a second local source of truth that the events-derived
-  // map above does not contain: the local hive's own heartbeat writers update it
-  // directly. Comparing against the remote doc using only the event map would let
-  // a remote session overwrite a FRESHER local record, so the local file is read
-  // here purely for that comparison. It is not merged into the payload -- the
-  // event-derived session stays authoritative for status.
+  //
+  // Local sessions.json is merged first, below, and is what `localSessionsFreshest`
+  // is built from; the remote loop then has to beat a real local heartbeat rather
+  // than only the event map.
   const localSessionsFreshest = new Map();
+  let localDoc = null;
   try {
-    const localDoc = JSON.parse(fs.readFileSync(path.join(hivePath, 'sessions.json'), 'utf8'));
-    for (const s of Array.isArray(localDoc?.sessions) ? localDoc.sessions : []) {
-      if (!s || typeof s !== 'object' || !s.agent_id) continue;
-      const hb = s.last_heartbeat ? Date.parse(s.last_heartbeat) : 0;
-      if (hb && hb > (localSessionsFreshest.get(s.agent_id) || 0)) {
-        localSessionsFreshest.set(s.agent_id, hb);
-      }
-    }
+    localDoc = JSON.parse(fs.readFileSync(path.join(hivePath, 'sessions.json'), 'utf8'));
   } catch { /* absent or unreadable local sessions is not an error here */ }
+
+  // The local hive's own heartbeat writers update sessions.json and emit no
+  // `heartbeat` event: measured on this machine, none of the last 2000 lines of
+  // events.log carried one, while seven local agents were writing a two-second-old
+  // heartbeat into the file. Reading the file only as a tiebreaker for the remote
+  // merge therefore left every live local agent with an event-derived session whose
+  // fresh was false and whose PID was the one recorded in registry.json at spawn
+  // time — so they rendered `stale` with `no-pid`, and the HUD had no way to see
+  // the processes that were actually running. Seed the map from the file, and let
+  // the event loop above only ever add or upgrade evidence, never downgrade it.
+  for (const row of (Array.isArray(localDoc?.sessions) ? localDoc.sessions : [])) {
+    if (!row || typeof row !== 'object' || !row.agent_id) continue;
+    const heartbeat = row.last_heartbeat ? Date.parse(row.last_heartbeat)
+      : row.updated_at ? Date.parse(row.updated_at) : null;
+    const ageSec = heartbeat == null || !Number.isFinite(heartbeat)
+      ? null : Math.max(0, Math.floor((now - heartbeat) / 1000));
+    if (ageSec != null) {
+      localSessionsFreshest.set(row.agent_id, Math.max(localSessionsFreshest.get(row.agent_id) || 0, heartbeat));
+    }
+    const status = String(row.status || 'UNKNOWN').toUpperCase();
+    const terminal = ['STOPPED', 'DEAD', 'ERROR', 'STALE'].includes(status);
+    const fresh = ageSec != null && ageSec <= STALE_SECONDS && !terminal;
+    const rowProcessId = Number.isInteger(row.process_id) ? row.process_id : null;
+
+    const existing = sessions.get(row.agent_id);
+    const merged = existing ? { ...existing } : {
+      fresh: false,
+      hasTask: false,
+      taskStatus: null,
+      currentTaskId: null,
+      lastHeartbeat: 0,
+      heartbeatAgeSec: null,
+    };
+    if (ageSec != null && (!merged.lastHeartbeat || heartbeat > merged.lastHeartbeat)) {
+      merged.lastHeartbeat = heartbeat;
+      merged.heartbeatAgeSec = ageSec;
+    }
+    if (merged.heartbeatAgeSec == null) merged.heartbeatAgeSec = ageSec;
+    if (fresh) merged.fresh = true;
+    merged.status = status;
+    if (row.session_id) merged.sessionId = row.session_id;
+    // A task claim on a row nobody is heartbeating on any more is the same claim
+    // that rendered stopped agents `busy` three days after they died. Only a fresh
+    // row may vouch for work the task store has not confirmed.
+    if (fresh && row.current_task_id && !merged.currentTaskId) {
+      merged.currentTaskId = row.current_task_id;
+      merged.hasTask = true;
+      merged.taskStatus = 'IN_PROGRESS';
+    }
+    if (rowProcessId != null && merged.localProcessId == null) {
+      merged.localProcessId = rowProcessId;
+      merged.processLiveness = isPidAlive(rowProcessId) ? 'alive' : 'dead';
+    }
+    sessions.set(row.agent_id, merged);
+  }
 
   const remoteDir = path.join(hivePath, 'remote');
   let remoteEntries = [];
@@ -298,7 +361,7 @@ function agentLivenessSystem(world, context) {
       const ageSec = s.heartbeat_age_sec != null
         ? s.heartbeat_age_sec
         : (s.last_heartbeat ? Math.max(0, Math.floor((Date.now() - Date.parse(s.last_heartbeat)) / 1000)) : null);
-      if (ageSec == null || ageSec > 300) continue;
+      if (ageSec == null || ageSec > STALE_SECONDS) continue;
       const remoteHb = s.last_heartbeat ? Date.parse(s.last_heartbeat) : 0;
       const existing = sessions.get(s.agent_id);
       if (existing && existing.lastHeartbeat && existing.lastHeartbeat >= remoteHb && existing.lastHeartbeat > 0) continue;
@@ -332,22 +395,47 @@ function agentLivenessSystem(world, context) {
     
     const entityId = `agent:${agentId}`;
     const regAgent = registryAgents[agentId] || {};
-    const session = sessions.get(agentId) || { fresh: false, hasTask: false, taskStatus: null, heartbeatAgeSec: null };
+    // Null, not an empty stand-in: a fallback object made `!!session` true for
+    // every agent, so all 24 rows reported hasSession=true and displayed
+    // `stale` -- "contact lost" -- including agents this hive has never seen a
+    // session from. No record and a lost record are different facts.
+    const session = sessions.get(agentId) || null;
 
-    // Get process ID from registry. The remote merge may attach the real PID
-    // reported by the remote host's collector (host-verified via process_alive)
-    // when neither local source has one -- labeled in evidence.processLiveness,
-    // never presented as locally verified.
-    // Priority: remote session (live) > fleet.json (static) > registry (static)
-    const processId = session.remoteProcessId || regAgent.processId || fleetAgent.processId || null;
+    // Which process this agent's own record points at. Priority: a session
+    // heartbeat wrote on this machine (sessions.json, the freshest claim), then
+    // a remote host's collector-reported PID it verified locally, then the static
+    // ids recorded at spawn time in fleet.json and registry.json. A recorded id is
+    // a claim about a process that existed, so it is checked below rather than
+    // trusted, and `processLiveness` is what the label is allowed to depend on.
+    const ownProcessId = session?.localProcessId || session?.remoteProcessId || null;
+    const processId = ownProcessId || regAgent.processId || fleetAgent.processId || null;
+    // Whether that id is a claim about now or a claim about then. The ids in
+    // fleet.json and registry.json were written at spawn time and this hive's
+    // telemetry feed is days old, so an agent that restarted under a new pid
+    // shows the OLD pid as gone -- and its absence then says nothing about the
+    // present. Only a pid the agent's own live record carries may be read as
+    // evidence of absence; anything else is reported as no current pid, which is
+    // what it is.
+    const pidIsCurrentClaim = !!ownProcessId || session?.fresh === true;
+    const measuredLiveness = session?.processLiveness
+      || (processId ? (isPidAlive(processId) ? 'alive' : 'dead') : 'no-pid');
+    const processLiveness = (measuredLiveness === 'dead' && !pidIsCurrentClaim)
+      ? 'no-pid' : measuredLiveness;
+    const heartbeatAgeSec = session?.heartbeatAgeSec ?? null;
     
     // Get current task from session (now tracked via events)
-    const currentTaskId = session.currentTaskId || null;
+    // A measured-dead PID voids the task claim and the health word its row
+    // carries, not only the label: `working` or `healthy` beside a process that
+    // is verifiably gone is the same overstatement in a different field, and
+    // hud_guard corroborates `status` independently of `display`.
+    const processDead = processLiveness === 'dead';
+    const currentTaskId = processDead ? null : (session?.currentTaskId || null);
     const currentTaskTitle = null; // would need task lookup
-    
+
     // Build agent object for World
     // status field mimics original mergedAgents(): 'working' if has task, else session status or display
-    const status = currentTaskId ? 'working' : (session?.status?.toLowerCase() || computeDisplay(fleetAgent, session));
+    const status = currentTaskId ? 'working'
+      : (!processDead && session?.status?.toLowerCase()) || computeDisplay(fleetAgent, session, processLiveness);
     const agent = {
       id: entityId,
       name: fleetAgent.name || agentId,
@@ -357,7 +445,7 @@ function agentLivenessSystem(world, context) {
       model: fleetAgent.model || '',
       cwd: regAgent.cwd || '',
       cwdValid: regAgent.cwdValid !== false,
-      display: computeDisplay(fleetAgent, session),
+      display: computeDisplay(fleetAgent, session, processLiveness),
       status: status,
       archived: !!fleetAgent.archived,
       breaker: fleetAgent.breaker || 'closed',
@@ -367,24 +455,24 @@ function agentLivenessSystem(world, context) {
       capUsdPerMonth: fleetAgent.capUsdPerMonth ?? null,
       sessionUsd: fleetAgent.sessionUsd || 0,
       lastTool: regAgent.lastTool || null,
-      lastActiveSecAgo: session.heartbeatAgeSec,
+      lastActiveSecAgo: heartbeatAgeSec,
       inboxBacklog: regAgent.inboxBacklog || 0,
       onHold: !!regAgent.onHold,
       lastSeen: fleetAgent.lastSeen ? new Date(fleetAgent.lastSeen).getTime() : null,
-      sessionId: regAgent.sessionId || null,
-      sessionStatus: session.fresh ? 'active' : 'stale',
+      sessionId: session?.sessionId || regAgent.sessionId || null,
+      sessionStatus: session ? (session.fresh ? 'active' : 'stale') : null,
       processId: processId,
-      heartbeatAgeSec: session.heartbeatAgeSec,
-      sessionFresh: session.fresh,
+      heartbeatAgeSec: heartbeatAgeSec,
+      sessionFresh: session?.fresh === true,
       currentTaskId: currentTaskId,
       currentTaskTitle: currentTaskTitle,
       // Remote host provenance: which machine this agent's process actually runs on,
       // and whether that host's data is fresh. This distinguishes a local agent
       // (host = this machine, host_stale = false) from a remote agent whose
       // heartbeat comes from another machine's collector.
-      host: session.host || null,
-      host_stale: session.host_stale ?? false,
-      evidence: computeEvidence(fleetAgent, session, processId, session.heartbeatAgeSec, currentTaskId, currentTaskTitle)
+      host: session?.host || null,
+      host_stale: session?.host_stale ?? false,
+      evidence: computeEvidence(fleetAgent, session, processId, heartbeatAgeSec, currentTaskId, currentTaskTitle)
     };
 
     world.setAgent(agent);

@@ -37,7 +37,8 @@ class Client {
 class LiveHub {
   /**
    * @param {{snapshot: (name: string) => any, alerts?: () => any[], heartbeatMs?: number,
-   *          isHostAllowed?: (host?: string) => boolean}} options
+   *          isHostAllowed?: (host?: string) => boolean,
+   *          isOriginAllowed?: (origin?: string) => boolean}} options
    */
   constructor(options) {
     this.snapshot = options.snapshot;
@@ -45,6 +46,7 @@ class LiveHub {
     // Kept on the instance: attach() runs after the constructor, so it cannot
     // close over the parameter.
     this.isHostAllowed = options.isHostAllowed;
+    this.isOriginAllowed = options.isOriginAllowed;
     this.heartbeatMs = options.heartbeatMs || 25000;
     this.clients = new Map();
     this.sequence = 0;
@@ -59,6 +61,7 @@ class LiveHub {
       maxClients: 12,
       onConnection: (connection) => this._addClient(connection),
       isHostAllowed: this.isHostAllowed,
+      isOriginAllowed: this.isOriginAllowed,
     });
     this.heartbeat = setInterval(() => this._heartbeat(), this.heartbeatMs);
     this.heartbeat.unref?.();
